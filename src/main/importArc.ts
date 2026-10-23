@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SPACE_COLORS } from '../shared/theme';
-import type { HistoryEntry, Item, Profile, Section, Space } from '../shared/types';
+import type { HistoryEntry, Item, Membership, Profile, Section, Space } from '../shared/types';
 import { uid } from '../shared/url';
 
 export interface ArcImport {
@@ -62,6 +62,35 @@ const ARC_ICONS: Record<string, string> = {
   bell: '🔔',
   flag: '🚩',
 };
+
+export function readArcMembership(home: string): Membership | null {
+  const root = arcSupportDir(home);
+  const cardPath = join(root, 'StorableMembershipCard.json');
+  const authPath = join(root, 'StorableAuthState.json');
+  if (!existsSync(cardPath) && !existsSync(authPath)) return null;
+  let card: any = {};
+  let auth: any = {};
+  try {
+    if (existsSync(cardPath)) card = JSON.parse(readFileSync(cardPath, 'utf8'));
+  } catch {
+    card = {};
+  }
+  try {
+    if (existsSync(authPath)) auth = JSON.parse(readFileSync(authPath, 'utf8'));
+  } catch {
+    auth = {};
+  }
+  const user = auth?.session?.user || {};
+  const blob = Array.isArray(card.backgroundBlobInfo) ? card.backgroundBlobInfo.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+  return {
+    name: typeof user.name === 'string' ? user.name : '',
+    title: typeof card.title === 'string' ? card.title : '',
+    joinedAt: arcDate(user.createdAt),
+    palette: Number(card.paletteNumber) || 1,
+    shape: typeof card.shapeName === 'string' ? card.shapeName : 'Shape3',
+    blob: blob.length ? blob : [6, 6, 12, 4, 7, 9, 4, 6, 12, 11, 8, 5, 11, 2, 7],
+  };
+}
 
 export function arcSupportDir(home: string): string {
   return join(home, 'Library', 'Application Support', 'Arc');

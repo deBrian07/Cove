@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { defaultMembership } from '../shared/membership';
 import type { HistoryEntry, Library, PasswordMeta, Settings } from '../shared/types';
 import { SPACE_COLORS } from '../shared/theme';
 import { uid } from '../shared/url';
@@ -75,6 +76,7 @@ export function blankLibrary(): Library {
     ],
     downloads: [],
     closed: [],
+    membership: defaultMembership(),
     commandScores: {},
     ui: { lastSpaceId: space.id, lastTabId: null, bounds: null },
   };
@@ -101,7 +103,14 @@ export class Store {
     if (existsSync(libPath)) {
       try {
         const parsed = JSON.parse(readFileSync(libPath, 'utf8')) as Library;
-        this.library = { ...blankLibrary(), ...parsed, settings: { ...defaultSettings(), ...parsed.settings } };
+        const blank = blankLibrary();
+        this.library = {
+          ...blank,
+          ...parsed,
+          settings: { ...blank.settings, ...parsed.settings },
+          membership: { ...blank.membership, ...parsed.membership },
+          ui: { ...blank.ui, ...parsed.ui },
+        };
       } catch {
         this.library = blankLibrary();
       }

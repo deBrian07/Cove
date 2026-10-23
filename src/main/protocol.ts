@@ -17,7 +17,7 @@ export function registerCoveScheme(): void {
   ]);
 }
 
-const PAGES = new Set(['/newtab', '/settings', '/library', '/welcome', '/error', '/passwords']);
+const PAGES = new Set(['/newtab', '/settings', '/library', '/welcome', '/error', '/passwords', '/membership']);
 
 export function handleCoveProtocol(distDir: string, faviconDir: string): void {
   const root = resolve(distDir);

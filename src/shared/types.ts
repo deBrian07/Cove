@@ -139,9 +139,19 @@ export interface Settings {
   extensionDirs: string[];
 }
 
+export interface Membership {
+  name: string;
+  title: string;
+  joinedAt: number;
+  palette: number;
+  shape: string;
+  blob: number[];
+}
+
 export interface Library {
   version: 1;
   settings: Settings;
+  membership: Membership;
   profiles: Profile[];
   spaces: Space[];
   items: Item[];
@@ -297,6 +307,7 @@ export type Action =
   | { type: 'media'; op: 'toggle' | 'pip' }
   | { type: 'toggle-live'; id?: string }
   | { type: 'update-settings'; patch: Partial<Settings> }
+  | { type: 'update-membership'; patch: Partial<Membership> }
   | { type: 'set-binding'; command: string; accelerator: string }
   | { type: 'reset-shortcuts' }
   | { type: 'import-arc' }

@@ -229,6 +229,8 @@ export function commandAction(id: string): Action {
       return { type: 'open-page', page: 'library' };
     case 'open-settings':
       return { type: 'open-page', page: 'settings' };
+    case 'membership':
+      return { type: 'open-page', page: 'membership' };
     case 'open-passwords':
       return { type: 'open-page', page: 'passwords' };
     case 'mute':

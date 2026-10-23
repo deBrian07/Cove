@@ -62,6 +62,7 @@ export function isInternalPage(url: string): boolean {
       p === '/welcome' ||
       p === '/error' ||
       p === '/passwords' ||
+      p === '/membership' ||
       p.startsWith('/note/') ||
       p.startsWith('/easel/') ||
       p.startsWith('/boost/')

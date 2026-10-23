@@ -60,6 +60,7 @@ export const COMMANDS: CommandDef[] = [
   { id: 'join-call', title: 'Join call', keywords: 'zoom meet teams', group: 'Tools' },
   { id: 'open-library', title: 'Open library', keywords: 'history downloads archive', accelerator: 'Command+Alt+L', group: 'Tools' },
   { id: 'open-settings', title: 'Settings', keywords: 'preferences', accelerator: 'Command+,', group: 'Tools' },
+  { id: 'membership', title: 'Membership card', keywords: 'card anniversary profile member', group: 'Tools' },
   { id: 'open-passwords', title: 'Passwords', keywords: 'passwords logins', group: 'Tools' },
   { id: 'mute', title: 'Mute or unmute tab', keywords: 'mute audio', group: 'Tools' },
   { id: 'media-pip', title: 'Picture in picture', keywords: 'pip video', group: 'Tools' },
