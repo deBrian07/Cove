@@ -1,15 +1,14 @@
 :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-html, body { margin: 0; height: 100%; background: transparent; }
-body { padding: 8px; }
+html, body { margin: 0; height: 100%; background: #2c2c2e; }
+body { padding: 0; }
 .panel {
-  height: calc(100% - 0px);
+  height: 100%;
   display: flex;
   flex-direction: column;
-  border-radius: 16px;
-  background: rgba(28, 28, 30, 0.92);
+  border-radius: 14px;
+  background: #2c2c2e;
   color: #f4f4f6;
   overflow: hidden;
-  outline: 1px solid rgba(255, 255, 255, 0.08);
 }
 input {
   border: 0;
@@ -20,6 +19,7 @@ input {
   outline: none;
 }
 #results { flex: 1; overflow: auto; padding: 0 8px 8px; }
+#results::-webkit-scrollbar { width: 0; }
 .result {
   display: flex;
   flex-direction: column;
