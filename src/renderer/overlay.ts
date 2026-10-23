@@ -1,11 +1,8 @@
-import type { Action } from '../shared/types';
+import type { CoveBridge } from '../shared/bridge';
 
 declare global {
   interface Window {
-    cove: {
-      dispatch(action: Action): Promise<unknown>;
-      onOverlay(cb: (payload: Record<string, unknown>) => void): () => void;
-    };
+    cove: CoveBridge;
   }
 }
 

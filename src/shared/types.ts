@@ -250,6 +250,7 @@ export type Action =
   | { type: 'back' }
   | { type: 'forward' }
   | { type: 'reload'; hard?: boolean }
+  | { type: 'stop' }
   | { type: 'pin'; id?: string }
   | { type: 'unpin'; id?: string }
   | { type: 'favorite'; id?: string }

@@ -90,3 +90,6 @@ canvas { width: 100%; height: 70vh; background: white; border-radius: 16px; touc
 .hash { width: 18px; height: 10px; background: repeating-linear-gradient(90deg, var(--ink) 0 2px, transparent 2px 4px); opacity: 0.8; }
 .edit { margin-top: 18px; display: grid; gap: 8px; }
 .edit input { background: rgba(255,255,255,0.72); }
+
+.stage.newtab { background: #f4f4f5; color: rgba(0,0,0,.35); transition: background 160ms ease, color 160ms ease; }
+body.dark .stage.newtab { background: #1a1a1c; color: rgba(255,255,255,.4); }

@@ -7,7 +7,10 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "start": "node scripts/build.mjs && electron ."
+    "typecheck": "tsc --noEmit",
+    "start": "node scripts/build.mjs && electron .",
+    "test": "npm run build && node scripts/check-command.mjs",
+    "test:ui": "npm run build && node scripts/check-ui.mjs"
   },
   "devDependencies": {
     "electron": "^45.0.0",

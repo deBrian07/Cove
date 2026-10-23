@@ -1,12 +1,10 @@
-import type { Action, Row, Snapshot } from '../shared/types';
+import type { Row, Snapshot } from '../shared/types';
+import type { CoveBridge } from '../shared/bridge';
+import { chromeIcon } from './icons';
 
 declare global {
   interface Window {
-    cove: {
-      snapshot(): Promise<Snapshot>;
-      dispatch(action: Action): Promise<unknown>;
-      onSnapshot(cb: (snapshot: Snapshot) => void): () => void;
-    };
+    cove: CoveBridge;
   }
 }
 
@@ -28,16 +26,57 @@ let editing = '';
 let seenRename = '';
 let lastSound = -1;
 let dragId = '';
-let painted = '';
+const painted = new Map<string, string>();
 
-search.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: 'new' }));
-resize.addEventListener('mousedown', (event) => {
+search.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: snap?.url && !snap.url.startsWith('cove:') ? 'edit' : 'new' }));
+let peekTimer = 0;
+document.addEventListener('mousemove', (event) => {
+  window.clearTimeout(peekTimer);
+  if (!snap || snap.mode !== 'main' || snap.sidebarVisible) return;
+  if (!snap.sidebarPeek && event.clientX <= 7) {
+    peekTimer = window.setTimeout(() => window.cove.dispatch({ type: 'sidebar-peek', on: true }), 120);
+  }
+});
+document.documentElement.addEventListener('mouseleave', () => {
+  if (!snap || snap.mode !== 'main' || snap.sidebarVisible) return;
+  window.clearTimeout(peekTimer);
+  peekTimer = window.setTimeout(() => window.cove.dispatch({ type: 'sidebar-peek', on: false }), 220);
+});
+essentials.addEventListener('dragover', (event) => { event.preventDefault(); essentials.classList.add('drop-zone'); });
+essentials.addEventListener('dragleave', () => essentials.classList.remove('drop-zone'));
+essentials.addEventListener('drop', (event) => {
+  event.preventDefault();
+  essentials.classList.remove('drop-zone');
+  const id = event.dataTransfer?.getData('text/plain') || dragId;
+  if (id) window.cove.dispatch({ type: 'favorite', id });
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !editor.hidden) window.cove.dispatch({ type: 'close-overlay' });
+});
+resize.addEventListener('pointerdown', (event) => {
   if (!snap) return;
+  event.preventDefault();
+  resize.setPointerCapture(event.pointerId);
   const startX = event.screenX;
   const startW = snap.sidebarWidth;
-  const move = (ev: MouseEvent) => window.cove.dispatch({ type: 'set-sidebar-width', width: startW + ev.screenX - startX });
-  window.addEventListener('mousemove', move);
-  window.addEventListener('mouseup', () => window.removeEventListener('mousemove', move), { once: true });
+  let frame = 0;
+  let width = startW;
+  const send = () => { frame = 0; window.cove.dispatch({ type: 'set-sidebar-width', width }); };
+  const move = (ev: PointerEvent) => {
+    width = startW + ev.screenX - startX;
+    if (!frame) frame = requestAnimationFrame(send);
+  };
+  const end = () => {
+    cancelAnimationFrame(frame);
+    send();
+    resize.removeEventListener('pointermove', move);
+    resize.removeEventListener('lostpointercapture', end);
+    document.body.classList.remove('resizing');
+  };
+  document.body.classList.add('resizing');
+  resize.addEventListener('pointermove', move);
+  resize.addEventListener('lostpointercapture', end);
+  resize.addEventListener('pointerup', () => resize.releasePointerCapture(event.pointerId), { once: true });
 });
 
 function paint(next: Snapshot): void {
@@ -52,21 +91,27 @@ function paint(next: Snapshot): void {
   root.style.setProperty('--line', next.theme.line);
   root.style.setProperty('--accent', next.theme.accent);
   const open = next.mode !== 'main' || next.sidebarVisible || next.sidebarPeek;
-  root.style.setProperty('--side', open ? `${Math.max(240, next.sidebarWidth)}px` : '76px');
+  root.style.setProperty('--side', `${Math.max(260, next.sidebarWidth)}px`);
   document.body.classList.toggle('collapsed', next.mode === 'main' && !open);
+  document.body.classList.toggle('peeking', next.sidebarPeek && !next.sidebarVisible);
   document.body.classList.toggle('mini-mode', next.mode !== 'main');
   document.body.dataset.appearance = next.theme.appearance;
-  const signature = JSON.stringify([next.mode, next.sidebarVisible, next.spaces, next.favorites, next.pinned, next.today, next.host, next.url, next.canBack, next.canForward, next.editSpaceId, next.renameId, next.incognito]);
-  if (signature !== painted) {
-    painted = signature;
-    renderEssentials();
-    renderHeading();
-    renderList();
-    renderFoot();
-    renderTopbar();
-    renderMini();
-    renderEditor();
-  }
+  // Update only the region that changed. Loading and address updates must not
+  // replace tab rows under the pointer or interrupt an in-progress rename.
+  const region = (key: string, value: unknown, render: () => void) => {
+    const signature = JSON.stringify(value);
+    if (painted.get(key) === signature) return;
+    painted.set(key, signature);
+    render();
+  };
+  region('address', [next.url, next.secure], renderAddress);
+  if (!dragId) region('favorites', next.favorites, renderEssentials);
+  region('heading', next.spaces, renderHeading);
+  if (!editing && !dragId) region('list', [next.pinned, next.today], renderList);
+  region('foot', [next.spaces, open], renderFoot);
+  region('topbar', [next.mode, next.canBack, next.canForward, next.loading], renderTopbar);
+  region('mini', [next.mode, next.url], renderMini);
+  region('editor', [next.editSpaceId, next.spaces], renderEditor);
   list.scrollTop = scroll;
   if (next.renameId && next.renameId !== seenRename) {
     seenRename = next.renameId;
@@ -78,14 +123,41 @@ function paint(next: Snapshot): void {
   lastSound = next.sound;
 }
 
+function renderAddress(): void {
+  if (!snap) return;
+  const internal = !snap.url || snap.url.startsWith('cove:');
+  const label = document.createElement('span');
+  label.className = 'address-label';
+  label.textContent = internal ? 'Search or Enter URL…' : snap.host.replace(/^www\./, '');
+  const shortcut = document.createElement('kbd');
+  shortcut.textContent = internal ? '⌘T' : '⌘L';
+  search.replaceChildren(chromeIcon(internal ? 'search' : snap.secure ? 'lock' : 'globe'), label, shortcut);
+  search.title = internal ? 'New tab (⌘T)' : `${snap.url} (⌘L)`;
+}
+
 function renderEssentials(): void {
   if (!snap) return;
   essentials.replaceChildren();
+  essentials.hidden = snap.favorites.length === 0;
   for (const row of snap.favorites) {
     const button = document.createElement('button');
     button.className = `essential${row.active ? ' active' : ''}`;
     button.title = row.title;
+    button.setAttribute('aria-label', row.title);
+    button.setAttribute('aria-pressed', String(row.active));
     button.append(icon(row));
+    button.draggable = true;
+    button.addEventListener('dragstart', (event) => {
+      dragId = row.id;
+      document.body.classList.add('dragging-tab');
+      event.dataTransfer?.setData('text/plain', row.id);
+    });
+    button.addEventListener('dragend', () => {
+      dragId = '';
+      document.body.classList.remove('dragging-tab');
+      if (snap) paint(snap);
+      document.querySelectorAll('.drop-zone, .drop-before').forEach((node) => node.classList.remove('drop-zone', 'drop-before'));
+    });
     button.addEventListener('click', () => window.cove.dispatch({ type: 'activate-tab', id: row.id }));
     button.addEventListener('contextmenu', (event) => {
       event.preventDefault();
@@ -112,14 +184,54 @@ function renderHeading(): void {
 
 function renderList(): void {
   if (!snap) return;
+  const focusedId = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.row')?.dataset.id;
   list.replaceChildren();
+  const pinned = document.createElement('div');
+  pinned.className = 'pinned-tabs';
+  pinned.setAttribute('aria-label', 'Pinned tabs');
+  for (const row of snap.pinned) pinned.append(rowEl(row, false, 'pinned'));
+  setupDrop(pinned, 'pinned');
+  list.append(pinned);
+  const divider = document.createElement('div');
+  divider.className = 'tab-divider';
+  const clear = document.createElement('button');
+  clear.className = 'clear';
+  clear.textContent = 'Clear';
+  clear.title = 'Archive all unpinned tabs';
+  clear.hidden = snap.today.length === 0;
+  clear.addEventListener('click', () => window.cove.dispatch({ type: 'clear-today' }));
+  divider.append(clear);
+  list.append(divider);
+  const today = document.createElement('div');
+  today.className = 'today-tabs';
+  today.setAttribute('aria-label', 'Today’s tabs');
   const fresh = document.createElement('button');
-  fresh.className = 'line';
-  fresh.append(textGlyph('+'), text('New Tab'));
+  fresh.className = 'line new-tab';
+  fresh.append(chromeIcon('plus'), text('New Tab'));
+  const shortcut = document.createElement('kbd');
+  shortcut.textContent = '⌘T';
+  fresh.append(shortcut);
   fresh.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: 'new' }));
-  list.append(fresh);
-  for (const row of snap.pinned) list.append(rowEl(row, false, 'pinned'));
-  for (const row of snap.today) list.append(rowEl(row, false, 'today'));
+  today.append(fresh);
+  for (const row of snap.today) today.append(rowEl(row, false, 'today'));
+  setupDrop(today, 'today');
+  list.append(today);
+  if (focusedId) list.querySelector<HTMLElement>(`[data-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
+}
+
+function setupDrop(element: HTMLElement, section: 'pinned' | 'today'): void {
+  element.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    if (event.target === element) element.classList.add('drop-zone');
+  });
+  element.addEventListener('dragleave', () => element.classList.remove('drop-zone'));
+  element.addEventListener('drop', (event) => {
+    if (event.defaultPrevented) return;
+    event.preventDefault();
+    element.classList.remove('drop-zone');
+    const id = event.dataTransfer?.getData('text/plain') || dragId;
+    if (id) window.cove.dispatch({ type: 'reorder', id, beforeId: null, parentId: null, section });
+  });
 }
 
 function renderFoot(): void {
@@ -128,7 +240,7 @@ function renderFoot(): void {
   if (!document.body.classList.contains('collapsed')) {
     const archived = document.createElement('button');
     archived.className = 'archived';
-    archived.textContent = '◷';
+    archived.append(chromeIcon('library'));
     archived.title = 'Archived';
     archived.addEventListener('click', () => window.cove.dispatch({ type: 'open-page', page: 'library' }));
     foot.append(archived);
@@ -141,6 +253,8 @@ function renderFoot(): void {
     chip.style.setProperty('--swatch', space.color);
     chip.textContent = space.icon || '✦';
     chip.title = space.name;
+    chip.setAttribute('aria-label', space.name);
+    chip.setAttribute('aria-pressed', String(space.active));
     chip.addEventListener('click', () => window.cove.dispatch({ type: 'activate-space', id: space.id }));
     chip.addEventListener('dblclick', () => window.cove.dispatch({ type: 'menu-space', id: space.id }));
     chip.addEventListener('dragover', (event) => event.preventDefault());
@@ -167,9 +281,10 @@ function renderTopbar(): void {
   }
   topbar.replaceChildren();
   topbar.append(
-    tool('←', 'Back', () => window.cove.dispatch({ type: 'back' }), !snap.canBack),
-    tool('→', 'Forward', () => window.cove.dispatch({ type: 'forward' }), !snap.canForward),
-    tool('↻', 'Reload', () => window.cove.dispatch({ type: 'reload' })),
+    tool('sidebar', 'Toggle sidebar (⌘S)', () => window.cove.dispatch({ type: 'toggle-sidebar' })),
+    tool('back', 'Back', () => window.cove.dispatch({ type: 'back' }), !snap.canBack),
+    tool('forward', 'Forward', () => window.cove.dispatch({ type: 'forward' }), !snap.canForward),
+    tool(snap.loading ? 'stop' : 'reload', snap.loading ? 'Stop loading' : 'Reload', () => window.cove.dispatch({ type: snap?.loading ? 'stop' : 'reload' })),
   );
 }
 
@@ -189,11 +304,23 @@ function renderMini(): void {
   mini.append(input, open);
 }
 
-function rowEl(row: Row, child: boolean, section: 'pinned' | 'today'): HTMLElement {
+function rowEl(row: Row, child: boolean, section: 'pinned' | 'today', parentId: string | null = null): HTMLElement {
   const el = document.createElement('div');
   el.className = `row${row.active ? ' active' : ''}${row.unread ? ' unread' : ''}${child ? ' child' : ''}`;
   el.draggable = true;
-  if (row.kind === 'folder') el.append(textGlyph(row.collapsed ? '▸' : '▾'));
+  el.tabIndex = 0;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', row.title);
+  el.setAttribute('aria-current', String(row.active));
+  el.title = row.url || row.title;
+  el.dataset.id = row.id;
+  if (row.kind === 'folder') {
+    const mark = chromeIcon('chevron');
+    mark.classList.add('folder-chevron');
+    mark.classList.toggle('expanded', !row.collapsed);
+    el.append(mark);
+    el.setAttribute('aria-expanded', String(!row.collapsed));
+  }
   else el.append(icon(row));
   if (editing === row.id) {
     const input = document.createElement('input');
@@ -213,12 +340,30 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today'): HTMLEleme
   }
   const close = document.createElement('button');
   close.className = 'close';
-  close.textContent = '×';
+  close.append(chromeIcon('close'));
+  close.title = row.kind === 'folder' ? 'Archive folder' : 'Close tab';
+  close.setAttribute('aria-label', `${close.title}: ${row.title}`);
   close.addEventListener('click', (event) => {
     event.stopPropagation();
     window.cove.dispatch({ type: 'close-tab', id: row.id });
   });
+  if (row.audible || row.muted) {
+    const audio = document.createElement('button');
+    audio.className = 'audio';
+    audio.append(chromeIcon('audio'));
+    audio.title = row.muted ? 'Unmute tab' : 'Mute tab';
+    audio.addEventListener('click', (event) => { event.stopPropagation(); window.cove.dispatch({ type: 'mute', id: row.id }); });
+    el.append(audio);
+  }
   el.append(close);
+  el.addEventListener('keydown', (event) => {
+    if (event.target !== el) return;
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); el.click(); }
+    if (event.key === 'F2') { event.preventDefault(); editing = row.id; renderList(); }
+  });
+  el.addEventListener('auxclick', (event) => {
+    if (event.button === 1 && row.kind !== 'folder') { event.preventDefault(); window.cove.dispatch({ type: 'close-tab', id: row.id }); }
+  });
   el.addEventListener('click', () => {
     if (row.kind === 'folder') window.cove.dispatch({ type: 'toggle-folder', id: row.id });
     else window.cove.dispatch({ type: 'activate-tab', id: row.id });
@@ -233,8 +378,16 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today'): HTMLEleme
     window.cove.dispatch({ type: 'menu-tab', id: row.id });
   });
   el.addEventListener('dragstart', (event) => {
+    el.classList.add('dragging');
+    document.body.classList.add('dragging-tab');
     dragId = row.id;
     event.dataTransfer?.setData('text/plain', row.id);
+  });
+  el.addEventListener('dragend', () => {
+    document.body.classList.remove('dragging-tab');
+    dragId = '';
+    document.querySelectorAll('.drop-before, .drop-zone, .dragging').forEach((node) => node.classList.remove('drop-before', 'drop-zone', 'dragging'));
+    if (snap) paint(snap);
   });
   el.addEventListener('dragover', (event) => {
     event.preventDefault();
@@ -244,6 +397,8 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today'): HTMLEleme
   el.addEventListener('dragleave', () => el.classList.remove('drop-before'));
   el.addEventListener('drop', (event) => {
     event.preventDefault();
+    event.stopPropagation();
+    el.classList.remove('drop-before');
     const id = event.dataTransfer?.getData('text/plain') || dragId;
     if (!id || id === row.id) return;
     const rect = el.getBoundingClientRect();
@@ -254,14 +409,14 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today'): HTMLEleme
     window.cove.dispatch({
       type: 'reorder',
       id,
-      beforeId: event.clientY < rect.top + rect.height / 2 ? row.id : null,
-      parentId: row.kind === 'folder' ? row.id : null,
+      beforeId: row.kind === 'folder' && event.clientX > rect.left + 32 ? null : event.clientY < rect.top + rect.height / 2 ? row.id : (wrap.nextElementSibling?.querySelector<HTMLElement>('.row')?.dataset.id || null),
+      parentId: row.kind === 'folder' && event.clientX > rect.left + 32 ? row.id : parentId,
       section,
     });
   });
   const wrap = document.createElement('div');
   wrap.append(el);
-  for (const child of row.children) wrap.append(rowEl(child, true, section));
+  for (const child of row.children) wrap.append(rowEl(child, true, section, row.id));
   return wrap;
 }
 
@@ -287,7 +442,9 @@ function renderEditor(): void {
   for (const emoji of EMOJIS) {
     const button = document.createElement('button');
     button.textContent = emoji;
-    button.addEventListener('click', () => { iconValue = emoji; });
+    button.setAttribute('aria-label', emoji);
+    button.setAttribute('aria-pressed', String(iconValue === emoji));
+    button.addEventListener('click', () => { iconValue = emoji; emojis.querySelectorAll('button').forEach((entry) => entry.setAttribute('aria-pressed', String(entry === button))); });
     emojis.append(button);
   }
   const swatches = document.createElement('div');
@@ -296,7 +453,9 @@ function renderEditor(): void {
   for (const hex of COLORS) {
     const button = document.createElement('button');
     button.style.background = hex;
-    button.addEventListener('click', () => { color = hex; });
+    button.setAttribute('aria-label', `Theme ${hex}`);
+    button.setAttribute('aria-pressed', String(color.toLowerCase() === hex.toLowerCase()));
+    button.addEventListener('click', () => { color = hex; swatches.querySelectorAll('button').forEach((entry) => entry.setAttribute('aria-pressed', String(entry === button))); });
     swatches.append(button);
   }
   const actions = document.createElement('div');
@@ -310,7 +469,10 @@ function renderEditor(): void {
   const remove = document.createElement('button');
   remove.textContent = 'Delete';
   remove.addEventListener('click', () => window.cove.dispatch({ type: 'delete-space', id: space.id }));
-  actions.append(save, remove);
+  const cancel = document.createElement('button');
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => window.cove.dispatch({ type: 'close-overlay' }));
+  actions.append(save, cancel, remove);
   editor.append(name, emojis, swatches, actions);
 }
 
@@ -323,14 +485,16 @@ function finish(id: string, value: string): void {
 function icon(row: Row): HTMLElement {
   const el = document.createElement('span');
   el.className = 'mark';
-  if (row.favicon) {
+  if (row.loading) {
+    el.classList.add('loading');
+  } else if (row.favicon) {
     const img = document.createElement('img');
     img.src = row.favicon;
     img.alt = '';
+    img.addEventListener('error', () => el.replaceChildren(chromeIcon('globe')), { once: true });
     el.append(img);
   } else {
-    el.classList.add('glyph');
-    el.textContent = (row.title || '•').slice(0, 1).toUpperCase();
+    el.append(chromeIcon(row.kind === 'folder' ? 'folder' : 'globe'));
   }
   return el;
 }
@@ -350,8 +514,9 @@ function textGlyph(value: string): HTMLElement {
 
 function tool(glyph: string, title: string, onClick: () => void, disabled = false): HTMLButtonElement {
   const button = document.createElement('button');
-  button.textContent = glyph;
+  button.append(chromeIcon(glyph));
   button.title = title;
+  button.setAttribute('aria-label', title);
   button.disabled = disabled;
   button.addEventListener('click', onClick);
   return button;
@@ -367,6 +532,7 @@ function tick(): void {
   gain.connect(ctx.destination);
   osc.start();
   osc.stop(ctx.currentTime + 0.03);
+  osc.onended = () => { void ctx.close(); };
 }
 
 window.cove.onSnapshot(paint);

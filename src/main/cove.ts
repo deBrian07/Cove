@@ -1,6 +1,7 @@
 import {
   BaseWindow,
   BrowserWindow,
+  ClipboardItem,
   Menu,
   Notification,
   WebContents,
@@ -274,6 +275,7 @@ export class Cove {
       }
     }
     this.windows.delete(win.id);
+    this.themeAppearances.delete(win.id);
     if (win.mode === 'main' && ![...this.windows.values()].some((candidate) => candidate.mode === 'main')) {
       this.store.flush();
     }
@@ -296,14 +298,17 @@ export class Cove {
     let left = 0;
     let top = 0;
     if (win.mode === 'main') {
-      const open = settings.sidebarVisible || win.peeking;
-      left = open ? Math.max(240, settings.sidebarWidth) : 76;
-      top = 38;
+      // A peek floats over the page; only a pinned sidebar changes page geometry.
+      left = settings.sidebarVisible ? Math.max(260, settings.sidebarWidth) : 8;
+      top = settings.sidebarVisible ? 8 : 38;
     } else {
       top = 52;
     }
-    const area = { x: left, y: top, width: Math.max(0, width - left), height: Math.max(0, height - top) };
-    win.shell.setBounds({ x: 0, y: 0, width, height });
+    const inset = win.mode === 'main' ? 8 : 0;
+    const area = { x: left, y: top, width: Math.max(0, width - left - inset), height: Math.max(0, height - top - inset) };
+    const floating = win.mode === 'main' && !settings.sidebarVisible && win.peeking;
+    win.shell.setBounds({ x: 0, y: 0, width: floating ? Math.max(260, settings.sidebarWidth) : width, height });
+    win.win.contentView.addChildView(win.shell, 0);
     if (win.mode === 'peek' && win.peekView) {
       this.place(win.peekView, area);
       return;
@@ -341,6 +346,7 @@ export class Cove {
       }
     });
     for (let i = dividers; i < win.dividers.length; i += 1) win.dividers[i].setVisible(false);
+    if (floating) win.win.contentView.addChildView(win.shell);
     const theme = this.theme(win);
     win.win.setBackgroundColor(theme.bg);
   }
@@ -352,6 +358,7 @@ export class Cove {
       width: Math.max(0, Math.round(bounds.width)),
       height: Math.max(0, Math.round(bounds.height)),
     });
+    view.setBorderRadius(10);
     view.setVisible(true);
   }
 
@@ -593,14 +600,15 @@ export class Cove {
       const ask = new Set(['media', 'geolocation', 'notifications', 'clipboard-sanitized-write', 'pointerLock', 'fullscreen']);
       if (!ask.has(permission)) return callback(permission === 'clipboard-sanitized-write');
       const win = this.windowFromContents(wc) || this.focused();
-      void dialog
-        .showMessageBox(win?.win || BrowserWindow.getFocusedWindow() || undefined, {
-          type: 'question',
-          message: `${hostOf(origin) || 'This site'} wants to use ${permission}`,
-          buttons: ['Block', 'Allow'],
-          defaultId: 0,
-          cancelId: 0,
-        })
+      const parent = win?.win || BrowserWindow.getFocusedWindow();
+      const options: Electron.MessageBoxOptions = {
+        type: 'question',
+        message: `${hostOf(origin) || 'This site'} wants to use ${permission}`,
+        buttons: ['Block', 'Allow'],
+        defaultId: 0,
+        cancelId: 0,
+      };
+      void (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options))
         .then((choice) => {
           const allow = choice.response === 1;
           const record = this.store.library.settings.permissions[origin] || {};
@@ -679,6 +687,8 @@ export class Cove {
         return this.leafWeb(win)?.navigationHistory.goBack();
       case 'forward':
         return this.leafWeb(win)?.navigationHistory.goForward();
+      case 'stop':
+        return this.leafWeb(win)?.stop();
       case 'reload':
         return action.hard ? this.leafWeb(win)?.reloadIgnoringCache() : this.leafWeb(win)?.reload();
       case 'pin':
@@ -824,6 +834,7 @@ export class Cove {
       case 'open-command':
         return this.openCommand(win, action.mode || 'new');
       case 'close-overlay':
+        this.editSpaceId = null;
         this.closeCommand(win);
         this.closeFind(win);
         this.hideOverlay(win.site);
@@ -1407,8 +1418,14 @@ export class Cove {
 
   private reorder(id: string, beforeId: string | null, parentId: string | null, section: Section): void {
     const item = this.item(id);
-    if (!item) return;
+    if (!item || beforeId === id) return;
     const parent = parentId ? this.item(parentId) : null;
+    // A folder cannot become its own descendant.
+    let ancestor = parent;
+    while (ancestor) {
+      if (ancestor.id === item.id) return;
+      ancestor = ancestor.parentId ? this.item(ancestor.parentId) : null;
+    }
     this.detach(item);
     item.parentId = parent?.kind === 'folder' ? parent.id : null;
     item.section = parent?.kind === 'folder' ? parent.section : section;
@@ -1467,7 +1484,8 @@ export class Cove {
       incoming.section = split.section;
       incoming.spaceId = split.spaceId;
       split.children.push(incoming.id);
-      split.splitWeights = split.children.map(() => 1 / split.children.length);
+      const count = split.children.length;
+      split.splitWeights = split.children.map(() => 1 / count);
       if (orientation) split.splitOrientation = orientation;
     }
     this.splitFocus.set(split.id, incoming.id);
@@ -1697,14 +1715,14 @@ export class Cove {
   private openCommand(win: Win, mode: 'new' | 'edit'): void {
     const overlay = this.overlay(win, 'command', 680, 460);
     const leaf = this.leaf(win);
-    const payload = { mode, query: mode === 'edit' ? leaf?.url || '' : '', select: mode === 'edit' };
+    const payload = { mode, query: mode === 'edit' ? leaf?.url || '' : '', select: mode === 'edit', appearance: this.theme(win).appearance };
     const bounds = win.win.getBounds();
-    const side = this.store.library.settings.sidebarVisible ? Math.max(240, this.store.library.settings.sidebarWidth) : 76;
-    const width = 560;
-    const height = 360;
+    const side = win.mode === 'main' && this.store.library.settings.sidebarVisible ? Math.max(260, this.store.library.settings.sidebarWidth) : 8;
+    const width = Math.min(620, bounds.width - side - 48);
+    const height = Math.min(420, bounds.height - 100);
     overlay.setBounds({
       x: Math.round(bounds.x + side + (bounds.width - side - width) / 2),
-      y: bounds.y + 150,
+      y: bounds.y + Math.round(Math.max(56, (bounds.height - height) * 0.32)),
       width,
       height,
     });
@@ -1834,7 +1852,7 @@ export class Cove {
         if (wc.debugger.isAttached()) wc.debugger.detach();
       }
     }
-    clipboard.writeImage(image);
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })]);
     const file = join(app.getPath('pictures'), `Cove ${new Date().toISOString().replace(/[:.]/g, '-')}.png`);
     writeFileSync(file, image.toPNG());
     if (Notification.isSupported()) new Notification({ title: 'Captured', body: 'Saved to Pictures and copied.' }).show();
@@ -2501,6 +2519,14 @@ export class Cove {
         if (win.win.isDestroyed()) continue;
         const snap = this.snapshot(win);
         if (!win.shell.webContents.isDestroyed()) win.shell.webContents.send('cove:snapshot', snap);
+        if (this.themeAppearances.get(win.id) !== snap.theme.appearance) {
+          this.themeAppearances.set(win.id, snap.theme.appearance);
+          for (const live of this.views.values()) {
+            if (live.windowId === win.id && !live.view.webContents.isDestroyed() && live.view.webContents.getURL().startsWith('cove:')) {
+              live.view.webContents.send('cove:theme', snap.theme.appearance);
+            }
+          }
+        }
         unread += snap.today.filter((row) => row.unread).length;
       }
       app.setBadgeCount(unread);
@@ -2508,6 +2534,7 @@ export class Cove {
   }
 
   private refreshTimer: NodeJS.Timeout | null = null;
+  private themeAppearances = new Map<number, string>();
 
   private pollAudio(): void {
     const next = new Set<string>();

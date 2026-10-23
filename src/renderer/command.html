@@ -6,11 +6,15 @@
     <link rel="stylesheet" href="./command.css" />
   </head>
   <body>
-    <div class="panel">
-      <input id="query" placeholder="Search tabs, spaces, and actions" spellcheck="false" />
-      <div id="results"></div>
-      <footer>↑↓ select · enter open · ⌘enter new tab · ⌥enter Little Cove</footer>
-    </div>
+    <main class="panel" aria-label="Command bar">
+      <div class="query-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+        <input id="query" role="combobox" aria-label="Search or enter URL" aria-controls="results" aria-expanded="true" aria-autocomplete="list" placeholder="Search or Enter URL…" autocomplete="off" spellcheck="false" />
+        <kbd class="escape">esc</kbd>
+      </div>
+      <div id="results" role="listbox" aria-label="Suggestions"></div>
+      <footer><span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span><span><kbd>↵</kbd> to open <kbd>⌘ ↵</kbd> new tab</span></footer>
+    </main>
     <script src="./command.js"></script>
   </body>
 </html>

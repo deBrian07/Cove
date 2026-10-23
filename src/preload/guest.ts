@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 const page = {
   boot: () => ipcRenderer.invoke('cove:boot'),
+  onTheme: (cb: (appearance: 'light' | 'dark') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, appearance: 'light' | 'dark') => cb(appearance);
+    ipcRenderer.on('cove:theme', listener);
+    return () => ipcRenderer.removeListener('cove:theme', listener);
+  },
   act: (action: unknown) => ipcRenderer.invoke('cove:dispatch', action),
   library: (section: string, query: string, offset: number) => ipcRenderer.invoke('cove:library', section, query, offset),
 };

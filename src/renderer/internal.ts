@@ -6,6 +6,7 @@ declare global {
   interface Window {
     covePage: {
       boot(): Promise<Boot>;
+      onTheme(cb: (appearance: 'light' | 'dark') => void): () => void;
       act(action: Action): Promise<unknown>;
       library(section: string, query: string, offset: number): Promise<{ rows: Lib[]; total: number }>;
     };
@@ -36,6 +37,8 @@ interface Boot {
 }
 
 const app = document.querySelector('#app') as HTMLElement;
+
+window.covePage.onTheme((appearance) => document.body.classList.toggle('dark', appearance === 'dark'));
 
 window.covePage.boot().then(render).catch((error) => {
   app.textContent = error instanceof Error ? error.message : 'This page failed to load.';
@@ -80,21 +83,18 @@ function lead(text: string): HTMLElement {
 function newtab(boot: Boot): void {
   const stage = document.createElement('div');
   stage.className = 'stage';
-  const pageColor = boot.theme.appearance === 'dark' ? '#1a1a1c' : '#f4f4f5';
-  const ink = boot.theme.appearance === 'dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)';
-  stage.style.background = pageColor;
-  stage.style.color = ink;
+  stage.classList.add('newtab');
   document.title = 'New Tab';
   const hint = document.createElement('button');
   hint.className = 'action';
   hint.textContent = '⌘T';
   hint.style.background = 'transparent';
-  hint.style.color = ink;
+  hint.style.color = 'inherit';
   hint.style.fontSize = '28px';
   hint.addEventListener('click', () => window.covePage.act({ type: 'open-command', mode: 'new' }));
   stage.append(hint);
   app.replaceChildren(stage);
-  document.body.style.background = pageColor;
+
 }
 
 function welcome(boot: Boot): void {
