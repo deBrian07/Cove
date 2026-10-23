@@ -19,7 +19,7 @@ function mix(a: [number, number, number], b: [number, number, number], t: number
 export function themeFor(color: string, appearance: 'light' | 'dark'): Theme {
   const accent = hexToRgb(color || '#4C9AFF');
   if (appearance === 'dark') {
-    const bg = mix(accent, [22, 22, 26], 0.78);
+    const bg = mix(accent, [18, 18, 22], 0.46);
     return {
       bg: rgbToHex(...bg),
       fg: '#f4f4f6',
@@ -31,7 +31,7 @@ export function themeFor(color: string, appearance: 'light' | 'dark'): Theme {
       appearance,
     };
   }
-  const bg = mix(accent, [246, 243, 237], 0.8);
+  const bg = mix(accent, [255, 252, 248], 0.48);
   return {
     bg: rgbToHex(...bg),
     fg: '#1c1c1e',

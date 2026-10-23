@@ -15,8 +15,8 @@ input {
   border: 0;
   background: transparent;
   color: inherit;
-  font: 500 20px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
-  padding: 16px 18px 10px;
+  font: 520 26px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 20px 22px 12px;
   outline: none;
 }
 #results { flex: 1; overflow: auto; padding: 0 8px 8px; }
@@ -28,7 +28,7 @@ input {
   border-radius: 10px;
   cursor: pointer;
 }
-.result.selected { background: rgba(62, 190, 138, 0.22); }
+.result.selected { background: rgba(255, 255, 255, 0.12); }
 .title { font-size: 14px; }
 .sub { font-size: 12px; color: rgba(255, 255, 255, 0.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 footer { padding: 8px 16px 12px; font-size: 11px; color: rgba(255, 255, 255, 0.45); }

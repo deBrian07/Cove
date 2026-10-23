@@ -78,35 +78,23 @@ function lead(text: string): HTMLElement {
 }
 
 function newtab(boot: Boot): void {
-  const input = document.createElement('input');
-  input.className = 'search';
-  input.placeholder = `Search or enter an address in ${boot.info.spaceName}`;
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') window.covePage.act({ type: 'commit-omnibox', query: input.value, target: 'current' });
-  });
-  const favs = document.createElement('div');
-  favs.className = 'grid';
-  for (const fav of boot.info.favorites) {
-    const button = document.createElement('button');
-    button.className = 'tile';
-    button.textContent = fav.title;
-    button.addEventListener('click', () => window.covePage.act({ type: 'activate-tab', id: fav.id }));
-    favs.append(button);
-  }
-  const tops = document.createElement('div');
-  tops.className = 'grid';
-  for (const site of boot.info.topSites) {
-    const button = document.createElement('button');
-    button.className = 'tile';
-    button.textContent = site.title;
-    const small = document.createElement('small');
-    small.textContent = site.url;
-    button.append(small);
-    button.addEventListener('click', () => window.covePage.act({ type: 'commit-omnibox', query: site.url, target: 'current' }));
-    tops.append(button);
-  }
-  page(h1(boot.info.greeting), lead(boot.info.spaceName), input, favs, tops);
-  input.focus();
+  const stage = document.createElement('div');
+  stage.className = 'stage';
+  const pageColor = boot.theme.appearance === 'dark' ? '#1a1a1c' : '#f4f4f5';
+  const ink = boot.theme.appearance === 'dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.35)';
+  stage.style.background = pageColor;
+  stage.style.color = ink;
+  document.title = 'New Tab';
+  const hint = document.createElement('button');
+  hint.className = 'action';
+  hint.textContent = '⌘T';
+  hint.style.background = 'transparent';
+  hint.style.color = ink;
+  hint.style.fontSize = '28px';
+  hint.addEventListener('click', () => window.covePage.act({ type: 'open-command', mode: 'new' }));
+  stage.append(hint);
+  app.replaceChildren(stage);
+  document.body.style.background = pageColor;
 }
 
 function welcome(boot: Boot): void {
