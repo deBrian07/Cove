@@ -1,0 +1,17 @@
+{
+  "name": "cove",
+  "productName": "Cove",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A sidebar browser with spaces, a command bar, and the rest of the Arc-style workflow.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && electron ."
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
