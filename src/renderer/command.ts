@@ -64,10 +64,10 @@ function draw(): void {
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = result.title;
-    const sub = document.createElement('div');
-    sub.className = 'sub';
-    sub.textContent = result.subtitle;
-    row.append(title, sub);
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = result.kind === 'tab' ? 'Switch to Tab' : result.kind === 'search' ? 'Search' : result.kind === 'url' ? 'Open' : '';
+    row.append(title, hint);
     row.addEventListener('mouseenter', () => {
       if (selected === index) return;
       selected = index;

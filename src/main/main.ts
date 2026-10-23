@@ -80,6 +80,7 @@ if (locked) app.whenReady().then(async () => {
       void (async () => {
         if (process.env.COVE_IMPORT === '1') await cove?.run({ type: 'import-arc' });
         if (process.env.COVE_URL) await cove?.run({ type: 'commit-omnibox', query: process.env.COVE_URL, target: 'new' });
+        if (process.env.COVE_COMMAND === '1') await cove?.run({ type: 'open-command', mode: 'new' });
         else await cove?.run({ type: 'open-page', page: process.env.COVE_PAGE || 'newtab' });
       })();
     }, 500);

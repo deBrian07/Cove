@@ -15,8 +15,8 @@ input {
   border: 0;
   background: transparent;
   color: inherit;
-  font: 520 26px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
-  padding: 20px 22px 12px;
+  font: 400 15px/1.2 -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 14px 16px 8px;
   outline: none;
 }
 #results { flex: 1; overflow: auto; padding: 0 8px 8px; }
@@ -28,7 +28,9 @@ input {
   border-radius: 10px;
   cursor: pointer;
 }
-.result.selected { background: rgba(255, 255, 255, 0.12); }
+.result { flex-direction: row; align-items: center; justify-content: space-between; }
+.result.selected { background: #4d62f0; }
 .title { font-size: 14px; }
-.sub { font-size: 12px; color: rgba(255, 255, 255, 0.55); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { font-size: 12px; color: rgba(255, 255, 255, 0.72); }
+.hint { font-size: 12px; color: rgba(255, 255, 255, 0.72); flex: 0 0 auto; margin-left: 12px; }
 footer { padding: 8px 16px 12px; font-size: 11px; color: rgba(255, 255, 255, 0.45); }

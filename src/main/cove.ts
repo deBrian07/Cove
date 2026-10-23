@@ -297,7 +297,7 @@ export class Cove {
     if (win.mode === 'main') {
       const open = settings.sidebarVisible || win.peeking;
       left = open ? Math.max(240, settings.sidebarWidth) : 76;
-      top = 40;
+      top = 38;
     } else {
       top = 52;
     }
@@ -1697,7 +1697,15 @@ export class Cove {
     const leaf = this.leaf(win);
     const payload = { mode, query: mode === 'edit' ? leaf?.url || '' : '', select: mode === 'edit' };
     const bounds = win.win.getBounds();
-    overlay.setBounds({ x: Math.round(bounds.x + (bounds.width - 680) / 2), y: bounds.y + 120, width: 680, height: 460 });
+    const side = this.store.library.settings.sidebarVisible ? Math.max(240, this.store.library.settings.sidebarWidth) : 76;
+    const width = 560;
+    const height = 360;
+    overlay.setBounds({
+      x: Math.round(bounds.x + side + (bounds.width - side - width) / 2),
+      y: bounds.y + 150,
+      width,
+      height,
+    });
     const send = () => overlay.webContents.send('cove:command', payload);
     if (overlay.webContents.isLoading()) overlay.webContents.once('did-finish-load', () => { send(); overlay.show(); overlay.focus(); });
     else { send(); overlay.show(); overlay.focus(); }
