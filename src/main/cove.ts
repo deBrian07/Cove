@@ -21,7 +21,7 @@ import { greeting, themeFor } from '../shared/theme';
 import type { Action, DownloadRec, EaselDoc, Item, LibRow, Section, Settings, Snapshot, Space } from '../shared/types';
 import { clamp, hostMatches, hostOf, isInternalPage, isWebUrl, originOf, resolveQuery, safeHttpUrl, uid } from '../shared/url';
 import { isAdUrl } from './blocklist';
-import { importArc } from './importArc';
+import { importArc, readArcMembership } from './importArc';
 import { bindingMap, keyToken } from './keys';
 import { commandAction, queryCommands } from './search';
 import { Store } from './store';
@@ -78,6 +78,7 @@ export class Cove {
 
   start(): void {
     this.store.load();
+    this.hydrateMembership();
     mkdirSync(this.faviconDir, { recursive: true });
     mkdirSync(this.thumbDir, { recursive: true });
     this.ua = session.defaultSession.getUserAgent().replace(/\sElectron\/\S+/g, '').replace(/\sCove\/\S+/g, '');
@@ -92,6 +93,12 @@ export class Cove {
     this.ensureStart(first);
     this.layout(first);
     this.refresh();
+  }
+
+  run(action: Action): Promise<unknown> {
+    const win = this.focused();
+    if (!win) return Promise.resolve(null);
+    return this.dispatch(action, win);
   }
 
   focused(): Win | null {
@@ -854,6 +861,9 @@ export class Cove {
         if (item) item.live = !item.live;
         return null;
       }
+      case 'update-membership':
+        Object.assign(this.store.library.membership, action.patch);
+        return this.store.library.membership;
       case 'update-settings':
         Object.assign(this.store.library.settings, action.patch);
         if (action.patch.littleOnTop != null) this.applyLittleOnTop();
@@ -1006,8 +1016,12 @@ export class Cove {
         if (!leaf) return null;
         this.allowHttp.add(leaf.id);
         const errorUrl = this.leafWeb(win)?.getURL() || '';
-        const original = new URL(errorUrl).searchParams.get('url');
-        if (original) this.navigate(win, leaf, original);
+        try {
+          const original = new URL(errorUrl).searchParams.get('url');
+          if (original) this.navigate(win, leaf, original);
+        } catch {
+          /* the error page did not include a url */
+        }
         return null;
       }
       case 'library-query':
@@ -2417,7 +2431,16 @@ export class Cove {
       profiles: this.store.library.profiles,
       spaces: this.store.library.spaces,
       commands: commandList(this.store.library.settings.keybindings),
+      membership: this.store.library.membership,
     };
+  }
+
+  private hydrateMembership(): void {
+    if (this.store.library.membership.name) return;
+    const imported = readArcMembership(homedir());
+    if (!imported) return;
+    this.store.library.membership = imported;
+    this.store.touch();
   }
 
   private libraryRows(section: string, query: string, offset: number): { rows: LibRow[]; total: number } {
