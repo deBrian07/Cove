@@ -1,4 +1,4 @@
-import { protocol } from 'electron';
+import { protocol, session, type Session } from 'electron';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve, sep } from 'path';
 
@@ -19,9 +19,10 @@ export function registerCoveScheme(): void {
 
 const PAGES = new Set(['/newtab', '/settings', '/library', '/welcome', '/error', '/passwords', '/membership']);
 
-export function handleCoveProtocol(distDir: string, faviconDir: string): void {
+export function handleCoveProtocol(distDir: string, faviconDir: string, ses: Session = session.defaultSession): void {
   const root = resolve(distDir);
-  protocol.handle('cove', (request) => {
+  try {
+    ses.protocol.handle('cove', (request) => {
     let url: URL;
     try {
       url = new URL(request.url);
@@ -42,7 +43,10 @@ export function handleCoveProtocol(distDir: string, faviconDir: string): void {
     const full = resolve(root, fileName);
     if (!full.startsWith(root + sep) || !existsSync(full)) return new Response('missing', { status: 404 });
     return new Response(readFileSync(full), { headers: { 'content-type': mime(full) } });
-  });
+    });
+  } catch {
+    /* this session already serves cove:// */
+  }
 }
 
 function mime(file: string): string {

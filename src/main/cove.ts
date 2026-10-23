@@ -23,6 +23,7 @@ import type { Action, DownloadRec, EaselDoc, Item, LibRow, Section, Settings, Sn
 import { clamp, hostMatches, hostOf, isInternalPage, isWebUrl, originOf, resolveQuery, safeHttpUrl, uid } from '../shared/url';
 import { isAdUrl } from './blocklist';
 import { importArc, readArcMembership } from './importArc';
+import { handleCoveProtocol } from './protocol';
 import { bindingMap, keyToken } from './keys';
 import { commandAction, queryCommands } from './search';
 import { Store } from './store';
@@ -554,6 +555,7 @@ export class Cove {
     if (!partition || this.sessionsReady.has(partition)) return;
     this.sessionsReady.add(partition);
     const ses = session.fromPartition(partition);
+    handleCoveProtocol(__dirname, this.faviconDir, ses);
     ses.setUserAgent(this.ua);
     try {
       ses.setSpellCheckerLanguages(['en-US']);
@@ -1767,15 +1769,15 @@ export class Cove {
       width,
       height,
       frame: false,
-      transparent: true,
+      transparent: name !== 'command',
       show: false,
       resizable: false,
       minimizable: false,
       maximizable: false,
       skipTaskbar: true,
-      vibrancy: 'popover',
-      visualEffectState: 'active',
-      backgroundColor: '#00000000',
+      roundedCorners: true,
+      hasShadow: true,
+      backgroundColor: name === 'command' ? '#2c2c2e' : '#00000000',
       webPreferences: {
         preload: join(__dirname, 'ui.js'),
         contextIsolation: true,
