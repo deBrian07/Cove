@@ -1,0 +1,17 @@
+html, body { margin: 0; background: transparent; color: #f4f4f6; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+body { padding: 8px; }
+.panel {
+  background: rgba(32, 32, 34, 0.94);
+  border-radius: 14px;
+  outline: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 12px;
+}
+input, button { font: inherit; color: inherit; }
+input { width: 100%; box-sizing: border-box; border: 0; border-radius: 8px; background: rgba(255,255,255,0.08); padding: 8px 10px; }
+button { border: 0; border-radius: 8px; background: rgba(255,255,255,0.1); padding: 6px 10px; cursor: pointer; }
+.row { display: flex; gap: 8px; align-items: center; }
+.list { margin-top: 8px; max-height: 280px; overflow: auto; }
+.item { padding: 8px; border-radius: 8px; }
+.item.on { background: rgba(62, 190, 138, 0.28); }
+.muted { color: rgba(255,255,255,0.55); font-size: 12px; }
+img.preview { width: 100%; border-radius: 8px; margin-top: 8px; }
