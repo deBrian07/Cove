@@ -146,9 +146,20 @@ export class Cove {
     if (!win) return null;
     if (sender && !this.senderAllowed(sender, action)) return { error: 'blocked' };
     try {
+      // A native command window does not necessarily lose focus when a tab
+      // navigates. Dismiss accepted palette actions explicitly, before applying
+      // them, so URLs, searches, tab switches and commands share one path.
+      const fromCommand = !!sender && !!win.command && !win.command.isDestroyed()
+        && sender.id === win.command.webContents.id && action.type !== 'open-command';
+      if (fromCommand) this.closeCommand(win);
       const result = await this.apply(action, win, sender);
       this.store.touch();
       for (const open of this.windows.values()) this.layout(open);
+      if (fromCommand && (action.type === 'activate-tab' || action.type === 'activate-space'
+        || action.type === 'restore-tab' || action.type === 'open-page'
+        || (action.type === 'commit-omnibox' && action.target !== 'little'))) {
+        this.leafWeb(win)?.focus();
+      }
       this.refresh();
       return result ?? { ok: true };
     } catch (error) {

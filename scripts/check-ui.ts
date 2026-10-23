@@ -118,7 +118,41 @@ app.whenReady().then(async () => {
     assert.equal(await command.webContents.executeJavaScript('document.querySelector("#query").getAttribute("aria-activedescendant")'), 'result-1');
     await pause(200);
     if (process.env.COVE_UI_SCREENSHOTS) writeFileSync('/tmp/cove-command.png', (await command.webContents.capturePage()).toPNG());
-    await cove.run({ type: 'close-overlay' });
+    // Selecting a tab must dismiss the native palette, not rely on blur.
+    await command.webContents.executeJavaScript('document.querySelector("#query").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+    await until(async () => !command.isVisible(), 'palette closes after tab selection');
+    const submit = async (target: 'new' | 'edit', method: 'keyboard' | 'mouse') => {
+      await cove.run({ type: 'open-command', mode: target });
+      const url = `${testUrl}?palette=${target}`;
+      await until(() => command.webContents.executeJavaScript('document.activeElement.id === "query"'), 'reopened palette focus');
+      await command.webContents.executeJavaScript(`(() => {
+        const input = document.querySelector('#query'); input.value = ${JSON.stringify(url)};
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await until(() => command.webContents.executeJavaScript(`document.querySelector('.result .title')?.textContent === ${JSON.stringify(`Open ${url}`)}`), 'URL suggestion');
+      const before = (await snapshot()).activeTabId;
+      await command.webContents.executeJavaScript(method === 'keyboard'
+        ? 'document.querySelector("#query").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))'
+        : 'document.querySelector(".result").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }))');
+      await until(async () => !command.isVisible(), `palette closes after ${target} ${method}`);
+      await until(async () => (await snapshot()).url === url, 'submitted URL navigates');
+      if (target === 'edit') assert.equal((await snapshot()).activeTabId, before);
+      else assert.notEqual((await snapshot()).activeTabId, before);
+      const active = win.win.contentView.children.find((view) => view !== win.shell && view instanceof WebContentsView && view.getVisible()) as WebContentsView;
+      await until(async () => active.webContents.isFocused(), 'page regains keyboard focus');
+    };
+    await submit('new', 'keyboard');
+    await submit('edit', 'mouse');
+    // Enter before suggestions arrive uses the same dismissal path.
+    await cove.run({ type: 'open-command', mode: 'new' });
+    await until(() => command.webContents.executeJavaScript('document.activeElement.id === "query"'), 'raw query focus');
+    await command.webContents.executeJavaScript(`(() => {
+      const input = document.querySelector('#query'); input.value = 'cove://app/newtab?palette=raw';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    })()`);
+    await until(async () => !command.isVisible(), 'palette closes before suggestions arrive');
+    await until(async () => (await snapshot()).url === 'cove://app/newtab?palette=raw', 'raw query navigates');
     await cove.run({ type: 'activate-tab', id: second });
     await cove.run({ type: 'update-space', id: win.spaceId, appearance: 'dark' });
     await pause(250);
