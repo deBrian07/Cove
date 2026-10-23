@@ -1,4 +1,5 @@
 import {
+  BaseWindow,
   BrowserWindow,
   Menu,
   Notification,
@@ -28,7 +29,8 @@ import { Store } from './store';
 
 interface Win {
   id: number;
-  win: BrowserWindow;
+  win: BaseWindow;
+  shell: WebContentsView;
   mode: 'main' | 'little' | 'peek';
   incognito: boolean;
   partition: string;
@@ -102,9 +104,9 @@ export class Cove {
   }
 
   focused(): Win | null {
-    const current = BrowserWindow.getFocusedWindow();
+    const current = BaseWindow.getFocusedWindow();
     if (current) {
-      const found = this.windowFromContents(current.webContents);
+      const found = this.windows.get(current.id);
       if (found) return found;
     }
     return [...this.windows.values()].find((win) => win.mode === 'main') || null;
@@ -165,7 +167,7 @@ export class Cove {
     const incognito = !!opts?.incognito;
     const settings = this.store.library.settings;
     const bounds = mode === 'main' ? settings && this.store.library.ui.bounds : null;
-    const browser = new BrowserWindow({
+    const browser = new BaseWindow({
       width: mode === 'main' ? bounds?.width || 1280 : mode === 'little' ? 460 : 420,
       height: mode === 'main' ? bounds?.height || 840 : mode === 'little' ? 720 : 640,
       x: mode === 'main' ? bounds?.x : undefined,
@@ -175,10 +177,12 @@ export class Cove {
       show: false,
       title: incognito ? 'Cove Incognito' : 'Cove',
       titleBarStyle: 'hiddenInset',
-      trafficLightPosition: { x: mode === 'main' ? 20 : 14, y: mode === 'main' ? 20 : 16 },
-      backgroundColor: incognito ? '#2a2a2e' : '#26262a',
+      trafficLightPosition: { x: mode === 'main' ? 16 : 14, y: mode === 'main' ? 16 : 16 },
+      backgroundColor: '#ffffff',
       alwaysOnTop: mode === 'peek' || (mode === 'little' && settings.littleOnTop),
       parent: mode === 'peek' ? opts?.parent?.win : undefined,
+    });
+    const shell = new WebContentsView({
       webPreferences: {
         preload: join(__dirname, 'ui.js'),
         contextIsolation: true,
@@ -186,9 +190,11 @@ export class Cove {
         sandbox: true,
       },
     });
+    browser.contentView.addChildView(shell);
     const win: Win = {
       id: browser.id,
       win: browser,
+      shell,
       mode,
       incognito,
       partition: incognito ? `incognito-${uid()}` : '',
@@ -207,8 +213,8 @@ export class Cove {
     };
     this.windows.set(win.id, win);
     if (incognito) this.prepareSession(win.partition);
-    browser.loadURL('cove://app/shell.html');
-    this.bindKeys(browser.webContents, win);
+    shell.webContents.loadURL('cove://app/shell.html');
+    this.bindKeys(shell.webContents, win);
     browser.on('resize', () => this.layout(win));
     browser.on('enter-full-screen', () => this.layout(win));
     browser.on('leave-full-screen', () => this.layout(win));
@@ -218,7 +224,7 @@ export class Cove {
     });
     browser.on('close', () => this.persistBounds(win));
     browser.on('closed', () => this.onWindowClosed(win));
-    browser.once('ready-to-show', () => {
+    shell.webContents.once('did-finish-load', () => {
       if (!browser.isDestroyed()) {
         browser.show();
         this.layout(win);
@@ -290,11 +296,13 @@ export class Cove {
     let top = 0;
     if (win.mode === 'main') {
       const open = settings.sidebarVisible || win.peeking;
-      left = open ? 68 + settings.sidebarWidth : 8;
+      left = open ? Math.max(240, settings.sidebarWidth) : 76;
+      top = 40;
     } else {
       top = 52;
     }
     const area = { x: left, y: top, width: Math.max(0, width - left), height: Math.max(0, height - top) };
+    win.shell.setBounds({ x: 0, y: 0, width, height });
     if (win.mode === 'peek' && win.peekView) {
       this.place(win.peekView, area);
       return;
@@ -580,6 +588,8 @@ export class Cove {
       const saved = this.store.library.settings.permissions[origin]?.[permission];
       if (saved === 'allow') return callback(true);
       if (saved === 'deny') return callback(false);
+      const ask = new Set(['media', 'geolocation', 'notifications', 'clipboard-sanitized-write', 'pointerLock', 'fullscreen']);
+      if (!ask.has(permission)) return callback(permission === 'clipboard-sanitized-write');
       const win = this.windowFromContents(wc) || this.focused();
       void dialog
         .showMessageBox(win?.win || BrowserWindow.getFocusedWindow() || undefined, {
@@ -664,9 +674,9 @@ export class Cove {
       case 'commit-omnibox':
         return this.commitOmnibox(win, action.query, action.target, sender);
       case 'back':
-        return this.leafWeb(win)?.goBack();
+        return this.leafWeb(win)?.navigationHistory.goBack();
       case 'forward':
-        return this.leafWeb(win)?.goForward();
+        return this.leafWeb(win)?.navigationHistory.goForward();
       case 'reload':
         return action.hard ? this.leafWeb(win)?.reloadIgnoringCache() : this.leafWeb(win)?.reload();
       case 'pin':
@@ -807,7 +817,7 @@ export class Cove {
         if (!this.store.library.settings.sidebarVisible) win.peeking = action.on;
         return null;
       case 'set-sidebar-width':
-        this.store.library.settings.sidebarWidth = clamp(action.width, 180, 420);
+        this.store.library.settings.sidebarWidth = clamp(action.width, 260, 420);
         return null;
       case 'open-command':
         return this.openCommand(win, action.mode || 'new');
@@ -1047,6 +1057,9 @@ export class Cove {
   }
 
   private windowFromContents(wc: WebContents): Win | null {
+    for (const candidate of this.windows.values()) {
+      if (!candidate.shell.webContents.isDestroyed() && candidate.shell.webContents.id === wc.id) return candidate;
+    }
     const host = BrowserWindow.fromWebContents(wc);
     if (host) {
       const direct = this.windows.get(host.id);
@@ -1718,7 +1731,7 @@ export class Cove {
     const leaf = this.leaf(win);
     const overlay = this.overlay(win, 'site', 320, 420);
     const bounds = win.win.getContentBounds();
-    const left = 68 + this.store.library.settings.sidebarWidth;
+    const left = 54 + this.store.library.settings.sidebarWidth;
     overlay.setBounds({ x: bounds.x + left + 12, y: bounds.y + 12, width: 320, height: 420 });
     const origin = originOf(leaf?.url || '');
     const payload = {
@@ -1847,6 +1860,9 @@ export class Cove {
       const data = importArc(homedir());
       this.mergeImport(data);
       this.store.library.settings.didOnboard = true;
+      const first = this.spaces()[0];
+      if (first && !this.space(win.spaceId)) this.activateSpace(win, first.id);
+      if (process.env.COVE_SMOKE) return data.report;
       await dialog.showMessageBox(win.win, {
         message: 'Imported from Arc',
         detail: `${data.report.spaces} spaces, ${data.report.pinned} pinned tabs, ${data.report.favorites} favorites, ${data.report.today} today tabs, ${data.report.archive} archived, ${data.report.history} history entries. Cookies stay in Arc, so sites will ask you to sign in again. Export passwords from Arc and import the CSV before December 22.`,
@@ -2257,8 +2273,8 @@ export class Cove {
       );
     }
     template.push(
-      { label: 'Back', enabled: wc.canGoBack(), click: () => wc.goBack() },
-      { label: 'Forward', enabled: wc.canGoForward(), click: () => wc.goForward() },
+      { label: 'Back', enabled: wc.navigationHistory.canGoBack(), click: () => wc.navigationHistory.goBack() },
+      { label: 'Forward', enabled: wc.navigationHistory.canGoForward(), click: () => wc.navigationHistory.goForward() },
       { label: 'Reload', click: () => wc.reload() },
       { type: 'separator' },
       { label: 'Copy', enabled: params.editFlags.canCopy, role: 'copy' },
@@ -2337,8 +2353,8 @@ export class Cove {
       sidebarWidth: this.store.library.settings.sidebarWidth,
       theme,
       loading: !!(leaf && this.loading.has(leaf.id)),
-      canBack: !!wc && !wc.isDestroyed() && wc.canGoBack(),
-      canForward: !!wc && !wc.isDestroyed() && wc.canGoForward(),
+      canBack: !!wc && !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
+      canForward: !!wc && !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
       downloads: this.store.library.downloads.filter((entry) => entry.onShelf).slice(0, 4),
       media: this.mediaState(win),
       title: leaf?.customTitle || leaf?.title || '',
@@ -2474,7 +2490,7 @@ export class Cove {
       for (const win of this.windows.values()) {
         if (win.win.isDestroyed()) continue;
         const snap = this.snapshot(win);
-        win.win.webContents.send('cove:snapshot', snap);
+        if (!win.shell.webContents.isDestroyed()) win.shell.webContents.send('cove:snapshot', snap);
         unread += snap.today.filter((row) => row.unread).length;
       }
       app.setBadgeCount(unread);

@@ -17,7 +17,7 @@ export function defaultSettings(): Settings {
   return {
     searchEngine: 'google',
     archiveAfterHours: 12,
-    sidebarWidth: 232,
+    sidebarWidth: 300,
     sidebarVisible: true,
     openExternalIn: 'little',
     adBlock: true,
@@ -52,7 +52,7 @@ export function blankLibrary(): Library {
     name: 'Personal',
     icon: '🏡',
     color: SPACE_COLORS[0],
-    appearance: 'auto' as const,
+    appearance: 'light' as const,
     profileId: profile.id,
     order: 0,
     pinnedCollapsed: false,

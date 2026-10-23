@@ -1,5 +1,5 @@
-import { app, BrowserWindow, Menu, type MenuItemConstructorOptions } from 'electron';
-import { writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { app, BaseWindow, Menu, type MenuItemConstructorOptions } from 'electron';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import type { Action } from '../shared/types';
@@ -77,16 +77,26 @@ if (locked) app.whenReady().then(async () => {
 
   if (process.env.COVE_SMOKE === 'ui') {
     setTimeout(() => {
-      void cove?.run({ type: 'open-page', page: process.env.COVE_PAGE || 'membership' });
-    }, 400);
-    setTimeout(async () => {
-      const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
+      void (async () => {
+        if (process.env.COVE_IMPORT === '1') await cove?.run({ type: 'import-arc' });
+        if (process.env.COVE_URL) await cove?.run({ type: 'commit-omnibox', query: process.env.COVE_URL, target: 'new' });
+        else await cove?.run({ type: 'open-page', page: process.env.COVE_PAGE || 'newtab' });
+      })();
+    }, 500);
+    setTimeout(() => {
+      const win = BaseWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
+      const shot = '/tmp/cove-smoke.png';
       if (win) {
-        const image = await win.capturePage();
-        writeFileSync(join(tmpdir(), 'cove-smoke.png'), image.toPNG());
+        const id = win.getMediaSourceId().split(':')[1];
+        try {
+          execFileSync('screencapture', ['-x', '-o', '-l', id, shot]);
+          console.log('wrote', shot, id);
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : 'screenshot failed');
+        }
       }
       app.exit(0);
-    }, 2200);
+    }, 6000);
   }
 });
 
