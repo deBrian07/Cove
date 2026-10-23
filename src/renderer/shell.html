@@ -6,20 +6,17 @@
     <link rel="stylesheet" href="./shell.css" />
   </head>
   <body>
-    <div class="chrome" id="chrome">
-      <nav class="rail" id="rail"></nav>
-      <section class="side" id="side">
-        <div class="nav" id="nav"></div>
-        <div class="favs" id="favs"></div>
-        <div class="list" id="list"></div>
-        <div class="shelf" id="shelf"></div>
-        <button class="plus" id="plus" type="button" title="New tab">+</button>
-        <div class="resize" id="resize"></div>
-      </section>
-    </div>
-    <header class="mini" id="mini" hidden></header>
-    <div class="edge" id="edge"></div>
-    <div class="editor" id="editor" hidden></div>
+    <aside id="sidebar">
+      <button id="toggle" type="button" title="Hide sidebar">‹</button>
+      <div id="essentials"></div>
+      <div id="heading"></div>
+      <div id="list"></div>
+      <div id="foot"></div>
+      <div id="resize"></div>
+    </aside>
+    <header id="toolbar"></header>
+    <header id="mini" hidden></header>
+    <div id="editor" hidden></div>
     <script src="./shell.js"></script>
   </body>
 </html>
