@@ -7,7 +7,7 @@
   --line: rgba(29, 33, 24, 0.12);
   --accent: #8a9a62;
   --side: 300px;
-  --bar: 40px;
+  --bar: 38px;
   color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
 }
@@ -29,16 +29,39 @@ body.mini-mode { grid-template-columns: 1fr; grid-template-rows: 52px 1fr; }
 body.mini-mode #sidebar, body.mini-mode #toolbar { display: none; }
 body.mini-mode #mini { display: flex; }
 
+#topbar {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 78px;
+  -webkit-app-region: drag;
+}
+#topbar button { -webkit-app-region: no-drag; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+#topbar button:hover { background: var(--hover); color: var(--fg); }
+#topbar button:disabled { opacity: 0.3; }
 #sidebar {
-  grid-row: 1 / span 2;
+  grid-row: 2;
   grid-column: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  padding: 46px 10px 8px;
+  padding: 4px 10px 8px;
   position: relative;
   -webkit-app-region: drag;
+}
+#search {
+  height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  text-align: left;
+  padding: 0 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  cursor: text;
+  -webkit-app-region: no-drag;
 }
 #sidebar button, #sidebar input, #list, #essentials, #foot, #heading { -webkit-app-region: no-drag; }
 #toggle {
@@ -56,39 +79,38 @@ body.mini-mode #mini { display: flex; }
 body.collapsed #toggle { right: 50%; transform: translateX(50%); top: 46px; }
 
 #essentials {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  -webkit-app-region: no-drag;
 }
-body.collapsed #essentials { display: none; }
+body.collapsed #essentials, body.collapsed #search, body.collapsed #heading { display: none; }
 .essential {
-  height: 54px;
-  border-radius: 14px;
-  background: color-mix(in srgb, white 28%, transparent);
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
   display: grid;
   place-items: center;
   cursor: pointer;
 }
-.essential.active { background: color-mix(in srgb, white 55%, transparent); }
-.essential:hover { background: color-mix(in srgb, white 42%, transparent); }
+.essential.active, .essential:hover { background: color-mix(in srgb, var(--fg) 16%, transparent); }
 .essential img { width: 22px; height: 22px; object-fit: contain; }
 .glyph { font-size: 16px; font-weight: 650; }
 
 #heading {
   display: flex;
   align-items: center;
-  height: 32px;
-  padding: 0 6px;
-  margin-bottom: 2px;
+  height: 28px;
+  padding: 0 8px;
 }
-body.collapsed #heading { display: none; }
 .space-name {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
   cursor: pointer;
   min-width: 0;
 }
@@ -127,7 +149,9 @@ body.collapsed #heading { display: none; }
 .rename { flex: 1; height: 22px; border-radius: 6px; background: white; padding: 0 6px; outline: 1px solid var(--accent); }
 .folder-mark { width: 18px; text-align: center; color: var(--muted); }
 
-#foot { margin-top: auto; padding-top: 6px; }
+#foot { margin-top: auto; padding-top: 6px; display: flex; align-items: center; gap: 8px; }
+.archived { width: 28px; height: 28px; border-radius: 8px; color: var(--muted); cursor: pointer; }
+.spaces { margin-left: auto; }
 .archived {
   display: flex;
   align-items: center;
@@ -171,43 +195,6 @@ body.collapsed #sidebar { padding-left: 0; padding-right: 0; align-items: center
 }
 body.collapsed #resize { display: none; }
 
-#toolbar {
-  grid-column: 2;
-  grid-row: 1;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px 0 4px;
-  background: color-mix(in srgb, white 82%, var(--bg));
-  color: #1c1c1e;
-  -webkit-app-region: drag;
-}
-body[data-appearance="dark"] #toolbar {
-  background: #1c1c1e;
-  color: #f4f4f6;
-}
-#toolbar button, #toolbar .url { -webkit-app-region: no-drag; }
-#toolbar button {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
-  cursor: pointer;
-}
-#toolbar button:hover { background: rgba(0, 0, 0, 0.06); }
-body[data-appearance="dark"] #toolbar button:hover { background: rgba(255, 255, 255, 0.08); }
-#toolbar button:disabled { opacity: 0.35; }
-.url {
-  flex: 1;
-  height: 26px;
-  margin: 0 6px;
-  border-radius: 8px;
-  text-align: center;
-  font-size: 13px;
-  cursor: text;
-  color: inherit;
-  opacity: 0.8;
-}
-.url:hover { background: rgba(0, 0, 0, 0.05); }
 
 #mini {
   display: none;

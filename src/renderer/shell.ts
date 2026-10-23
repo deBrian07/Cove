@@ -17,11 +17,11 @@ const essentials = document.querySelector('#essentials') as HTMLElement;
 const heading = document.querySelector('#heading') as HTMLElement;
 const list = document.querySelector('#list') as HTMLElement;
 const foot = document.querySelector('#foot') as HTMLElement;
-const toolbar = document.querySelector('#toolbar') as HTMLElement;
+const topbar = document.querySelector('#topbar') as HTMLElement;
+const search = document.querySelector('#search') as HTMLButtonElement;
 const mini = document.querySelector('#mini') as HTMLElement;
 const editor = document.querySelector('#editor') as HTMLElement;
 const resize = document.querySelector('#resize') as HTMLElement;
-const toggle = document.querySelector('#toggle') as HTMLButtonElement;
 
 let snap: Snapshot | null = null;
 let editing = '';
@@ -30,7 +30,7 @@ let lastSound = -1;
 let dragId = '';
 let painted = '';
 
-toggle.addEventListener('click', () => window.cove.dispatch({ type: 'toggle-sidebar' }));
+search.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: 'new' }));
 resize.addEventListener('mousedown', (event) => {
   if (!snap) return;
   const startX = event.screenX;
@@ -63,7 +63,7 @@ function paint(next: Snapshot): void {
     renderHeading();
     renderList();
     renderFoot();
-    renderToolbar();
+    renderTopbar();
     renderMini();
     renderEditor();
   }
@@ -107,11 +107,7 @@ function renderHeading(): void {
   label.textContent = space?.name || 'Space';
   name.append(glyph, label);
   if (space) name.addEventListener('click', () => window.cove.dispatch({ type: 'menu-space', id: space.id }));
-  const clear = document.createElement('button');
-  clear.className = 'clear';
-  clear.textContent = 'Clear';
-  clear.addEventListener('click', () => window.cove.dispatch({ type: 'clear-today' }));
-  heading.append(name, clear);
+  heading.append(name);
 }
 
 function renderList(): void {
@@ -132,7 +128,8 @@ function renderFoot(): void {
   if (!document.body.classList.contains('collapsed')) {
     const archived = document.createElement('button');
     archived.className = 'archived';
-    archived.append(textGlyph('◷'), text('Archived'));
+    archived.textContent = '◷';
+    archived.title = 'Archived';
     archived.addEventListener('click', () => window.cove.dispatch({ type: 'open-page', page: 'library' }));
     foot.append(archived);
   }
@@ -163,25 +160,17 @@ function renderFoot(): void {
   foot.append(spaces);
 }
 
-function renderToolbar(): void {
+function renderTopbar(): void {
   if (!snap || snap.mode !== 'main') {
-    toolbar.replaceChildren();
+    topbar.replaceChildren();
     return;
   }
-  toolbar.replaceChildren();
-  toolbar.append(
+  topbar.replaceChildren();
+  topbar.append(
     tool('←', 'Back', () => window.cove.dispatch({ type: 'back' }), !snap.canBack),
     tool('→', 'Forward', () => window.cove.dispatch({ type: 'forward' }), !snap.canForward),
     tool('↻', 'Reload', () => window.cove.dispatch({ type: 'reload' })),
   );
-  const url = document.createElement('button');
-  url.className = 'url';
-  url.textContent = snap.host && snap.host !== 'app' ? snap.host : 'Search or Enter URL';
-  url.title = snap.url;
-  url.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: 'edit' }));
-  const star = tool('☆', 'Favorite', () => window.cove.dispatch({ type: 'favorite' }));
-  const more = tool('•••', 'Site', () => window.cove.dispatch({ type: 'open-site-panel' }));
-  toolbar.append(url, star, more);
 }
 
 function renderMini(): void {
