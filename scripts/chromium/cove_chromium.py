@@ -21,9 +21,11 @@ REPO = Path(__file__).resolve().parents[2]
 GIB = 1024 ** 3
 # Local guardrails, not upstream minimum specifications. Leave room for downloads,
 # object files and linking instead of exhausting the user's system volume.
-SPACE_GIB = {"bootstrap": 100, "sync": 50, "patch": 2, "gen": 20, "build": 50, "run": 2}
+SPACE_GIB = {"mount": 2, "smoke": 2, "bootstrap": 100, "sync": 50, "patch": 2, "gen": 20, "build": 50, "run": 2}
 MARKER = ".cove-chromium-checkout.json"
 SHA = re.compile(r"[0-9a-f]{40}")
+LOCAL_VOLUME = Path("/Volumes/CoveBuild")
+BACKING_IMAGES: dict[Path, Path] = {}
 
 
 class BuildError(RuntimeError):
@@ -70,6 +72,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise BuildError(f"Manifest {key} does not exist: {manifest[key]}")
     if not isinstance(manifest.get("minimum_free_gib", 100), int) or manifest.get("minimum_free_gib", 100) < 100:
         raise BuildError("Manifest minimum_free_gib must be an integer of at least 100")
+    if not isinstance(manifest.get("app_name", "Chromium"), str) or not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9_-]*", manifest.get("app_name", "Chromium")):
+        raise BuildError("Manifest app_name must be a simple application/executable name")
     return manifest
 
 
@@ -85,6 +90,48 @@ def checkout_path(value: str | None) -> Path:
     if any(char.isspace() for char in str(path)):
         raise BuildError("Chromium checkout paths cannot contain whitespace")
     return path
+
+
+def mounted_images() -> list[dict[str, Any]]:
+    result = run(["hdiutil", "info", "-plist"], capture=True)
+    try:
+        return plistlib.loads(result.stdout.encode("utf-8")).get("images", [])
+    except (ValueError, plistlib.InvalidFileException, AttributeError) as error:
+        raise BuildError("Cannot inspect existing disk-image mounts") from error
+
+
+def local_mount(image: Path) -> Path | None:
+    for attached in mounted_images():
+        if Path(attached.get("image-path", "")).resolve() == image.resolve():
+            for entity in attached.get("system-entities", []):
+                if entity.get("mount-point"):
+                    return Path(entity["mount-point"])
+    return None
+
+
+def resolve_checkout(value: str | None) -> Path:
+    # An explicit override is intentional; defaults always prefer the user's copy.
+    if value:
+        return checkout_path(value)
+    image = REPO / "CoveChromium" / "CoveBuild.sparsebundle"
+    if image.is_dir():
+        attached = local_mount(image)
+        if attached and attached != LOCAL_VOLUME:
+            raise BuildError(f"The local image is mounted at {attached}; expected {LOCAL_VOLUME} to reuse out/Cove. "
+                             "No volumes were detached or moved.")
+        if not attached:
+            if LOCAL_VOLUME.exists():
+                raise BuildError(f"{LOCAL_VOLUME} is already occupied. Refusing to replace it or use another build image.")
+            run(["hdiutil", "attach", "-nobrowse", "-mountpoint", str(LOCAL_VOLUME), str(image)], capture=True)
+            if local_mount(image) != LOCAL_VOLUME:
+                raise BuildError("The copied Chromium image did not mount at the expected build path")
+        if not LOCAL_VOLUME.is_mount():
+            raise BuildError(f"The local Chromium image is not mounted: {LOCAL_VOLUME}")
+        root = checkout_path(str(LOCAL_VOLUME / "checkout"))
+        BACKING_IMAGES[root] = image.resolve()
+        print(f"Using copied native build: {image}")
+        return root
+    return checkout_path(os.environ.get("COVE_CHROMIUM_ROOT"))
 
 
 def nearest_existing(path: Path) -> Path:
@@ -105,9 +152,21 @@ def nearest_existing(path: Path) -> Path:
 def space_report(root: Path, stage: str, minimum_free_gib: int = 100) -> dict[str, Any]:
     anchor = nearest_existing(root)
     free = shutil.disk_usage(anchor).free
+    physical = None
+    image = BACKING_IMAGES.get(root)
+    if image:
+        physical = shutil.disk_usage(image.parent).free
+        free = min(free, physical)
     required_gib = minimum_free_gib if stage == "bootstrap" else SPACE_GIB[stage]
+    # Existing component builds need room for relinking, not a second checkout.
+    out = source(root) / "out" / "Cove"
+    cached_build = (out / "build.ninja").is_file() and (out / "Cove.app/Contents/MacOS/Cove").is_file()
+    if stage == "build" and cached_build:
+        required_gib = 20
     required = required_gib * GIB
     return {"volume_path": str(anchor), "free_bytes": free, "free_gib": round(free / GIB, 2),
+            "backing_image": str(image) if image else None,
+            "backing_free_gib": round(physical / GIB, 2) if physical is not None else None,
             "required_gib": required_gib, "stage": stage, "ok": free >= required}
 
 
@@ -179,7 +238,24 @@ def environment(root: Path) -> dict[str, str]:
     # Keep the pinned depot_tools checkout reproducible rather than self-updating.
     env["DEPOT_TOOLS_UPDATE"] = "0"
     env["DEPOT_TOOLS_METRICS"] = "0"
+    env["PYTHONUNBUFFERED"] = "1"
     return env
+
+
+def require_tools_revision(root: Path, manifest: dict[str, Any]) -> None:
+    head = run(["git", "rev-parse", "HEAD"], cwd=root / "depot_tools", capture=True)
+    if head.stdout.strip() != manifest["depot_tools_revision"]:
+        raise BuildError("depot_tools HEAD differs from the pinned revision")
+
+
+def ensure_tools(root: Path, manifest: dict[str, Any]) -> None:
+    """Initialize pinned wrapper runtimes without updating the tool checkout."""
+    require_tools_revision(root, manifest)
+    run([str(root / "depot_tools" / "ensure_bootstrap")],
+        cwd=root / "depot_tools", env=environment(root))
+    require_tools_revision(root, manifest)
+    run([str(root / "depot_tools" / "python-bin" / "python3"), "--version"],
+        cwd=root / "depot_tools", env=environment(root))
 
 
 def source(root: Path) -> Path:
@@ -190,9 +266,7 @@ def require_revision(root: Path, manifest: dict[str, Any]) -> None:
     result = run(["git", "rev-parse", "HEAD"], cwd=source(root), capture=True)
     if result.stdout.strip() != manifest["revision"]:
         raise BuildError("Chromium HEAD differs from the pinned revision; refusing to patch or build")
-    tools = run(["git", "rev-parse", "HEAD"], cwd=root / "depot_tools", capture=True)
-    if tools.stdout.strip() != manifest["depot_tools_revision"]:
-        raise BuildError("depot_tools HEAD differs from the pinned revision")
+    require_tools_revision(root, manifest)
 
 
 def require_clean(src: Path) -> None:
@@ -298,6 +372,7 @@ def write_state(root: Path, **updates: Any) -> None:
 
 def config_digest(manifest: dict[str, Any]) -> str:
     digest = hashlib.sha256(repository_file(manifest["gn_args_file"]).read_bytes())
+    digest.update(manifest.get("app_name", "Chromium").encode("utf-8"))
     for patch in patches(manifest):
         digest.update(patch.read_bytes())
     return digest.hexdigest()
@@ -332,6 +407,7 @@ def bootstrap(root: Path, manifest: dict[str, Any]) -> None:
     project = root / "chromium"
     project.mkdir(exist_ok=True)
     env = environment(root)
+    ensure_tools(root, manifest)
     expected_config = gclient_config(manifest)
     config = project / ".gclient"
     if config.exists():
@@ -362,6 +438,7 @@ def sync(root: Path, manifest: dict[str, Any]) -> None:
         raise BuildError("Existing .gclient differs from Cove configuration; left unchanged")
     require_clean(source(root))
     env = environment(root)
+    ensure_tools(root, manifest)
     write_state(root, hooks_complete=False, generated_config=None, built_config=None)
     run([str(root / "depot_tools" / "gclient"), "sync", "--no-history", "--nohooks", "--revision", "src@" + manifest["revision"]],
         cwd=root / "chromium", env=env)
@@ -410,9 +487,58 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     if jobs is not None:
         command += ["-j", str(jobs)]
     command.append("chrome")
+    print("Incremental compile: reusing out/Cove and rebuilding only invalidated objects.")
     write_state(root, built_config=None)
     run(command, cwd=source(root), env=environment(root))
     write_state(root, built_config=config_digest(manifest))
+
+
+def native_application(root: Path, manifest: dict[str, Any]) -> Path:
+    app_name = manifest.get("app_name", "Chromium")
+    app = source(root) / "out" / "Cove" / f"{app_name}.app"
+    try:
+        with (app / "Contents" / "Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+    except (OSError, ValueError, plistlib.InvalidFileException) as error:
+        raise BuildError(f"Native application is missing or invalid: {app}. Build it first.") from error
+    if info.get("CFBundleExecutable") != app_name or info.get("CFBundleShortVersionString") != manifest.get("version"):
+        raise BuildError("Native application identity/version does not match the pinned Cove build")
+    if manifest.get("product") == "Cove" and info.get("CFBundleIdentifier") != "dev.cove.browser":
+        raise BuildError("The application is not the Cove Chromium build")
+    if (app / "Contents/Frameworks/Electron Framework.framework").exists():
+        raise BuildError("Electron applications are retired and cannot be launched as native Cove")
+    executable = app / "Contents" / "MacOS" / app_name
+    if not executable.is_file():
+        raise BuildError(f"Native executable is missing: {executable}")
+    return executable
+
+
+def smoke(root: Path, manifest: dict[str, Any]) -> None:
+    require_owned(root, manifest)
+    require_space(root, "smoke")
+    executable = native_application(root, manifest)
+    profiles = root / "profiles"
+    profiles.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="CoveSmoke-", dir=profiles) as profile:
+        command = [str(executable), f"--user-data-dir={profile}", "--headless", "--dump-dom",
+                   "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+                   "--use-mock-keychain", 'data:text/html,<title>Cove Native Smoke</title><main id="cove-native-ready">ready</main>']
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True, env=environment(root))
+        try:
+            output, errors = process.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            import signal
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+            raise BuildError("Native Chromium renderer smoke test timed out")
+        if process.returncode or '<main id="cove-native-ready">ready</main>' not in output:
+            raise BuildError("Native renderer smoke test failed:\n" + errors[-4000:])
+    print(f"PASS: native {manifest.get('app_name', 'Chromium')} {manifest.get('version')} rendered the smoke page in an isolated temporary profile")
 
 
 def launch(root: Path, manifest: dict[str, Any], extra: list[str]) -> None:
@@ -424,10 +550,7 @@ def launch(root: Path, manifest: dict[str, Any], extra: list[str]) -> None:
         raise BuildError("No successful native build is recorded for the current patches/configuration; run build first")
     if patch_state(source(root), patches(manifest)) != "applied":
         raise BuildError("Cove patches changed after build; rebuild before running")
-    executable = source(root) / "out" / "Cove" / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
-    if not executable.is_file():
-        raise BuildError(f"Native executable does not exist: {executable}. Run build first. "
-                         "Electron is not used as a fallback.")
+    executable = native_application(root, manifest)
     if any(arg.startswith("--user-data-dir") for arg in extra):
         raise BuildError("run always uses an isolated CoveDevelopment profile; --user-data-dir overrides are refused")
     profile_dir = root / "profiles" / "CoveDevelopment"
@@ -436,8 +559,8 @@ def launch(root: Path, manifest: dict[str, Any], extra: list[str]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "bootstrap", "sync", "patch", "gen", "build", "run"))
-    parser.add_argument("--checkout", default=os.environ.get("COVE_CHROMIUM_ROOT"), help="Dedicated external checkout root")
+    parser.add_argument("command", choices=("doctor", "mount", "smoke", "bootstrap", "sync", "patch", "gen", "build", "run"))
+    parser.add_argument("--checkout", help="Explicit checkout override; defaults to the copied CoveChromium build image")
     parser.add_argument("--manifest", type=Path, default=REPO / "native" / "chromium.json")
     parser.add_argument("--stage", choices=SPACE_GIB, default="bootstrap", help="Storage phase checked by doctor")
     parser.add_argument("--check", action="store_true", help="Verify patches without applying")
@@ -453,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Browser arguments after -- are only valid with run")
     try:
         manifest = load_manifest(args.manifest)
-        root = checkout_path(args.checkout)
+        root = resolve_checkout(args.checkout)
         if args.jobs is not None and args.jobs < 1:
             raise BuildError("--jobs must be positive")
         if args.command == "doctor":
@@ -465,7 +588,12 @@ def main(argv: list[str] | None = None) -> int:
                               "storage": report, "filesystem": filesystem}, indent=2))
             require_space(root, args.stage, manifest.get("minimum_free_gib", 100))
             require_filesystem(root, filesystem)
-            print("Doctor passed; no files were changed and no download was started")
+            print("Doctor passed; no checkout, download or build was started")
+        elif args.command == "mount":
+            require_owned(root, manifest)
+            print(f"Native checkout ready: {root}")
+        elif args.command == "smoke":
+            smoke(root, manifest)
         elif args.command == "bootstrap":
             bootstrap(root, manifest)
         elif args.command == "sync":

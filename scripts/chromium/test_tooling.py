@@ -247,6 +247,126 @@ class ToolingTests(unittest.TestCase):
             with self.assertRaisesRegex(cove.BuildError, "configuration or patches changed"):
                 cove.build(self.root, self.manifest, jobs=None)
 
+    def test_branded_launch_uses_isolated_profile_and_rejects_override(self):
+        self.manifest["app_name"] = "Cove"
+        executable = self.src / "out/Cove/Cove.app/Contents/MacOS/Cove"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        (executable.parents[1] / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "Cove", "CFBundleShortVersionString": self.manifest.get("version"),
+        }) if self.manifest.get("version") else plistlib.dumps({"CFBundleExecutable": "Cove"}))
+        cove.write_state(self.root, built_config=cove.config_digest(self.manifest))
+        with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
+             mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state", return_value="applied"), \
+             mock.patch.object(cove, "run") as execute:
+            cove.launch(self.root, self.manifest, ["about:blank"])
+            command = execute.call_args[0][0]
+            self.assertEqual(command[0], str(executable))
+            self.assertIn(f"--user-data-dir={self.root / 'profiles/CoveDevelopment'}", command)
+            execute.reset_mock()
+            with self.assertRaisesRegex(cove.BuildError, "overrides are refused"):
+                cove.launch(self.root, self.manifest, ["--user-data-dir=/other/profile"])
+            execute.assert_not_called()
+
+    def test_application_name_is_safe_and_invalidates_recorded_build(self):
+        previous = cove.config_digest(self.manifest)
+        self.manifest["app_name"] = "Cove"
+        self.assertNotEqual(cove.config_digest(self.manifest), previous)
+        manifest_path = self.repo / "manifest.json"
+        for name in ("../OtherApp", "", "/OtherApp", "Cove/OtherApp"):
+            self.manifest["app_name"] = name
+            manifest_path.write_text(json.dumps(self.manifest))
+            with self.assertRaisesRegex(cove.BuildError, "app_name"):
+                cove.load_manifest(manifest_path)
+
+    def copied_image(self):
+        image = self.repo / "CoveChromium/CoveBuild.sparsebundle"
+        image.mkdir(parents=True)
+        return image
+
+    def test_copied_image_is_preferred_over_previous_environment(self):
+        image = self.copied_image()
+        mount = self.folder / "MountedCove"
+        with mock.patch.object(cove, "LOCAL_VOLUME", mount), \
+             mock.patch.object(cove, "BACKING_IMAGES", {}), \
+             mock.patch.object(cove, "local_mount", return_value=mount), \
+             mock.patch.object(Path, "is_mount", return_value=True), \
+             mock.patch.dict(cove.os.environ, {"COVE_CHROMIUM_ROOT": "/previous/external/checkout"}):
+            self.assertEqual(cove.resolve_checkout(None), mount / "checkout")
+            self.assertEqual(cove.BACKING_IMAGES[mount / "checkout"], image)
+
+    def test_copied_image_mounts_without_changing_other_volumes(self):
+        image = self.copied_image()
+        mount = self.folder / "MountedCove"
+        with mock.patch.object(cove, "LOCAL_VOLUME", mount), \
+             mock.patch.object(cove, "BACKING_IMAGES", {}), \
+             mock.patch.object(cove, "local_mount", side_effect=[None, mount]), \
+             mock.patch.object(Path, "is_mount", return_value=True), mock.patch.object(cove, "run") as execute:
+            self.assertEqual(cove.resolve_checkout(None), mount / "checkout")
+        execute.assert_called_once_with(["hdiutil", "attach", "-nobrowse", "-mountpoint", str(mount), str(image)], capture=True)
+
+    def test_occupied_mountpoint_is_never_replaced(self):
+        self.copied_image()
+        mount = self.folder / "Occupied"
+        mount.mkdir()
+        marker = mount / "unrelated.txt"
+        marker.write_text("keep")
+        with mock.patch.object(cove, "LOCAL_VOLUME", mount), \
+             mock.patch.object(cove, "local_mount", return_value=None), mock.patch.object(cove, "run") as execute:
+            with self.assertRaisesRegex(cove.BuildError, "already occupied"):
+                cove.resolve_checkout(None)
+        execute.assert_not_called()
+        self.assertEqual(marker.read_text(), "keep")
+
+    def test_explicit_checkout_does_not_mount_any_image(self):
+        self.copied_image()
+        with mock.patch.object(cove, "local_mount") as inspect:
+            self.assertEqual(cove.resolve_checkout(str(self.root)), self.root)
+        inspect.assert_not_called()
+
+    def test_virtual_capacity_cannot_hide_full_backing_drive(self):
+        image = self.copied_image()
+        with mock.patch.object(cove, "BACKING_IMAGES", {self.root: image}), \
+             mock.patch.object(cove.shutil, "disk_usage", side_effect=[mock.Mock(free=700 * cove.GIB), mock.Mock(free=12 * cove.GIB)]):
+            report = cove.space_report(self.root, "build")
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["free_gib"], 12)
+        self.assertEqual(report["backing_free_gib"], 12)
+
+    def test_incremental_build_reserve_requires_existing_native_output(self):
+        out = self.src / "out/Cove"
+        out.mkdir(parents=True)
+        (out / "build.ninja").touch()
+        with mock.patch.object(cove.shutil, "disk_usage", return_value=mock.Mock(free=30 * cove.GIB)):
+            self.assertFalse(cove.space_report(self.root, "build")["ok"])
+            binary = out / "Cove.app/Contents/MacOS/Cove"
+            binary.parent.mkdir(parents=True)
+            binary.touch()
+            report = cove.space_report(self.root, "build")
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["required_gib"], 20)
+            self.assertFalse(cove.space_report(self.root, "bootstrap")["ok"])
+
+    def test_native_application_identity_rejects_electron_or_wrong_version(self):
+        self.manifest.update(app_name="Cove", product="Cove", version="156.0.8078.48")
+        app = self.src / "out/Cove/Cove.app"
+        executable = app / "Contents/MacOS/Cove"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        info = {"CFBundleExecutable": "Cove", "CFBundleIdentifier": "dev.cove.browser", "CFBundleShortVersionString": "156.0.8078.48"}
+        path = app / "Contents/Info.plist"
+        path.write_bytes(plistlib.dumps(info))
+        self.assertEqual(cove.native_application(self.root, self.manifest), executable)
+        info["CFBundleShortVersionString"] = "0.1.0"
+        path.write_bytes(plistlib.dumps(info))
+        with self.assertRaisesRegex(cove.BuildError, "identity/version"):
+            cove.native_application(self.root, self.manifest)
+        info["CFBundleShortVersionString"] = "156.0.8078.48"
+        path.write_bytes(plistlib.dumps(info))
+        (app / "Contents/Frameworks/Electron Framework.framework").mkdir(parents=True)
+        with self.assertRaisesRegex(cove.BuildError, "Electron applications are retired"):
+            cove.native_application(self.root, self.manifest)
+
     def test_environment_disables_depot_auto_update(self):
         env = cove.environment(self.root)
         self.assertEqual(env["DEPOT_TOOLS_UPDATE"], "0")

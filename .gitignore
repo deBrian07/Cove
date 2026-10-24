@@ -8,3 +8,6 @@ native/.cache/
 .chromium-tools/
 __pycache__/
 *.pyc
+
+# Local Chromium image contains build outputs, caches and private browser profiles.
+/CoveChromium/

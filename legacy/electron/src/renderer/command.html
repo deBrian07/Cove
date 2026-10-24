@@ -10,10 +10,9 @@
       <div class="query-wrap">
         <svg class="search-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
         <input id="query" role="combobox" aria-label="Search or enter URL" aria-controls="results" aria-expanded="true" aria-autocomplete="list" placeholder="Search or Enter URL…" autocomplete="off" spellcheck="false" />
-        <kbd class="escape">esc</kbd>
+        <span class="command-info" role="img" aria-label="Use arrow keys to select, Enter to open, Escape to close" title="↑↓ Select · Enter Open · ⌘Enter New tab · ⌥Enter Little Cove · Esc Close"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 10.5v6M12 7.5v.1"/></svg></span>
       </div>
       <div id="results" role="listbox" aria-label="Suggestions"></div>
-      <footer><span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span><span><kbd>↵</kbd> to open <kbd>⌘ ↵</kbd> new tab</span></footer>
     </main>
     <script src="./command.js"></script>
   </body>

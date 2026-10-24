@@ -11,6 +11,7 @@ export interface CommandPayload {
 export interface CoveBridge {
   snapshot(): Promise<Snapshot>;
   dispatch(action: Action): Promise<unknown>;
+  setCommandResultCount(count: number): void;
   search(query: string, mode: 'new' | 'edit'): Promise<Result[]>;
   boot(): Promise<unknown>;
   library(section: string, query: string, offset: number): Promise<{ rows: LibRow[]; total: number }>;

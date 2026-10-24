@@ -5,7 +5,7 @@ import { hostOf, looksLikeUrl } from '../shared/url';
 export function queryCommands(
   library: Library,
   query: string,
-  opts: { spaceId: string; activeUrl: string; mru: string[]; history: HistoryEntry[] },
+  opts: { spaceId: string; activeUrl: string; activeTabId?: string; mru: string[]; history: HistoryEntry[] },
 ): Result[] {
   const q = query.trim().toLowerCase();
   const results: Result[] = [];
@@ -15,16 +15,18 @@ export function queryCommands(
   };
 
   if (!q) {
-    for (const id of opts.mru) {
-      const item = library.items.find((i) => i.id === id && i.section !== 'archive');
+    const recentIds = [...opts.mru, ...[...library.items].sort((a, b) => b.lastActiveAt - a.lastActiveAt).map((item) => item.id)];
+    for (const id of recentIds) {
+      const item = library.items.find((i) => i.id === id && i.id !== opts.activeTabId && i.kind !== 'folder' && i.section !== 'archive');
       if (item) push(tabResult(item, library.spaces));
-      if (results.length >= 6) break;
+      if (results.length >= 5) break;
     }
+    if (results.length) return results;
     for (const id of ['little-arc', 'new-note', 'new-easel', 'add-split', 'clear-today', 'copy-url', 'open-library', 'open-settings']) {
       const command = COMMANDS.find((c) => c.id === id);
       if (command) push(commandResult(command.id, command.title, command.group));
     }
-    return results.slice(0, 12);
+    return results.slice(0, 5);
   }
 
   const folderName = q.match(/^(?:folder|new folder)\s+(.+)/)?.[1];
@@ -271,6 +273,7 @@ function tabResult(item: Item, spaces: Space[]): Result {
       .filter(Boolean)
       .join(' · '),
     kind: 'tab',
+    favicon: item.favicon,
     action: { type: 'activate-tab', id: item.id },
   };
 }

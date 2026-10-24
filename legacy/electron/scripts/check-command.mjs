@@ -46,6 +46,7 @@ const document = {
 };
 const window = {
   cove: {
+    setCommandResultCount: () => {},
     search: (query) => new Promise((resolve) => requests.push({ query, resolve })),
     dispatch: (action) => actions.push(action),
     onCommand: (listener) => { openCommand = listener; },

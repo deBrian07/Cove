@@ -1,32 +1,29 @@
 # Cove
 
-Cove aims to reproduce Arc's browser UI and workflows on native Chromium.
-
-The runnable app in `src/` is an Electron prototype. The native migration lives in `native/`: a pinned Chromium revision, a C++ patch series and macOS arm64 build tooling. The native fork has not yet been compiled or run. `npm start` still launches the prototype.
-
-See [the native build instructions](native/README.md) for migration status and commands, and [the architecture contract](ARCHITECTURE.md) for the target.
-
-## Electron prototype
+Cove is a native Chromium browser. The active application is the compiled `Cove.app` in the build image copied into `CoveChromium/`.
 
 ```sh
-npm ci
 npm start
 ```
 
+This mounts `CoveChromium/CoveBuild.sparsebundle` at `/Volumes/CoveBuild` when needed, reuses the existing native build and opens its isolated `CoveDevelopment` profile. The external SSD is no longer required. An explicit `--checkout` argument can select another managed checkout.
+
 ```sh
-npm run typecheck
+npm run doctor
 npm test
 npm run test:ui
 ```
 
-The UI check uses an isolated temporary profile.
+`npm test` checks native build tooling and patch verification. `test:ui` runs the actual native Chromium renderer headlessly in a fresh temporary profile; it is a smoke test, not a claim of Arc UI parity.
 
-## Native Chromium
+For incremental native development:
 
 ```sh
-npm run chromium:verify-patches
-npm run chromium:test
-npm run chromium:doctor -- --checkout /path/to/CoveChromium
+npm run build -- --jobs 4
 ```
 
-Patch verification downloads only the touched files at the pinned revision, checks their SHA-256 hashes and applies the patch in a disposable fixture. This does not compile Chromium. A native build needs a dedicated source/build directory and sufficient free disk space; it never falls back to Electron.
+The existing `out/Cove` directory is reused. No Electron dependency, entrypoint or fallback is part of the active project. The previous implementation and unfinished visual work are preserved under [`legacy/electron/`](legacy/electron/README.md) as reference material.
+
+The native build currently includes Cove branding and native vertical-tab defaults. Arc-style Spaces, Favorites and the command bar still need native implementations. All further product work belongs in the native Chromium patch series.
+
+See [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).

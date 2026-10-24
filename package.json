@@ -3,27 +3,21 @@
   "productName": "Cove",
   "version": "0.1.0",
   "private": true,
-  "description": "A sidebar browser with spaces, a command bar, and the rest of the Arc-style workflow.",
-  "main": "dist/main.js",
+  "description": "A native Chromium browser with an Arc-style sidebar.",
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit",
-    "start": "node scripts/build.mjs && electron .",
-    "test": "npm run build && node scripts/check-command.mjs",
-    "test:ui": "npm run build && node scripts/check-ui.mjs",
+    "start": "python3 scripts/chromium/cove_chromium.py run",
+    "build": "python3 scripts/chromium/cove_chromium.py build",
+    "doctor": "python3 scripts/chromium/cove_chromium.py doctor --stage run",
+    "test": "python3 -m unittest discover -s scripts/chromium -p \"test_*.py\" && python3 -m unittest discover -s native/tools -p \"test_*.py\"",
+    "test:ui": "python3 scripts/chromium/cove_chromium.py smoke",
     "chromium:doctor": "python3 scripts/chromium/cove_chromium.py doctor",
     "chromium:bootstrap": "python3 scripts/chromium/cove_chromium.py bootstrap",
+    "chromium:sync": "python3 scripts/chromium/cove_chromium.py sync",
     "chromium:patch": "python3 scripts/chromium/cove_chromium.py patch",
     "chromium:gen": "python3 scripts/chromium/cove_chromium.py gen",
     "chromium:build": "python3 scripts/chromium/cove_chromium.py build",
     "chromium:run": "python3 scripts/chromium/cove_chromium.py run",
     "chromium:verify-patches": "python3 native/tools/verify_patches.py",
-    "chromium:test": "python3 -m unittest discover -s scripts/chromium -p \"test_*.py\" && python3 -m unittest discover -s native/tools -p \"test_*.py\"",
-    "chromium:sync": "python3 scripts/chromium/cove_chromium.py sync"
-  },
-  "devDependencies": {
-    "electron": "^45.0.0",
-    "esbuild": "^0.28.2",
-    "typescript": "^7.0.2"
+    "chromium:test": "python3 -m unittest discover -s scripts/chromium -p \"test_*.py\" && python3 -m unittest discover -s native/tools -p \"test_*.py\""
   }
 }

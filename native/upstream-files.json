@@ -1,4 +1,7 @@
 {
+  "chrome/app/app-Info.plist": "b9086affccae0673758bbf886e836ad637e4bc9b37849498498a06f69c8edba5",
+  "chrome/app/chromium_strings.grd": "2744123fbc7d9a99b5d08ae3669c605f77550501c5d4275311f25312c405af26",
+  "chrome/app/theme/chromium/BRANDING": "15ac20cb8744ebac0815961059231baefa71fd4ed3023cb2094aaf8a34ae423b",
   "chrome/browser/ui/tabs/features.cc": "972a9ce3190c0c6dab2f4a9ad85ded535aa2a6ee6bf32b1a63bc431a98674bd4",
   "chrome/browser/ui/tabs/tab_strip_prefs.cc": "614dd717e6f28b0ea503156ee37fdbb3c0785180aa4c5dfaefc7ca4e5f63b191",
   "chrome/browser/ui/tabs/vertical_tab_strip_state.h": "8d77f28a370f28fd780da93eaeb4758d5f96d2bf71ca6b5c1953dda73a7dc50a",

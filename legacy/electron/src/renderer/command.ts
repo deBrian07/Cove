@@ -90,14 +90,24 @@ function draw(): void {
     const icon = document.createElement('span');
     icon.className = 'result-icon';
     icon.setAttribute('aria-hidden', 'true');
-    icon.innerHTML = `<svg viewBox="0 0 20 20">${paths[result.kind]}</svg>`;
+    const fallback = `<svg viewBox="0 0 20 20">${paths[result.kind]}</svg>`;
+    const favicon = result.favicon;
+    if (favicon) {
+      const image = document.createElement('img');
+      image.src = favicon;
+      image.alt = '';
+      image.addEventListener('error', () => { icon.innerHTML = fallback; }, { once: true });
+      icon.append(image);
+    } else {
+      icon.innerHTML = fallback;
+    }
     const copy = document.createElement('div');
     copy.className = 'result-copy';
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = result.title;
     copy.append(title);
-    if (result.subtitle && result.subtitle !== result.title) {
+    if (input.value.trim() && result.subtitle && result.subtitle !== result.title) {
       const subtitle = document.createElement('div');
       subtitle.className = 'sub';
       subtitle.textContent = result.subtitle;
@@ -105,10 +115,10 @@ function draw(): void {
     }
     const hint = document.createElement('span');
     hint.className = 'hint';
-    hint.textContent = result.kind === 'tab' ? 'Switch to tab' : result.kind === 'search' ? 'Search' : result.kind === 'url' ? 'Open' : '';
+    hint.textContent = result.kind === 'tab' ? 'Switch to Tab' : result.kind === 'search' ? 'Search' : result.kind === 'url' ? 'Open' : '';
     const enter = document.createElement('span');
     enter.className = 'enter';
-    enter.textContent = '↵';
+    enter.innerHTML = '<svg viewBox="0 0 20 20"><path d="M4 10h12m-5-5 5 5-5 5"/></svg>';
     enter.setAttribute('aria-hidden', 'true');
     row.append(icon, copy, hint, enter);
     row.addEventListener('mousemove', () => select(index));
@@ -126,6 +136,7 @@ function draw(): void {
   }
   resultsEl.replaceChildren(fragment);
   resultsEl.scrollTop = 0;
+  window.cove.setCommandResultCount(results.length);
   if (results.length) input.setAttribute('aria-activedescendant', `result-${selected}`);
 }
 

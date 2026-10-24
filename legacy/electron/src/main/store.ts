@@ -17,7 +17,8 @@ export function defaultSettings(): Settings {
   return {
     searchEngine: 'google',
     archiveAfterHours: 12,
-    sidebarWidth: 300,
+    sidebarWidth: 250,
+    sidebarStyleVersion: 1,
     sidebarVisible: true,
     openExternalIn: 'little',
     adBlock: true,
@@ -111,6 +112,11 @@ export class Store {
           membership: { ...blank.membership, ...parsed.membership },
           ui: { ...blank.ui, ...parsed.ui },
         };
+        // Narrow the old factory width once; retain explicitly resized widths.
+        if (!parsed.settings?.sidebarStyleVersion && parsed.settings?.sidebarWidth === 300) {
+          this.library.settings.sidebarWidth = 250;
+        }
+        this.library.settings.sidebarStyleVersion = 1;
       } catch {
         this.library = blankLibrary();
       }

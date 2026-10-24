@@ -1,4 +1,6 @@
-# External SSD build setup
+# Original external SSD build setup
+
+This is the historical engine-build location. The active workspace is now the local copy in `CoveChromium/`; see [LOCAL_BUILD.md](LOCAL_BUILD.md). Default commands no longer select the external SSD image.
 
 The native Chromium checkout and build live in a dedicated folder on `SanDisk 1TB`. The SSD remains ExFAT. An APFS sparse bundle inside that folder provides the filesystem Chromium needs without reformatting the SSD or moving its existing files.
 
@@ -24,6 +26,8 @@ The image has a 700 GiB virtual capacity. It grows as files are written; creatin
 On 2026-10-23, the mounted image passed the native driver's storage, Xcode and SDK checks with 699.63 GiB free. The initial bootstrap was started under `caffeinate`, with output at `/Volumes/CoveBuild/logs/bootstrap.log`. At that point, the native browser had not yet been built or run. Passing the setup checks does not establish a successful Chromium compilation.
 
 The first source fetch from googlesource stalled before receiving objects. The same pinned SHA was then fetched through the public Chromium GitHub mirror, with progress in `source-mirror.log`; the checkout keeps the original upstream origin.
+
+The source/dependency checkout, setup hooks and GN generation have since completed. As of 2026-10-24, the first native `Cove.app` build is compiling with four local jobs. The current compilation log is `/Volumes/CoveBuild/logs/build.log`; a started compilation is not a successful native build or UI validation.
 
 Keep the SSD connected while checkout, dependency downloads, compilation or the native browser are running.
 
@@ -59,7 +63,7 @@ npm run chromium:doctor
 Inspect the bootstrap log without starting a second checkout:
 
 ```sh
-tail -n 40 /Volumes/CoveBuild/logs/bootstrap.log
+tail -n 40 /Volumes/CoveBuild/logs/build.log
 ```
 
 After bootstrap finishes successfully, continue with the pinned native build sequence:
@@ -75,10 +79,10 @@ npm run chromium:run
 The last command launches the native build with its separate `CoveDevelopment` profile. It does not use an existing Chrome, Arc or prototype profile. The expected application, once the build succeeds, is:
 
 ```text
-/Volumes/CoveBuild/checkout/chromium/src/out/Cove/Chromium.app
+/Volumes/CoveBuild/checkout/chromium/src/out/Cove/Cove.app
 ```
 
-The application is still named `Chromium.app` until Cove branding is ported. See [native build instructions](README.md) for the current migration limits and required native tests.
+The development branding patch names the application `Cove.app`. Its default Finder-launched profile is `Cove Native`, while the build driver always uses the isolated SSD profile listed above. See [native build instructions](README.md) for the current migration limits and required native tests.
 
 ## Detach safely
 

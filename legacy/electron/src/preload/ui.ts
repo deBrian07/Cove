@@ -4,6 +4,7 @@ import type { CoveBridge } from '../shared/bridge';
 const api: CoveBridge = {
   snapshot: () => ipcRenderer.invoke('cove:snapshot'),
   dispatch: (action: unknown) => ipcRenderer.invoke('cove:dispatch', action),
+  setCommandResultCount: (count: number) => ipcRenderer.send('cove:command-size', count),
   search: (query: string, mode: 'new' | 'edit') => ipcRenderer.invoke('cove:search', query, mode),
   boot: () => ipcRenderer.invoke('cove:boot'),
   library: (section: string, query: string, offset: number) => ipcRenderer.invoke('cove:library', section, query, offset),

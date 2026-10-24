@@ -113,6 +113,7 @@ export interface Settings {
   searchEngine: SearchEngine;
   archiveAfterHours: number;
   sidebarWidth: number;
+  sidebarStyleVersion?: number;
   sidebarVisible: boolean;
   openExternalIn: 'space' | 'little';
   adBlock: boolean;
@@ -363,6 +364,7 @@ export type Action =
   | { type: 'quit' };
 
 export interface Result {
+  favicon?: string;
   id: string;
   title: string;
   subtitle: string;

@@ -14,5 +14,6 @@
   "minimum_free_gib": 100,
   "release_source": "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Mac&num=1",
   "resolved_at": "2026-10-23",
-  "source_files": "native/upstream-files.json"
+  "source_files": "native/upstream-files.json",
+  "app_name": "Cove"
 }

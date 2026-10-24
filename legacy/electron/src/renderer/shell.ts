@@ -27,6 +27,7 @@ let seenRename = '';
 let lastSound = -1;
 let dragId = '';
 const painted = new Map<string, string>();
+const rowCache = new Map<string, { signature: string; element: HTMLElement }>();
 
 search.addEventListener('click', () => window.cove.dispatch({ type: 'open-command', mode: snap?.url && !snap.url.startsWith('cove:') ? 'edit' : 'new' }));
 let peekTimer = 0;
@@ -53,6 +54,7 @@ essentials.addEventListener('drop', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !editor.hidden) window.cove.dispatch({ type: 'close-overlay' });
 });
+resize.addEventListener('dblclick', () => window.cove.dispatch({ type: 'set-sidebar-width', width: 250 }));
 resize.addEventListener('pointerdown', (event) => {
   if (!snap) return;
   event.preventDefault();
@@ -91,7 +93,7 @@ function paint(next: Snapshot): void {
   root.style.setProperty('--line', next.theme.line);
   root.style.setProperty('--accent', next.theme.accent);
   const open = next.mode !== 'main' || next.sidebarVisible || next.sidebarPeek;
-  root.style.setProperty('--side', `${Math.max(260, next.sidebarWidth)}px`);
+  root.style.setProperty('--side', `${Math.max(220, next.sidebarWidth)}px`);
   document.body.classList.toggle('collapsed', next.mode === 'main' && !open);
   document.body.classList.toggle('peeking', next.sidebarPeek && !next.sidebarVisible);
   document.body.classList.toggle('mini-mode', next.mode !== 'main');
@@ -173,11 +175,9 @@ function renderHeading(): void {
   const space = snap.spaces.find((entry) => entry.active) || snap.spaces[0];
   const name = document.createElement('button');
   name.className = 'space-name';
-  const glyph = document.createElement('span');
-  glyph.textContent = space?.icon || '✦';
   const label = document.createElement('span');
   label.textContent = space?.name || 'Space';
-  name.append(glyph, label);
+  name.append(label);
   if (space) name.addEventListener('click', () => window.cove.dispatch({ type: 'menu-space', id: space.id }));
   heading.append(name);
 }
@@ -216,6 +216,10 @@ function renderList(): void {
   for (const row of snap.today) today.append(rowEl(row, false, 'today'));
   setupDrop(today, 'today');
   list.append(today);
+  const visibleIds = new Set<string>();
+  const remember = (rows: Row[]) => rows.forEach((row) => { visibleIds.add(row.id); remember(row.children); });
+  remember([...snap.pinned, ...snap.today]);
+  for (const id of rowCache.keys()) if (!visibleIds.has(id)) rowCache.delete(id);
   if (focusedId) list.querySelector<HTMLElement>(`[data-id="${CSS.escape(focusedId)}"]`)?.focus({ preventScroll: true });
 }
 
@@ -251,7 +255,9 @@ function renderFoot(): void {
     const chip = document.createElement('button');
     chip.className = `chip${space.active ? ' active' : ''}`;
     chip.style.setProperty('--swatch', space.color);
-    chip.textContent = space.icon || '✦';
+    const dot = document.createElement('span');
+    dot.className = 'space-dot';
+    chip.append(dot);
     chip.title = space.name;
     chip.setAttribute('aria-label', space.name);
     chip.setAttribute('aria-pressed', String(space.active));
@@ -267,7 +273,7 @@ function renderFoot(): void {
   }
   const add = document.createElement('button');
   add.className = 'add-space';
-  add.textContent = '+';
+  add.append(chromeIcon('plus'));
   add.title = 'New space';
   add.addEventListener('click', () => window.cove.dispatch({ type: 'new-space' }));
   spaces.append(add);
@@ -305,6 +311,9 @@ function renderMini(): void {
 }
 
 function rowEl(row: Row, child: boolean, section: 'pinned' | 'today', parentId: string | null = null): HTMLElement {
+  const signature = JSON.stringify([row, child, section, parentId, editing === row.id]);
+  const cached = rowCache.get(row.id);
+  if (cached?.signature === signature) return cached.element;
   const el = document.createElement('div');
   el.className = `row${row.active ? ' active' : ''}${row.unread ? ' unread' : ''}${child ? ' child' : ''}`;
   el.draggable = true;
@@ -318,7 +327,10 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today', parentId: 
     const mark = chromeIcon('chevron');
     mark.classList.add('folder-chevron');
     mark.classList.toggle('expanded', !row.collapsed);
-    el.append(mark);
+    const folder = chromeIcon('folder');
+    folder.classList.add('folder-icon');
+    el.classList.add('folder');
+    el.append(mark, folder);
     el.setAttribute('aria-expanded', String(!row.collapsed));
   }
   else el.append(icon(row));
@@ -358,6 +370,20 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today', parentId: 
   el.append(close);
   el.addEventListener('keydown', (event) => {
     if (event.target !== el) return;
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      const rows = [...list.querySelectorAll<HTMLElement>('.row')];
+      const index = rows.indexOf(el);
+      let next: HTMLElement | undefined;
+      if (event.key === 'ArrowDown') next = rows[Math.min(rows.length - 1, index + 1)];
+      if (event.key === 'ArrowUp') next = rows[Math.max(0, index - 1)];
+      if (event.key === 'Home') next = rows[0];
+      if (event.key === 'End') next = rows.at(-1);
+      if (next) { event.preventDefault(); next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+      if ((event.key === 'ArrowRight' && row.kind === 'folder' && row.collapsed)
+        || (event.key === 'ArrowLeft' && row.kind === 'folder' && !row.collapsed)) {
+        event.preventDefault(); window.cove.dispatch({ type: 'toggle-folder', id: row.id });
+      }
+    }
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); el.click(); }
     if (event.key === 'F2') { event.preventDefault(); editing = row.id; renderList(); }
   });
@@ -416,7 +442,15 @@ function rowEl(row: Row, child: boolean, section: 'pinned' | 'today', parentId: 
   });
   const wrap = document.createElement('div');
   wrap.append(el);
-  for (const child of row.children) wrap.append(rowEl(child, true, section, row.id));
+  if (row.children.length) {
+    const children = document.createElement('div');
+    children.className = 'tab-children';
+    children.setAttribute('role', 'group');
+    children.setAttribute('aria-label', row.title);
+    for (const child of row.children) children.append(rowEl(child, true, section, row.id));
+    wrap.append(children);
+  }
+  rowCache.set(row.id, { signature, element: wrap });
   return wrap;
 }
 
@@ -479,6 +513,9 @@ function renderEditor(): void {
 function finish(id: string, value: string): void {
   if (editing !== id) return;
   editing = '';
+  rowCache.delete(id);
+  painted.delete('list');
+  renderList();
   window.cove.dispatch({ type: 'rename-item', id, title: value.trim() || 'Tab' });
 }
 

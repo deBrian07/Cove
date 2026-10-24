@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,7 +11,7 @@ import { handleCoveProtocol, registerCoveScheme } from '../src/main/protocol';
 import type { Snapshot } from '../src/shared/types';
 
 registerCoveScheme();
-const profile = mkdtempSync(join(tmpdir(), 'cove-ui-check-'));
+const profile = process.env.COVE_UI_PROFILE || mkdtempSync(join(tmpdir(), 'cove-ui-check-'));
 app.setPath('userData', profile);
 const pause = (ms = 70) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => Promise<boolean>, message: string) {
@@ -50,6 +50,7 @@ app.whenReady().then(async () => {
     assert.equal(await evaluate<number>('document.querySelectorAll(".essential").length'), 1);
     assert.equal(await evaluate<string>('document.querySelector(".tab-divider").nextElementSibling.className'), 'today-tabs');
     assert.equal(await evaluate<number>('document.querySelectorAll("#topbar button").length'), 4);
+    await evaluate(`window.__stableRow = document.querySelector('[data-id="${first}"]')`);
     // Navigation exposes the actual address, and clicking it edits this tab.
     await cove.run({ type: 'commit-omnibox', query: testUrl, target: 'new' });
     const website = (await snapshot()).activeTabId!;
@@ -61,6 +62,7 @@ app.whenReady().then(async () => {
     await cove.run({ type: 'close-overlay' });
     await cove.run({ type: 'activate-tab', id: second });
     await pause();
+    assert.equal(await evaluate<boolean>(`window.__stableRow === document.querySelector('[data-id="${first}"]')`), true);
     // Rename editing survives unrelated snapshots.
     await evaluate(`document.querySelector('[data-id="${second}"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     await until(() => evaluate<boolean>('document.activeElement?.classList.contains("rename")'), 'rename focus');
@@ -69,6 +71,10 @@ app.whenReady().then(async () => {
     await pause();
     assert.equal(await evaluate<string>('document.querySelector(".rename").value'), 'Unfinished rename');
     await evaluate('document.querySelector(".rename").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
+    await evaluate(`document.querySelector('[data-id="${second}"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }))`);
+    await until(() => evaluate<boolean>('Boolean(document.querySelector(".rename"))'), 'second rename input');
+    await evaluate('document.querySelector(".rename").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }))');
+    await until(() => evaluate<boolean>('!document.querySelector(".rename")'), 'unchanged rename dismisses');
     // Native page geometry stays fixed while the hidden sidebar peeks over it.
     await cove.run({ type: 'toggle-sidebar' });
     const page = win.win.contentView.children.find((view) => view !== win.shell && view instanceof WebContentsView && view.getVisible()) as WebContentsView;
@@ -85,8 +91,8 @@ app.whenReady().then(async () => {
     assert.equal(win.win.contentView.children[0], win.shell);
     await cove.run({ type: 'toggle-sidebar' });
     assert.equal(page.getBounds().x, 310);
-    assert.equal(page.getBounds().y, 8);
-    assert.equal(page.getBounds().height, win.win.getContentSize()[1] - 16);
+    assert.equal(page.getBounds().y, 6);
+    assert.equal(page.getBounds().height, win.win.getContentSize()[1] - 12);
     // Move between the visible sections and reorder without losing the tab.
     await cove.run({ type: 'reorder', id: second, beforeId: pinned, parentId: null, section: 'pinned' });
     assert.deepEqual((await snapshot()).pinned.map((row) => row.id), [second, pinned]);
@@ -114,6 +120,8 @@ app.whenReady().then(async () => {
     const command = BrowserWindow.getAllWindows().find((window) => window.webContents.getURL().includes('command.html'))!;
     await until(() => command.webContents.executeJavaScript('document.querySelectorAll(".result").length > 0').catch(() => false), 'command results');
     await until(() => command.webContents.executeJavaScript('document.activeElement.id === "query"'), 'command focus');
+    await until(async () => command.getBounds().height === 78 + await command.webContents.executeJavaScript('Math.max(1, Math.min(8, document.querySelectorAll(".result").length))') * 50, 'palette fits results');
+    assert.equal(await command.webContents.executeJavaScript('document.querySelectorAll(".sub").length'), 0);
     await command.webContents.executeJavaScript('document.querySelector("#query").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }))');
     assert.equal(await command.webContents.executeJavaScript('document.querySelector("#query").getAttribute("aria-activedescendant")'), 'result-1');
     await pause(200);
@@ -154,6 +162,8 @@ app.whenReady().then(async () => {
     await until(async () => !command.isVisible(), 'palette closes before suggestions arrive');
     await until(async () => (await snapshot()).url === 'cove://app/newtab?palette=raw', 'raw query navigates');
     await cove.run({ type: 'activate-tab', id: second });
+    await cove.run({ type: 'set-sidebar-width', width: 250 });
+    if (process.env.COVE_UI_SCREENSHOTS) win.win.setSize(1961, 1190);
     await cove.run({ type: 'update-space', id: win.spaceId, appearance: 'dark' });
     await pause(250);
     if (process.env.COVE_UI_SCREENSHOTS) execFileSync('screencapture', ['-x', '-o', '-l', win.win.getMediaSourceId().split(':')[1], '/tmp/cove-ui-dark.png']);
@@ -173,4 +183,3 @@ app.whenReady().then(async () => {
     app.exit(1);
   }
 });
-app.on('quit', () => rmSync(profile, { recursive: true, force: true }));

@@ -136,6 +136,11 @@ export class Cove {
       const win = this.windowFromEvent(event.sender);
       return win ? this.search(win, query, mode) : [];
     });
+    ipcMain.on('cove:command-size', (event, count: number) => {
+      const win = this.windowFromContents(event.sender);
+      if (win?.command && !win.command.isDestroyed() && win.command.webContents.id === event.sender.id
+        && Number.isFinite(count) && count >= 0) this.resizeCommand(win, count);
+    });
     ipcMain.handle('cove:boot', (event) => this.boot(event.sender));
     ipcMain.handle('cove:library', (_event, section: string, query: string, offset: number) => this.libraryRows(section, query, offset));
     ipcMain.on('cove:guest', (event, payload) => this.onGuest(event.sender, payload));
@@ -310,15 +315,15 @@ export class Cove {
     let top = 0;
     if (win.mode === 'main') {
       // A peek floats over the page; only a pinned sidebar changes page geometry.
-      left = settings.sidebarVisible ? Math.max(260, settings.sidebarWidth) : 8;
-      top = settings.sidebarVisible ? 8 : 38;
+      left = settings.sidebarVisible ? Math.max(220, settings.sidebarWidth) : 8;
+      top = settings.sidebarVisible ? 6 : 38;
     } else {
       top = 52;
     }
-    const inset = win.mode === 'main' ? 8 : 0;
+    const inset = win.mode === 'main' ? 6 : 0;
     const area = { x: left, y: top, width: Math.max(0, width - left - inset), height: Math.max(0, height - top - inset) };
     const floating = win.mode === 'main' && !settings.sidebarVisible && win.peeking;
-    win.shell.setBounds({ x: 0, y: 0, width: floating ? Math.max(260, settings.sidebarWidth) : width, height });
+    win.shell.setBounds({ x: 0, y: 0, width: floating ? Math.max(220, settings.sidebarWidth) : width, height });
     win.win.contentView.addChildView(win.shell, 0);
     if (win.mode === 'peek' && win.peekView) {
       this.place(win.peekView, area);
@@ -840,7 +845,7 @@ export class Cove {
         if (!this.store.library.settings.sidebarVisible) win.peeking = action.on;
         return null;
       case 'set-sidebar-width':
-        this.store.library.settings.sidebarWidth = clamp(action.width, 260, 420);
+        this.store.library.settings.sidebarWidth = clamp(action.width, 220, 420);
         return null;
       case 'open-command':
         return this.openCommand(win, action.mode || 'new');
@@ -1728,12 +1733,11 @@ export class Cove {
     const leaf = this.leaf(win);
     const payload = { mode, query: mode === 'edit' ? leaf?.url || '' : '', select: mode === 'edit', appearance: this.theme(win).appearance };
     const bounds = win.win.getBounds();
-    const side = win.mode === 'main' && this.store.library.settings.sidebarVisible ? Math.max(260, this.store.library.settings.sidebarWidth) : 8;
-    const width = Math.min(620, bounds.width - side - 48);
-    const height = Math.min(420, bounds.height - 100);
+    const width = Math.min(764, bounds.width - 48);
+    const height = Math.min(328, bounds.height - 96);
     overlay.setBounds({
-      x: Math.round(bounds.x + side + (bounds.width - side - width) / 2),
-      y: bounds.y + Math.round(Math.max(56, (bounds.height - height) * 0.32)),
+      x: Math.round(bounds.x + (bounds.width - width) / 2),
+      y: bounds.y + Math.round(Math.max(48, (bounds.height - height) * 0.5)),
       width,
       height,
     });
@@ -1741,6 +1745,15 @@ export class Cove {
     if (overlay.webContents.isLoading()) overlay.webContents.once('did-finish-load', () => { send(); overlay.show(); overlay.focus(); });
     else { send(); overlay.show(); overlay.focus(); }
     win.command = overlay;
+  }
+
+  private resizeCommand(win: Win, count: number): void {
+    const command = win.command;
+    if (!command || command.isDestroyed()) return;
+    const parent = win.win.getBounds();
+    const bounds = command.getBounds();
+    const height = Math.min(78 + Math.max(1, Math.min(8, Math.floor(count))) * 50, parent.height - 96);
+    command.setBounds({ ...bounds, height, y: parent.y + Math.round((parent.height - height) / 2) });
   }
 
   private closeCommand(win: Win): void {
@@ -2442,11 +2455,17 @@ export class Cove {
   }
 
   private search(win: Win, query: string, mode: 'new' | 'edit') {
-    return queryCommands(this.store.library, query, {
+    const library = { ...this.store.library,
+      items: this.store.library.items.filter((item) => win.incognito
+        ? item.ephemeral && this.owner.get(item.id) === win.id : !item.ephemeral),
+      spaces: win.incognito ? [] : this.store.library.spaces,
+    };
+    return queryCommands(library, query, {
       spaceId: win.spaceId,
+      activeTabId: win.activeTabId || undefined,
       activeUrl: this.leaf(win)?.url || '',
       mru: this.mru,
-      history: this.store.history,
+      history: win.incognito ? [] : this.store.history,
     });
   }
 
