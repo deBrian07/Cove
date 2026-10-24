@@ -26,4 +26,4 @@ The existing `out/Cove` directory is reused. No Electron dependency, entrypoint 
 
 The native patches add a centered dark command palette, URL/default-engine search, tab switching and compact vertical tabs. ⌘T opens the palette; Return opens a selected tab or an unmatched search, and ⌘Return opens the query in a new tab. Arc-style Spaces, Favorites, folders and the full window layout still need native implementations. All product work belongs in the native Chromium patch series.
 
-See [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).
+See [the current handoff](native/HANDOFF.md), [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).

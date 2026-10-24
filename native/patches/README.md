@@ -36,3 +36,11 @@ out/Cove/unit_tests --gtest_filter='CoveSidebarDefaultsTest.*:VerticalTabStripSt
 ```
 
 Run the browser separately with an isolated profile. Validate native tab activation, pin/unpin, dragging within and between windows, restored width, collapse/hover expansion, keyboard focus, fullscreen and reduced-motion behavior before treating this milestone as complete.
+
+`0009-native-split-controls.patch` exposes the existing native Split View button by default and preserves explicit saved unpin choices.
+
+`0010-native-arc-shortcuts.patch` maps native Mac controls for pinning, sidebar visibility, URL copying and split creation, focus and separation. Cove-only split commands have a separate private command-ID header and bypass Chromium's declarative action adapter safely.
+
+`0011-native-palette-actions.patch` adds an allowlisted Mojo action interface and keyboard/click command rows, including explicit state-checked Pin and Unpin, unavailable-action explanations and modified-Return search behavior.
+
+`0012-native-control-regressions.patch` adds native browser regression cases for split command dispatch and pinning. Test additions do not imply execution; see [validation](../VALIDATION.md) and [handoff](../HANDOFF.md).
