@@ -1,0 +1,565 @@
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search.mojom b/chrome/browser/ui/webui/tab_search/tab_search.mojom
+--- a/chrome/browser/ui/webui/tab_search/tab_search.mojom
++++ b/chrome/browser/ui/webui/tab_search/tab_search.mojom
+@@ -264,6 +264,9 @@
+   // Open a URL or default-engine search from the command palette.
+   OpenSearch(string text);
+ 
++  // Execute a browser command from the palette allowlist.
++  ExecuteAction(string action);
++
+   // Open a recently closed tab or tab group.
+   OpenRecentlyClosedEntry(int32 session_id);
+ 
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
+--- a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
++++ b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
+@@ -91,6 +91,7 @@
+   void SwitchToTab(
+       tab_search::mojom::SwitchToTabInfoPtr switch_to_tab_info) override;
+   void OpenSearch(const std::string& text) override;
++  void ExecuteAction(const std::string& action) override;
+   void OpenRecentlyClosedEntry(int32_t session_id) override;
+   void ReplaceActiveSplitTab(int32_t replacement_tab_id) override;
+   void SaveRecentlyClosedExpandedPref(bool expanded) override;
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
+--- a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
++++ b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
+@@ -23,11 +23,14 @@
+ #include "base/time/time.h"
+ #include "base/timer/timer.h"
+ #include "base/trace_event/trace_event.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/favicon/favicon_utils.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/sessions/tab_restore_service_factory.h"
+ #include "chrome/browser/signin/identity_manager_factory.h"
+ #include "chrome/browser/signin/signin_ui_util.h"
++#include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_live_tab_context.h"
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+@@ -440,6 +443,53 @@
+   }
+ }
+ 
++void TabSearchPageHandler::ExecuteAction(const std::string& action) {
++  if (!browser_ || browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return;
++  }
++  // The renderer chooses an action name, never an arbitrary browser command ID.
++  int command;
++  if (action == "pin-tab" || action == "unpin-tab") {
++    auto* const model = browser_->GetTabStripModel();
++    auto* const active_tab = model ? model->GetActiveTab() : nullptr;
++    if (!active_tab || active_tab->IsPinned() == (action == "pin-tab")) {
++      return;
++    }
++    command = IDC_WINDOW_PIN_TAB;
++  } else if (action == "toggle-sidebar") {
++    command = IDC_TOGGLE_VERTICAL_TABS_COLLAPSE;
++  } else if (action == "add-split") {
++    command = IDC_NEW_SPLIT_TAB;
++  } else if (action == "remove-split") {
++    command = IDC_COVE_REMOVE_SPLIT;
++  } else if (action == "focus-left") {
++    command = IDC_COVE_FOCUS_SPLIT_LEFT;
++  } else if (action == "focus-right") {
++    command = IDC_COVE_FOCUS_SPLIT_RIGHT;
++  } else if (action == "duplicate-tab") {
++    command = IDC_DUPLICATE_TAB;
++  } else if (action == "reopen-tab") {
++    command = IDC_RESTORE_TAB;
++  } else if (action == "copy-url") {
++    command = IDC_COPY_URL;
++  } else {
++    return;
++  }
++  if (!chrome::IsCommandEnabled(browser_, command)) {
++    return;
++  }
++  // A command can activate another tab and destroy this WebUI. Keep only a
++  // weak embedder and browser pointer on the stack across dispatch.
++  auto embedder = webui_controller_->embedder();
++  auto browser = browser_->GetWeakPtr();
++  if (embedder) {
++    embedder->CloseUI();
++  }
++  if (browser) {
++    chrome::ExecuteCommand(browser.get(), command);
++  }
++}
++
+ void TabSearchPageHandler::OpenRecentlyClosedEntry(int32_t session_id) {
+   sessions::TabRestoreService* tab_restore_service =
+       TabRestoreServiceFactory::GetForProfile(profile_);
+diff --git a/chrome/browser/ui/webui/tab_search/BUILD.gn b/chrome/browser/ui/webui/tab_search/BUILD.gn
+--- a/chrome/browser/ui/webui/tab_search/BUILD.gn
++++ b/chrome/browser/ui/webui/tab_search/BUILD.gn
+@@ -52,6 +52,7 @@
+     "//chrome/browser/sessions",
+     "//chrome/browser/signin",
+     "//chrome/browser/sync",
++    "//chrome/browser/ui:browser_commands",
+     "//chrome/browser/ui:browser_window_header",
+     "//chrome/browser/ui:tab_ui_helper",
+     "//chrome/browser/ui:ui_features",
+diff --git a/chrome/browser/resources/tab_search/tab_search_api_proxy.ts b/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
+--- a/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
++++ b/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
+@@ -25,6 +25,8 @@
+   closeWebUiTab(): void;
+ 
+   openSearch(text: string): void;
++
++  executeAction(action: string): void;
+ 
+   getProfileData(): Promise<{profileData: ProfileData}>;
+ 
+@@ -69,6 +71,10 @@
+ 
+   openSearch(text: string) {
+     this.handler.openSearch(text);
++  }
++
++  executeAction(action: string) {
++    this.handler.executeAction(action);
+   }
+ 
+   getProfileData() {
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.ts b/chrome/browser/resources/tab_search/tab_search_page.ts
+--- a/chrome/browser/resources/tab_search/tab_search_page.ts
++++ b/chrome/browser/resources/tab_search/tab_search_page.ts
+@@ -47,6 +47,15 @@
+ // A maximum limit for search queries, to prevent  errors like
+ // "SyntaxError: Invalid regular expression: ..."
+ export const SEARCH_QUERY_MAX_LENGTH: number = 400;
++
++interface PaletteAction {
++  id: string;
++  label: string;
++  icon: string;
++  terms: string[];
++  enabled: boolean;
++  unavailableLabel?: string;
++}
+ 
+ const TabSearchSearchFieldBase = CrSearchFieldMixinLit(CrLitElement);
+ 
+@@ -112,6 +121,10 @@
+       availableHeight: {type: Number},
+       shortcut_: {type: String},
+       searchText_: {type: String},
++      selectedAction_: {type: Number},
++      activeTabPinned_: {type: Boolean},
++      activeTabSplit_: {type: Boolean},
++      canReopenTab_: {type: Boolean},
+       filteredItems_: {type: Array},
+       listMaxHeight_: {type: Number},
+       listItemSize_: {type: Number},
+@@ -173,6 +186,11 @@
+       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
+   override autofocus: boolean = false;
+ 
++  protected accessor selectedAction_: number = 0;
++  private accessor activeTabPinned_: boolean = false;
++  private accessor activeTabSplit_: boolean = false;
++  private accessor canReopenTab_: boolean = false;
++
+   private apiProxy_: TabSearchApiProxy = TabSearchApiProxyImpl.getInstance();
+   private metricsReporter_: MetricsReporter|null = null;
+   private listenerIds_: number[] = [];
+@@ -290,6 +308,7 @@
+    */
+   override onSearchTermInput() {
+     this.activeDescendantEnabled_ = false;
++    this.selectedAction_ = 0;
+     this.hasSearchText = this.getSearchInput().value !== '';
+     this.searchText_ = this.getSearchInput().value;
+     // Reset the selected item whenever a search query is provided.
+@@ -674,6 +693,15 @@
+   }
+ 
+   private tabsChanged_(profileData: ProfileData) {
++    const hostWindow = profileData.windows.find(window => window.isHostWindow) ||
++        profileData.windows.find(window => window.active);
++    const activeTab = hostWindow?.tabs.find(tab => tab.active);
++    this.activeTabPinned_ = activeTab?.pinned || false;
++    this.activeTabSplit_ = activeTab?.split || false;
++    this.canReopenTab_ = profileData.recentlyClosedTabs.length > 0 ||
++        profileData.recentlyClosedTabGroups.length > 0 ||
++        profileData.recentlyClosedSplitViews.length > 0;
++
+     this.tabGroupsMap_ = profileData.tabGroups.reduce((map, tabGroup) => {
+       map.set(tokenToString(tabGroup.id), tabGroup);
+       return map;
+@@ -813,6 +841,56 @@
+   /**
+    * Handles key events when the search field has focus.
+    */
++  protected getMatchingActions_(): PaletteAction[] {
++    const text = this.searchText_.trim().toLowerCase();
++    const query = text.replace(/^\/\s*/, '').replace(/\s+/g, ' ');
++    if (!text.startsWith('/') && query.length < 2) {
++      return [];
++    }
++    const actions: PaletteAction[] = [
++      {id: 'pin-tab', label: 'Pin Tab', icon: '⌖', terms: ['pin tab'],
++       enabled: !this.activeTabPinned_, unavailableLabel: 'Already Pinned'},
++      {id: 'unpin-tab', label: 'Unpin Tab', icon: '⌖', terms: ['unpin tab'],
++       enabled: this.activeTabPinned_, unavailableLabel: 'Not Pinned'},
++      {id: 'toggle-sidebar', label: 'Toggle Sidebar', icon: '◧',
++       terms: ['toggle sidebar', 'show sidebar', 'hide sidebar'], enabled: true},
++      {id: 'add-split', label: 'Add Split View', icon: '◫',
++       terms: ['add split view', 'new split view', 'split view'],
++       enabled: !this.activeTabSplit_,
++       unavailableLabel: 'Already in Split View'},
++      {id: 'remove-split', label: 'Remove Split View', icon: '▣',
++       terms: ['remove split view', 'unsplit', 'exit split view'],
++       enabled: this.activeTabSplit_},
++      {id: 'focus-left', label: 'Focus Left Pane', icon: '←',
++       terms: ['focus left pane', 'left pane'], enabled: this.activeTabSplit_},
++      {id: 'focus-right', label: 'Focus Right Pane', icon: '→',
++       terms: ['focus right pane', 'right pane'], enabled: this.activeTabSplit_},
++      {id: 'duplicate-tab', label: 'Duplicate Tab', icon: '▱',
++       terms: ['duplicate tab', 'duplicate current tab'], enabled: true},
++      {id: 'reopen-tab', label: 'Reopen Closed Tab', icon: '↶',
++       terms: ['reopen closed tab', 'restore tab', 'undo close tab'],
++       enabled: this.canReopenTab_},
++      {id: 'copy-url', label: 'Copy Current URL', icon: '↗',
++       terms: ['copy current url', 'copy url', 'copy link'], enabled: true},
++    ];
++    return actions.filter(action =>
++        action.terms.some(term => term.startsWith(query)));
++  }
++
++  protected getActionActiveDescendant_(): string|undefined {
++    return this.getMatchingActions_().length ?
++        `palette-action-${this.selectedAction_}` : this.getAriaActivedescendant_();
++  }
++
++  protected onPaletteActionClick_(e: Event) {
++    const button = e.currentTarget as HTMLButtonElement;
++    const action = this.getMatchingActions_().find(
++        item => item.id === button.dataset['action']);
++    if (action?.enabled) {
++      this.apiProxy_.executeAction(action.id);
++    }
++  }
++
+   protected onSearchActionClick_() {
+     const query = this.searchText_.trim();
+     if (query) {
+@@ -824,10 +902,39 @@
+     if (e.isComposing) {
+       return;
+     }
++    // Preserve an explicit way to search for words that are also commands.
++    if (e.key === 'Enter' && this.searchText_.trim() &&
++        (e.metaKey || e.ctrlKey)) {
++      this.apiProxy_.openSearch(this.searchText_.trim());
++      e.preventDefault();
++      e.stopPropagation();
++      return;
++    }
++    const actions = this.getMatchingActions_();
++    if (actions.length) {
++      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
++        const direction = e.key === 'ArrowDown' ? 1 : -1;
++        this.selectedAction_ =
++            (this.selectedAction_ + direction + actions.length) % actions.length;
++        this.shadowRoot.querySelector<HTMLElement>(
++            `#palette-action-${this.selectedAction_}`)?.scrollIntoView(
++                {block: 'nearest'});
++      } else if (e.key === 'Enter') {
++        const action = actions[this.selectedAction_];
++        if (action?.enabled) {
++          this.apiProxy_.executeAction(action.id);
++        }
++      } else {
++        return;
++      }
++      e.preventDefault();
++      e.stopPropagation();
++      return;
++    }
+     // With no matching tab, Return navigates the query. Command+Return always
+     // opens a new tab, even when a matching tab is selected in the results.
+     if (e.key === 'Enter' && this.searchText_.trim() &&
+-        (e.metaKey || e.ctrlKey || this.$.tabsList.selected === -1)) {
++        this.$.tabsList.selected === -1) {
+       this.apiProxy_.openSearch(this.searchText_.trim());
+       e.preventDefault();
+       e.stopPropagation();
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.html.ts b/chrome/browser/resources/tab_search/tab_search_page.html.ts
+--- a/chrome/browser/resources/tab_search/tab_search_page.html.ts
++++ b/chrome/browser/resources/tab_search/tab_search_page.html.ts
+@@ -31,12 +31,27 @@
+           @search="${this.onSearchTermSearch}"
+           @input="${this.onSearchTermInput}"
+           type="search" spellcheck="false" role="combobox"
+-          aria-activedescendant="${this.getAriaActivedescendant_() || nothing}"
+-          aria-controls="tabsList" aria-owns="tabsList">
++          aria-activedescendant="${this.getActionActiveDescendant_() || nothing}"
++          aria-controls="${this.getMatchingActions_().length ? 'paletteActions' : 'tabsList'}"
++          aria-owns="${this.getMatchingActions_().length ? 'paletteActions' : 'tabsList'}">
+     </div>
+   </div>
+   <div id="divider"></div>
+-  <div ?hidden="${!this.filteredItems_.length}">
++  <div id="paletteActions" role="listbox" aria-label="Browser commands"
++      ?hidden="${!this.getMatchingActions_().length}">
++    ${this.getMatchingActions_().map((action, index) => html`
++      <button id="palette-action-${index}" type="button" role="option"
++          class="palette-action" data-action="${action.id}" tabindex="-1"
++          aria-selected="${index === this.selectedAction_}"
++          aria-disabled="${!action.enabled}"
++          @click="${this.onPaletteActionClick_}">
++        <span class="action-icon" aria-hidden="true">${action.icon}</span>
++        <span class="action-label">${action.label}</span>
++        ${action.enabled ? html`<kbd aria-hidden="true">↵</kbd>` :
++            html`<span class="action-unavailable">${action.unavailableLabel || (action.id === 'reopen-tab' ? 'No Closed Tabs' : 'Not in Split View')}</span>`}
++      </button>`)}
++  </div>
++  <div ?hidden="${!this.filteredItems_.length || this.getMatchingActions_().length > 0}">
+     <selectable-lazy-list id="tabsList"
+         max-height="${this.listMaxHeight_}"
+         item-size="${this.listItemSize_}"
+@@ -125,7 +140,7 @@
+   </div>
+   <button id="no-results" type="button"
+       @click="${this.onSearchActionClick_}"
+-      ?hidden="${this.filteredItems_.length > 0}">
++      ?hidden="${this.filteredItems_.length > 0 || this.getMatchingActions_().length > 0}">
+     ${this.searchText_.trim() ? html`
+       <span>Search for “${this.searchText_}”</span><kbd>↵</kbd>
+     ` : html`<span>Search or enter a URL to open a new tab</span>`}
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.css b/chrome/browser/resources/tab_search/tab_search_page.css
+--- a/chrome/browser/resources/tab_search/tab_search_page.css
++++ b/chrome/browser/resources/tab_search/tab_search_page.css
+@@ -175,3 +175,65 @@
+ #no-results[hidden] {
+   display: none;
+ }
++
++#paletteActions {
++  max-height: 276px;
++  overflow-y: auto;
++  padding: 6px 8px;
++}
++
++#paletteActions[hidden] {
++  display: none;
++}
++
++.palette-action {
++  align-items: center;
++  background: transparent;
++  border: none;
++  border-radius: 8px;
++  color: var(--cr-primary-text-color);
++  cursor: pointer;
++  display: flex;
++  font: inherit;
++  gap: 12px;
++  min-height: 48px;
++  padding: 0 12px;
++  text-align: start;
++  width: 100%;
++}
++
++.palette-action[aria-selected='true'],
++.palette-action:hover {
++  background: var(--mwb-list-item-selected-background-color);
++}
++
++.palette-action[aria-disabled='true'] {
++  color: var(--cr-secondary-text-color);
++  cursor: default;
++}
++
++.action-icon {
++  align-items: center;
++  background: rgb(255 255 255 / 8%);
++  border-radius: 6px;
++  display: flex;
++  font-size: 19px;
++  height: 28px;
++  justify-content: center;
++  width: 28px;
++}
++
++.action-label {
++  flex: 1;
++  font-size: 13px;
++  font-weight: 500;
++}
++
++.action-unavailable {
++  font-size: 11px;
++}
++
++.palette-action kbd {
++  font: inherit;
++  font-size: 18px;
++}
+diff --git a/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts b/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
+--- a/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
++++ b/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
+@@ -19,6 +19,7 @@
+       'closeTabs',
+       'closeWebUiTab',
+       'openSearch',
++      'executeAction',
+       'getProfileData',
+       'getIsSplit',
+       'openRecentlyClosedEntry',
+@@ -48,6 +49,10 @@
+ 
+   openSearch(text: string) {
+     this.methodCalled('openSearch', text);
++  }
++
++  executeAction(action: string) {
++    this.methodCalled('executeAction', action);
+   }
+ 
+   getProfileData() {
+diff --git a/chrome/test/data/webui/tab_search/tab_search_page_test.ts b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+--- a/chrome/test/data/webui/tab_search/tab_search_page_test.ts
++++ b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+@@ -866,6 +866,133 @@
+     assertEquals(1, tabInfo.tabId);
+   });
+ 
++  test('CommandQueryExecutesActionInsteadOfSearch', async () => {
++    await setupTest(createProfileData());
++    setSearchText('pin tab');
++    await microtasksFinished();
++    const action = tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '#palette-action-0');
++    assertTrue(!!action);
++    assertTrue(action.textContent!.includes('Pin Tab'));
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals('pin-tab', await testProxy.whenCalled('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++    assertEquals(0, testProxy.getCallCount('switchToTab'));
++  });
++
++  test('UnpinDoesNotPinAnUnpinnedTab', async () => {
++    await setupTest(createProfileData());
++    setSearchText('unpin tab');
++    await microtasksFinished();
++    const action = tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '[data-action="unpin-tab"]');
++    assertTrue(!!action);
++    assertEquals('true', action.getAttribute('aria-disabled'));
++    assertTrue(action.textContent!.includes('Not Pinned'));
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++  });
++
++  test('PinDoesNotUnpinAPinnedTab', async () => {
++    await setupTest(createProfileData({windows: [{
++      active: true, isHostWindow: true, height: SAMPLE_WINDOW_HEIGHT,
++      tabs: [createTab({active: true, pinned: true})],
++    }]}));
++    setSearchText('pin tab');
++    await microtasksFinished();
++    const action = tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '[data-action="pin-tab"]');
++    assertTrue(!!action);
++    assertEquals('true', action.getAttribute('aria-disabled'));
++    assertTrue(action.textContent!.includes('Already Pinned'));
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++    setSearchText('unpin tab');
++    await microtasksFinished();
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals('unpin-tab', await testProxy.whenCalled('executeAction'));
++  });
++
++  test('ModifiedReturnSearchesCommandWords', async () => {
++    await setupTest(createProfileData());
++    setSearchText('pin tab');
++    await microtasksFinished();
++    keyDownOn(tabSearchPage.getSearchInput(), 0, ['meta'], 'Enter');
++    assertEquals('pin tab', await testProxy.whenCalled('openSearch'));
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    testProxy.resetResolver('openSearch');
++    keyDownOn(tabSearchPage.getSearchInput(), 0, ['ctrl'], 'Enter');
++    assertEquals('pin tab', await testProxy.whenCalled('openSearch'));
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++  });
++
++  test('ReopenWithoutClosedEntriesIsDisabled', async () => {
++    await setupTest(createProfileData({
++      recentlyClosedTabs: [], recentlyClosedTabGroups: [],
++      recentlyClosedSplitViews: [],
++    }));
++    setSearchText('reopen closed tab');
++    await microtasksFinished();
++    assertEquals('true', tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '[data-action="reopen-tab"]')!.getAttribute('aria-disabled'));
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++  });
++
++  test('CommandListSupportsArrowSelectionAndClick', async () => {
++    await setupTest(createProfileData());
++    setSearchText('/');
++    await microtasksFinished();
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'ArrowDown');
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'ArrowDown');
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals('toggle-sidebar', await testProxy.whenCalled('executeAction'));
++    testProxy.resetResolver('executeAction');
++    tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '[data-action="duplicate-tab"]')!.click();
++    assertEquals('duplicate-tab', await testProxy.whenCalled('executeAction'));
++  });
++
++  test('AddSplitWithinExistingSplitIsDisabled', async () => {
++    await setupTest(createProfileData({windows: [{
++      active: true, isHostWindow: true, height: SAMPLE_WINDOW_HEIGHT,
++      tabs: [createTab({active: true, split: true})],
++    }]}));
++    setSearchText('add split view');
++    await microtasksFinished();
++    const action = tabSearchPage.shadowRoot.querySelector<HTMLElement>(
++        '[data-action="add-split"]');
++    assertTrue(!!action);
++    assertEquals('true', action.getAttribute('aria-disabled'));
++    assertTrue(action.textContent!.includes('Already in Split View'));
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++  });
++
++  test('UnavailableSplitActionDoesNotNavigateOrExecute', async () => {
++    await setupTest(createProfileData());
++    setSearchText('remove split view');
++    await microtasksFinished();
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++  });
++
++  test('ComposingCommandDoesNotExecute', async () => {
++    await setupTest(createProfileData());
++    setSearchText('duplicate tab');
++    await microtasksFinished();
++    tabSearchPage.getSearchInput().dispatchEvent(new KeyboardEvent('keydown', {
++      key: 'Enter', isComposing: true, bubbles: true, composed: true,
++    }));
++    assertEquals(0, testProxy.getCallCount('executeAction'));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++  });
++
+   test('ReturnNavigatesUnmatchedQuery', async () => {
+     await setupTest(createProfileData());
+     setSearchText('https://unmatched-cove-navigation.example/');

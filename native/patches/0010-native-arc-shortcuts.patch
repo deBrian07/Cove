@@ -1,0 +1,265 @@
+diff --git a/chrome/app/BUILD.gn b/chrome/app/BUILD.gn
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -34,7 +34,10 @@
+ 
+ # This target is for dependency tracking for the command ID header.
+ source_set("command_ids") {
+-  sources = [ "chrome_command_ids.h" ]
++  sources = [
++    "chrome_command_ids.h",
++    "cove_command_ids.h",
++  ]
+   public_deps = [
+     "//build:branding_buildflags",
+     "//services/screen_ai/buildflags",
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -25,6 +25,7 @@
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+ #include "chrome/browser/browser_process.h"
+@@ -131,6 +132,7 @@
+ #include "components/signin/public/identity_manager/identity_manager.h"
+ #include "components/skills/features.h"
+ #include "components/tab_groups/tab_group_id.h"
++#include "components/tabs/public/split_tab_data.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "components/translate/core/browser/translate_manager.h"
+ #include "components/zoom/zoom_controller.h"
+@@ -536,7 +538,11 @@
+          command_id == IDC_SELECT_NEXT_TAB ||
+          command_id == IDC_SELECT_PREVIOUS_TAB ||
+          command_id == IDC_CYCLE_TO_NEXT_TAB ||
+-         command_id == IDC_CYCLE_TO_PREV_TAB || command_id == IDC_EXIT;
++         command_id == IDC_CYCLE_TO_PREV_TAB || command_id == IDC_EXIT ||
++         command_id == IDC_WINDOW_PIN_TAB ||
++         command_id == IDC_TOGGLE_VERTICAL_TABS_COLLAPSE ||
++         command_id == IDC_COPY_URL || command_id == IDC_NEW_SPLIT_TAB ||
++         ::cove::IsSplitCommand(command_id);
+ }
+ 
+ void BrowserCommandController::TabStateChanged() {
+@@ -628,10 +634,19 @@
+ // BrowserCommandController, CommandUpdater implementation:
+ 
+ bool BrowserCommandController::SupportsCommand(int id) const {
+-  return command_updater_->SupportsCommand(id);
++  return ::cove::IsSplitCommand(id) || command_updater_->SupportsCommand(id);
+ }
+ 
+ bool BrowserCommandController::IsCommandEnabled(int id) const {
++  if (id == IDC_NEW_SPLIT_TAB) {
++    const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
++    return command_updater_->IsCommandEnabled(id) && tab && !tab->IsSplit();
++  }
++  if (::cove::IsSplitCommand(id)) {
++    const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
++    return browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++           tab && tab->IsSplit();
++  }
+   return command_updater_->IsCommandEnabled(id);
+ }
+ 
+@@ -657,6 +672,12 @@
+ 
+   DCHECK(IsCommandEnabled(id)) << "Invalid/disabled command " << id;
+ 
++  // These local commands do not belong to Chromium's declarative action map.
++  // Dispatch once here, rather than feeding them back through that adapter.
++  if (::cove::IsSplitCommand(id)) {
++    HandleCommandWithDisposition(id, disposition, time_stamp);
++    return true;
++  }
+   return command_updater_->ExecuteCommandWithDisposition(
+       id, disposition, std::move(context), time_stamp);
+ }
+@@ -865,6 +886,29 @@
+                     split_tabs::SplitTabCreatedSource::kKeyboardShortcut);
+       }
+       break;
++    case IDC_COVE_REMOVE_SPLIT:
++    case IDC_COVE_FOCUS_SPLIT_LEFT:
++    case IDC_COVE_FOCUS_SPLIT_RIGHT: {
++      auto* model = browser_->GetTabStripModel();
++      const auto split_id = model->GetActiveTab()->GetSplit();
++      if (!split_id) {
++        break;
++      }
++      if (id == IDC_COVE_REMOVE_SPLIT) {
++        // Separating a split keeps both tabs and their navigation histories.
++        model->RemoveSplit(*split_id);
++        model->GetActiveWebContents()->Focus();
++        break;
++      }
++      const auto tabs = model->GetSplitData(*split_id)->ListTabs();
++      const size_t pane = id == IDC_COVE_FOCUS_SPLIT_LEFT ? 0 : 1;
++      if (pane < tabs.size()) {
++        auto* target = tabs[pane];
++        model->ActivateTabAt(model->GetIndexOfTab(target));
++        target->GetContents()->Focus();
++      }
++      break;
++    }
+     case IDC_NAME_WINDOW:
+       PromptToNameWindow(browser_);
+       break;
+diff --git a/chrome/browser/ui/cocoa/accelerators_cocoa.mm b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+--- a/chrome/browser/ui/cocoa/accelerators_cocoa.mm
++++ b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+@@ -15,6 +15,7 @@
+ #include "base/memory/singleton.h"
+ #include "build/branding_buildflags.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "printing/buildflags/buildflags.h"
+ #import "ui/base/accelerators/platform_accelerator_cocoa.h"
+ #import "ui/events/cocoa/cocoa_event_utils.h"
+@@ -46,12 +47,12 @@
+     {IDC_PASTE, ui::EF_COMMAND_DOWN, ui::VKEY_V},
+     {IDC_PRINT, ui::EF_COMMAND_DOWN, ui::VKEY_P},
+     {IDC_RESTORE_TAB, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_T},
+-    {IDC_SAVE_PAGE, ui::EF_COMMAND_DOWN, ui::VKEY_S},
++    {IDC_SAVE_PAGE, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_S},
+     {IDC_SHOW_BOOKMARK_BAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_B},
+     {IDC_SHOW_BOOKMARK_MANAGER, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
+      ui::VKEY_B},
+-    {IDC_BOOKMARK_THIS_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_D},
++    {IDC_WINDOW_PIN_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_D},
+     {IDC_SHOW_DOWNLOADS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_J},
+     {IDC_SHOW_HISTORY, ui::EF_COMMAND_DOWN, ui::VKEY_Y},
+     {IDC_VIEW_SOURCE, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN, ui::VKEY_U},
+@@ -114,9 +115,16 @@
+      ui::VKEY_I},
+ #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+     {IDC_TAB_SEARCH, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_A},
+-    {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+-     ui::VKEY_L},
+-    {IDC_NEW_SPLIT_TAB, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN, ui::VKEY_N},
++    {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, ui::EF_COMMAND_DOWN, ui::VKEY_S},
++    {IDC_NEW_SPLIT_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
++     ui::VKEY_OEM_PLUS},
++    {IDC_COVE_REMOVE_SPLIT, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
++     ui::VKEY_OEM_MINUS},
++    {IDC_COVE_FOCUS_SPLIT_LEFT, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
++     ui::VKEY_1},
++    {IDC_COVE_FOCUS_SPLIT_RIGHT, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
++     ui::VKEY_2},
++    {IDC_COPY_URL, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_C},
+ };
+ 
+ ui::Accelerator AcceleratorForCloseWindow() {
+diff --git a/chrome/browser/ui/cocoa/main_menu_builder.mm b/chrome/browser/ui/cocoa/main_menu_builder.mm
+--- a/chrome/browser/ui/cocoa/main_menu_builder.mm
++++ b/chrome/browser/ui/cocoa/main_menu_builder.mm
+@@ -11,6 +11,7 @@
+ #include "base/mac/mac_util.h"
+ #include "build/branding_buildflags.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/browser_features.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/feedback/report_unsafe_site_dialog.h"
+@@ -570,6 +571,25 @@
+           })
+           .Build();
+   // clang-format on
++  // Keep the split and URL actions discoverable in the native Tab menu.
++  auto add_command = [menu = item.submenu](NSString* title, int command) {
++    const ui::Accelerator* accelerator =
++        AcceleratorsCocoa::GetInstance()->GetAcceleratorForCommand(command);
++    CHECK(accelerator);
++    KeyEquivalentAndModifierMask* key =
++        GetKeyEquivalentAndModifierMaskFromAccelerator(*accelerator);
++    NSMenuItem* command_item = [[NSMenuItem alloc]
++        initWithTitle:title
++               action:@selector(commandDispatch:)
++        keyEquivalent:key.keyEquivalent];
++    command_item.tag = command;
++    command_item.keyEquivalentModifierMask = key.modifierMask;
++    [menu addItem:command_item];
++  };
++  add_command(@"Remove Split View", IDC_COVE_REMOVE_SPLIT);
++  add_command(@"Focus Left Pane", IDC_COVE_FOCUS_SPLIT_LEFT);
++  add_command(@"Focus Right Pane", IDC_COVE_FOCUS_SPLIT_RIGHT);
++  add_command(@"Copy Current URL", IDC_COPY_URL);
+   return item;
+ }
+ 
+diff --git a/chrome/browser/global_keyboard_shortcuts_mac.mm b/chrome/browser/global_keyboard_shortcuts_mac.mm
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -145,10 +145,10 @@
+ 
+       {true,  true,  false, false, kVK_ANSI_M,            IDC_SHOW_AVATAR_MENU},
+       {true,  false, false, true,  kVK_ANSI_L,            IDC_SHOW_DOWNLOADS},
+-      {true,  true,  false, false, kVK_ANSI_C,            IDC_DEV_TOOLS_INSPECT},
++      {true,  true,  false, false, kVK_ANSI_C,            IDC_COPY_URL},
+       {true,  false, false, true,  kVK_ANSI_C,            IDC_DEV_TOOLS_INSPECT},
+-      {true,  false, false, true,  kVK_DownArrow,         IDC_FOCUS_NEXT_PANE},
+-      {true,  false, false, true,  kVK_UpArrow,           IDC_FOCUS_PREVIOUS_PANE},
++      {true,  false, false, true,  kVK_DownArrow,         IDC_SELECT_NEXT_TAB},
++      {true,  false, false, true,  kVK_UpArrow,           IDC_SELECT_PREVIOUS_TAB},
+       {true,  true,  false, true,  kVK_ANSI_A,            IDC_FOCUS_INACTIVE_POPUP_FOR_ACCESSIBILITY},
+       {true,  false, false, true,  kVK_ANSI_R,            IDC_SHOW_READING_MODE_KEYBOARD},
+     });
+diff --git a/chrome/browser/ui/cocoa/main_menu_builder_unittest.mm b/chrome/browser/ui/cocoa/main_menu_builder_unittest.mm
+--- a/chrome/browser/ui/cocoa/main_menu_builder_unittest.mm
++++ b/chrome/browser/ui/cocoa/main_menu_builder_unittest.mm
+@@ -6,6 +6,7 @@
+ 
+ #include "base/strings/utf_string_conversions.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "testing/gtest_mac.h"
+@@ -134,4 +135,17 @@
+   EXPECT_TRUE([@"w" isEqualToString:closeWindowMenuItem.keyEquivalent]);
+ }
+ 
++TEST(MainMenuBuilderTest, CoveControlsHaveDiscoverableShortcuts) {
++  NSMenu* menu = chrome::BuildMainMenu(nil, nil, u"Cove", false, false);
++  NSMenu* tabs = [menu itemWithTag:IDC_TAB_MENU].submenu;
++  ASSERT_TRUE(tabs);
++  EXPECT_NSEQ(@"d", [tabs itemWithTag:IDC_WINDOW_PIN_TAB].keyEquivalent);
++  EXPECT_NSEQ(@"!", [tabs itemWithTag:IDC_COVE_FOCUS_SPLIT_LEFT].keyEquivalent);
++  EXPECT_NSEQ(@"@", [tabs itemWithTag:IDC_COVE_FOCUS_SPLIT_RIGHT].keyEquivalent);
++  EXPECT_NSEQ(@"_", [tabs itemWithTag:IDC_COVE_REMOVE_SPLIT].keyEquivalent);
++  EXPECT_NSEQ(@"C", [tabs itemWithTag:IDC_COPY_URL].keyEquivalent);
++  NSMenu* file = [menu itemWithTag:IDC_FILE_MENU].submenu;
++  EXPECT_NSEQ(@"S", [file itemWithTag:IDC_SAVE_PAGE].keyEquivalent);
++}
++
+ }  // namespace
+diff --git a/chrome/app/cove_command_ids.h b/chrome/app/cove_command_ids.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/app/cove_command_ids.h
+@@ -0,0 +1,20 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_APP_COVE_COMMAND_IDS_H_
++#define CHROME_APP_COVE_COMMAND_IDS_H_
++
++// Cove-only IDs stay outside Chromium's allocated page command range.
++#define IDC_COVE_REMOVE_SPLIT 35070
++#define IDC_COVE_FOCUS_SPLIT_LEFT 35071
++#define IDC_COVE_FOCUS_SPLIT_RIGHT 35072
++
++namespace cove {
++constexpr bool IsSplitCommand(int id) {
++  return id == IDC_COVE_REMOVE_SPLIT || id == IDC_COVE_FOCUS_SPLIT_LEFT ||
++         id == IDC_COVE_FOCUS_SPLIT_RIGHT;
++}
++}  // namespace cove
++
++#endif  // CHROME_APP_COVE_COMMAND_IDS_H_

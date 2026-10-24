@@ -1,0 +1,49 @@
+diff --git a/chrome/browser/ui/browser_ui_prefs.cc b/chrome/browser/ui/browser_ui_prefs.cc
+index d2264ce903..bb1dc8701a 100644
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -138,7 +138,8 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterIntegerPref(prefs::kBookmarkBarRenderedOnNtpCount, 0);
+   registry->RegisterBooleanPref(prefs::kPinContextualTaskButton, true,
+                                 pref_registration_flags);
+-  registry->RegisterBooleanPref(prefs::kPinSplitTabButton, false,
++  // Keep Split View discoverable in Cove; explicit saved pin choices win.
++  registry->RegisterBooleanPref(prefs::kPinSplitTabButton, true,
+                                 pref_registration_flags);
+ 
+   registry->RegisterBooleanPref(prefs::kWebAppCreateOnDesktop, true);
+diff --git a/chrome/browser/ui/views/toolbar/split_tabs_button_interactive_ui_test.cc b/chrome/browser/ui/views/toolbar/split_tabs_button_interactive_ui_test.cc
+index af8d4a651b..c284fd06a2 100644
+--- a/chrome/browser/ui/views/toolbar/split_tabs_button_interactive_ui_test.cc
++++ b/chrome/browser/ui/views/toolbar/split_tabs_button_interactive_ui_test.cc
+@@ -150,6 +150,10 @@ class SplitTabButtonInteractiveTest
+     host_resolver()->AddRule("*", "127.0.0.1");
+     ASSERT_TRUE(embedded_test_server()->Start());
+ 
++    // Most upstream scenarios explicitly test pinning from the hidden state.
++    // Cove's default is visible, so make that test baseline explicit.
++    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kPinSplitTabButton,
++                                                    false);
+     WaitForInitialWebUI();
+ 
+     if (GetParam()) {
+@@ -482,6 +486,19 @@ class SplitTabButtonInteractiveTest
+   base::HistogramTester histogram_tester_;
+ };
+ 
++IN_PROC_BROWSER_TEST_P(SplitTabButtonInteractiveTest,
++                       CoveDefaultVisibleAndExplicitUnpin) {
++  RunTestSequence(
++      Do([this]() {
++        browser()->GetProfile()->GetPrefs()->ClearPref(prefs::kPinSplitTabButton);
++      }),
++      CheckSplitTabButtonPinState(true),
++      WaitForShow(kToolbarSplitTabsToolbarButtonElementId),
++      WaitForElementNonzeroSize(kToolbarSplitTabsToolbarButtonElementId),
++      UpdateSplitTabButtonPinState(false), CheckSplitTabButtonPinState(false),
++      WaitForHide(kToolbarSplitTabsToolbarButtonElementId));
++}
++
+ IN_PROC_BROWSER_TEST_P(SplitTabButtonInteractiveTest, PinSplitTabButton) {
+   RunTestSequence(
+       EnsureNotPresent(kToolbarSplitTabsToolbarButtonElementId),

@@ -1,0 +1,104 @@
+diff --git a/chrome/browser/ui/browser_command_controller_browsertest.cc b/chrome/browser/ui/browser_command_controller_browsertest.cc
+index 2bbf49bb1d..63aa9a9ac8 100644
+--- a/chrome/browser/ui/browser_command_controller_browsertest.cc
++++ b/chrome/browser/ui/browser_command_controller_browsertest.cc
+@@ -18,6 +18,7 @@
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/glic/glic_pref_names.h"
+@@ -84,6 +85,7 @@
+ #include "components/signin/public/identity_manager/identity_test_environment.h"
+ #include "components/signin/public/identity_manager/identity_test_utils.h"
+ #include "components/sync/base/features.h"
++#include "components/tabs/public/split_tab_data.h"
+ #include "components/translate/core/browser/language_state.h"
+ #include "components/translate/core/browser/translate_manager.h"
+ #include "content/public/test/browser_test.h"
+@@ -299,6 +301,83 @@ class BrowserCommandControllerBrowserTestRefreshOnly
+ using BrowserCommandControllerBrowserTestToolbarPinningOnly =
+     BrowserCommandControllerBrowserTestRefreshOnly;
+ 
++// Exercise command dispatch rather than calling the model mutators directly:
++// action adapters and native keyboard/menu commands must reach the same model.
++IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
++                       CoveSplitCommandsPreserveTabs) {
++  auto* model = browser()->tab_strip_model();
++  ASSERT_EQ(1, model->count());
++  const GURL left_url("data:text/html,<title>Cove left</title>left");
++  const GURL right_url("data:text/html,<title>Cove right</title>right");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), left_url));
++
++  for (int command : {IDC_COVE_REMOVE_SPLIT, IDC_COVE_FOCUS_SPLIT_LEFT,
++                       IDC_COVE_FOCUS_SPLIT_RIGHT}) {
++    EXPECT_FALSE(chrome::IsCommandEnabled(browser(), command));
++    EXPECT_FALSE(chrome::ExecuteCommand(browser(), command));
++  }
++
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_NEW_SPLIT_TAB));
++  ASSERT_EQ(2, model->count());
++  ASSERT_TRUE(model->GetSplitForTab(0).has_value());
++  ASSERT_EQ(model->GetSplitForTab(0), model->GetSplitForTab(1));
++  ASSERT_EQ(2U,
++            model->GetSplitData(*model->GetSplitForTab(0))->ListTabs().size());
++  ASSERT_EQ(1, model->active_index());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), right_url));
++
++  auto* const left_contents = model->GetWebContentsAt(0);
++  auto* const right_contents = model->GetWebContentsAt(1);
++  EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_COVE_REMOVE_SPLIT));
++  EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_COVE_FOCUS_SPLIT_LEFT));
++  EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_COVE_FOCUS_SPLIT_RIGHT));
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_COVE_FOCUS_SPLIT_LEFT));
++  EXPECT_EQ(0, model->active_index());
++  EXPECT_EQ(left_contents, model->GetActiveWebContents());
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_COVE_FOCUS_SPLIT_RIGHT));
++  EXPECT_EQ(1, model->active_index());
++  EXPECT_EQ(right_contents, model->GetActiveWebContents());
++
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_COVE_REMOVE_SPLIT));
++  ASSERT_EQ(2, model->count());
++  EXPECT_FALSE(model->GetSplitForTab(0).has_value());
++  EXPECT_FALSE(model->GetSplitForTab(1).has_value());
++  EXPECT_EQ(left_contents, model->GetWebContentsAt(0));
++  EXPECT_EQ(right_contents, model->GetWebContentsAt(1));
++  EXPECT_EQ(left_url, left_contents->GetLastCommittedURL());
++  EXPECT_EQ(right_url, right_contents->GetLastCommittedURL());
++  EXPECT_FALSE(chrome::IsCommandEnabled(browser(), IDC_COVE_REMOVE_SPLIT));
++  EXPECT_FALSE(chrome::IsCommandEnabled(browser(), IDC_COVE_FOCUS_SPLIT_LEFT));
++  EXPECT_FALSE(chrome::IsCommandEnabled(browser(), IDC_COVE_FOCUS_SPLIT_RIGHT));
++}
++
++IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
++                       CovePinCommandPreservesCurrentTab) {
++  auto* model = browser()->tab_strip_model();
++  ASSERT_EQ(1, model->count());
++  const GURL url("data:text/html,<title>Cove pinned tab</title>pinned");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++  auto* const contents = model->GetActiveWebContents();
++  EXPECT_FALSE(model->IsTabPinned(model->active_index()));
++
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_WINDOW_PIN_TAB));
++  ASSERT_EQ(1, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(model->active_index()));
++  EXPECT_EQ(url, contents->GetLastCommittedURL());
++
++  // Activating another tab must not silently undo the pin or replace its page.
++  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
++  ASSERT_EQ(2, model->count());
++  EXPECT_TRUE(model->IsTabPinned(model->GetIndexOfWebContents(contents)));
++  model->ActivateTabAt(model->GetIndexOfWebContents(contents));
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_WINDOW_PIN_TAB));
++  EXPECT_EQ(2, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_FALSE(model->IsTabPinned(model->active_index()));
++  EXPECT_EQ(url, contents->GetLastCommittedURL());
++}
++
+ // Verify that showing a constrained window disables find.
+ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest, DisableFind) {
+   EXPECT_TRUE(chrome::IsCommandEnabled(browser(), IDC_FIND));
