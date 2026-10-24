@@ -14,11 +14,17 @@ The existing TypeScript implementation remains a runnable interaction reference 
 
 Acceptance requires a runnable Cove application built through Chromium's GN/Ninja toolchain with no Electron runtime dependency. An architecture document or an unbuilt patch does not satisfy that requirement.
 
+## Migration status
+
+The initial native source pin, GN arguments, build driver and sidebar-default patch are now in [`native/`](native/README.md). The patch has been applied to a disposable fixture of the exact pinned upstream files, with SHA-256 checks. Tooling tests exercise disk/revision safeguards. No full native compilation or native UI validation has been completed; `npm start` still runs the Electron prototype.
+
+The first patch reuses Chromium's native Views vertical tabs. It does not yet port Spaces, Favorites, folders, the command palette, page framing or branding. The build driver refuses to begin a full checkout on the current volume because it is below the configured 100 GiB bootstrap guardrail.
+
 ## Build planning
 
-The current development machine is macOS arm64 with Xcode selected. On 2026-10-23, `df -h .` reported `50Gi` available on the repository's volume. Choose a build location with sufficient headroom before a large source sync or compilation; neither has been started for this migration.
+The current development machine is macOS arm64 with Xcode selected. On 2026-10-23, the native doctor most recently reported `41.58 GiB` free on the repository's volume. Choose a build location with sufficient headroom before a large source sync or compilation; a full source checkout and native compilation have not been started. Only bounded downloads of touched upstream files have been performed.
 
-Upstream Chromium is the proposed base. Helium is a useful native Chromium reference, but inheriting its patches and product decisions is a separate choice.
+Upstream Chromium is the selected base, initially pinned to `156.0.8078.48`. Helium is a useful native Chromium reference, but inheriting its patches and product decisions is a separate choice.
 
 References:
 

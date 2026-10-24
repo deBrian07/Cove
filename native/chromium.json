@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "product": "Cove",
+  "version": "156.0.8078.48",
+  "revision": "d0c02bfad08ec92a6ffcf989e53cd995e6381a4c",
+  "source_url": "https://chromium.googlesource.com/chromium/src.git",
+  "depot_tools_url": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+  "depot_tools_revision": "dbc99f8b5b88e43a2b907d8ddd93c269d24c287e",
+  "target_os": "mac",
+  "target_cpu": "arm64",
+  "gn_args_file": "native/args.gn",
+  "patches_dir": "native/patches",
+  "patch_series": "native/patches/series",
+  "minimum_free_gib": 100,
+  "release_source": "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Mac&num=1",
+  "resolved_at": "2026-10-23",
+  "source_files": "native/upstream-files.json"
+}
