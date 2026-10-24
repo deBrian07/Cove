@@ -1,0 +1,99 @@
+--- a/chrome/browser/resources/tab_search/app.css
++++ b/chrome/browser/resources/tab_search/app.css
+@@ -28,7 +28,7 @@
+   --mwb-list-item-hover-background-color: #25262c;
+   --mwb-list-item-selected-background-color: #3730e8;
+   --mwb-item-height: 48px;
+-  --mwb-list-item-horizontal-margin: 16px;
++  --mwb-list-item-horizontal-margin: 8px;
+   --mwb-list-section-title-height: 36px;
+   --mwb-primary-text-font-size: 14px;
+   --mwb-primary-text-font-weight: 500;
+--- a/chrome/browser/resources/tab_search/tab_search_item.css
++++ b/chrome/browser/resources/tab_search/tab_search_item.css
+@@ -92,11 +92,7 @@
+ }
+ 
+ #secondaryContainer {
+-  align-items: center;
+-  color: var(--cr-secondary-text-color);
+-  display: flex;
+-  font-size: var(--mwb-secondary-text-font-size);
+-  font-weight: var(--mwb-secondary-text-font-weight);
++  display: none;
+ }
+ 
+ :host([size=compact]) #secondaryContainer {
+@@ -173,15 +169,14 @@
+ 
+ #iconContainer {
+   align-items: center;
+-  background: var(--tab-search-favicon-background,
+-      var(--color-list-item-url-favicon-background));
++  background: transparent;
+   border-radius: 6px;
+   display: flex;
+   flex-shrink: 0;
+   height: 32px;
+   justify-content: center;
+   overflow: hidden;
+-  margin-inline-end: var(--tab-search-item-icon-margin, 12px);
++  margin-inline-end: var(--tab-search-item-icon-margin, 8px);
+   width: 32px;
+ }
+ 
+@@ -209,7 +204,31 @@
+   }
+ }
+ 
++:host(.mwb-list-item) {
++  box-sizing: border-box;
++  margin-inline: 8px;
++}
++
+ :host(.mwb-list-item.selected) {
+   background-color: var(--mwb-list-item-selected-background-color);
+   border-radius: 10px;
+ }
++
++.action-hint {
++  align-items: center;
++  color: var(--cr-secondary-text-color);
++  display: flex;
++  flex-shrink: 0;
++  font-size: 12px;
++  gap: 8px;
++  white-space: nowrap;
++}
++
++.action-arrow {
++  font-size: 16px;
++  line-height: 1;
++}
++
++:host(.hovered) .action-hint.has-close-button {
++  display: none;
++}
+--- a/chrome/browser/resources/tab_search/tab_search_item.html.ts
++++ b/chrome/browser/resources/tab_search/tab_search_item.html.ts
+@@ -4,6 +4,7 @@
+ 
+ import {html} from '//resources/lit/v3_0/lit.rollup.js';
+ 
++import {TabItemType} from './tab_data.js';
+ import type {TabSearchItemElement} from './tab_search_item.js';
+ 
+ export function getHtml(this: TabSearchItemElement) {
+@@ -38,6 +39,12 @@
+     ` : ''}
+   </div>
+ </div>
++<div class="action-hint ${this.isCloseable_() ? 'has-close-button' : ''}"
++    aria-hidden="true">
++  <span>${this.data.type === TabItemType.OPEN_TAB ?
++      'Switch to Tab' : 'Reopen'}</span>
++  <span class="action-arrow">↵</span>
++</div>
+ ${this.isCloseable_() ? html`
+   <div class="${this.getButtonContainerStyles_()}">
+     <cr-icon-button id="closeButton" role="${this.getCloseButtonRole_()}"

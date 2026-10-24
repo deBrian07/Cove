@@ -35,7 +35,7 @@ npm run build -- --jobs 4
 npm start
 ```
 
-Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48`, bundle ID `dev.cove.browser`. The current sidebar is Chromium's native vertical tab strip with Cove defaults; Spaces, Favorites and the command palette have not yet been ported from the retired prototype.
+Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48`, bundle ID `dev.cove.browser`. The current sidebar is Chromium's native vertical tab strip with Cove defaults; The native command palette now supports new URL/search navigation and tab switching; Spaces and Arc-style Favorites still need native implementations.
 
 The APFS image has a growable virtual capacity. Its backing drive must also have real free space. Default storage checks use the smaller of the image's free space and the backing drive's free space, so a large virtual capacity cannot hide a full host disk.
 

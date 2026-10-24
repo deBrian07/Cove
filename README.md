@@ -24,6 +24,6 @@ npm run build -- --jobs 4
 
 The existing `out/Cove` directory is reused. No Electron dependency, entrypoint or fallback is part of the active project. The previous implementation and unfinished visual work are preserved under [`legacy/electron/`](legacy/electron/README.md) as reference material.
 
-The native build currently includes Cove branding and native vertical-tab defaults. Arc-style Spaces, Favorites and the command bar still need native implementations. All further product work belongs in the native Chromium patch series.
+The native patches add a centered dark command palette, URL/default-engine search, tab switching and compact vertical tabs. ⌘T opens the palette; Return opens a selected tab or an unmatched search, and ⌘Return opens the query in a new tab. Arc-style Spaces, Favorites, folders and the full window layout still need native implementations. All product work belongs in the native Chromium patch series.
 
 See [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).

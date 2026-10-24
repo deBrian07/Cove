@@ -1,0 +1,20 @@
+diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
+index 0f7a326019..2471b86bb3 100644
+--- a/chrome/browser/ui/browser_actions.cc
++++ b/chrome/browser/ui/browser_actions.cc
+@@ -1241,7 +1241,14 @@ void BrowserActions::InitializeChromeMenuActions() {
+           base::BindRepeating(
+               [](BrowserWindowInterface* bwi, actions::ActionItem* item,
+                  actions::ActionInvocationContext context) {
+-                chrome::NewTab(bwi, NewTabTypes::kNewTabCommand);
++                // IDC_NEW_TAB is itself dispatched through this action. Do
++                // not execute that command here: it would invoke us again.
++                if (bwi->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++                    !bwi->GetProfile()->IsOffTheRecord()) {
++                  chrome::ShowTabSearch(bwi);
++                } else {
++                  chrome::NewTab(bwi, NewTabTypes::kNewTabCommand);
++                }
+               },
+               bwi))
+           .SetActionId(kActionNewTab)

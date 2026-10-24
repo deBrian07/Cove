@@ -14,12 +14,12 @@ All further UI and workflow work belongs in Chromium's native UI and services th
 
 The current native patches enable vertical tabs by default, adjust sidebar dimensions and hover delays, add Cove development branding, and isolate the default native profile from Chromium and the prototype. The completed binary's identity and native rendering are verified from the copied workspace.
 
-The native application does not yet include Arc-style Spaces, Favorites, folders, the command palette, page framing or custom icons. Native rendering validation does not establish Arc workflow or visual parity.
+The native command palette reuses Chromium’s Tab Search WebUI, Mojo handler and Views bubble, with URL/search classification through the native omnibox service. It closes after navigation or tab switching. The native application does not yet include Arc-style Spaces, Favorites, folders, page framing or custom icons. Native rendering validation does not establish Arc workflow or visual parity.
 
 ## Next native work
 
 1. Implement Spaces, Favorites, pinned/temporary tab organization and folders against Chromium's tab and profile services.
-2. Port the reference command palette into the native UI, including result selection, dismissal and keyboard-focus behavior.
+2. Extend the native command palette with history suggestions and current-tab URL editing.
 3. Match the supplied Arc screenshot's sidebar hierarchy, page framing, compact controls, theme and motion. Validate the actual native app after incremental builds.
 4. Add an explicit importer for the retired prototype's library, preserving the original and validating the destination profile.
 5. Maintain upstream security updates, native tests, packaging and signing as part of the Chromium fork.

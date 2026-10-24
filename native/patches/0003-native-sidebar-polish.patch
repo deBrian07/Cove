@@ -1,0 +1,39 @@
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -147,18 +147,19 @@
+       return 20;
+     case LayoutConstant::kMainBackgroundRegionCornerRadius:
+     case LayoutConstant::kToolbarCornerRadius:
+-    case LayoutConstant::kVerticalTabCornerRadius:
+       return 8;
++    case LayoutConstant::kVerticalTabCornerRadius:
++      return 6;
+     case LayoutConstant::kVerticalTabHeight:
+-      return 30;
++      return 36;
+     case LayoutConstant::kVerticalTabPinnedHeight:
+       return 32;
+     case LayoutConstant::kVerticalTabMinWidth:
+       return 32;
+     case LayoutConstant::kVerticalTabStripHorizontalPadding:
+-      return 12;
++      return 8;
+     case LayoutConstant::kVerticalTabStripUncollapsedVerticalPadding:
+-      return 12;
++      return 8;
+     case LayoutConstant::kVerticalTabStripCollapsedVerticalPadding:
+       return 8;
+     case LayoutConstant::kVerticalTabStripComboButtonIconSize:
+@@ -242,10 +243,10 @@
+       return gfx::Insets::VH(4, 0);
+ 
+     case VERTICAL_TAB_STRIP_BOTTOM_BUTTON_UNCOLLAPSED:
+-      return gfx::Insets::VH(5, 14);
++      return gfx::Insets::VH(4, 10);
+ 
+     case VERTICAL_TAB_STRIP_BOTTOM_BUTTON_COLLAPSED:
+-      return gfx::Insets::VH(5, 6);
++      return gfx::Insets::VH(4, 6);
+   }
+   NOTREACHED();
+ }

@@ -8,10 +8,12 @@ This directory contains the active native Chromium patch series and build config
 - A pinned `depot_tools` revision and local macOS arm64 development GN configuration.
 - A native C++ patch that uses Chromium's Views vertical tab strip by default, with 260-pixel expanded width and 120-millisecond hover/edge delays. Existing saved preferences take precedence.
 - Development branding for `Cove.app` with bundle ID `dev.cove.browser`, plus a separate native default profile directory.
-- A bounded verifier that checks the seven upstream files against `upstream-files.json` and applies the series in a temporary fixture.
+- A bounded verifier that checks the patched upstream files against `upstream-files.json` and applies the series in a temporary fixture.
 - Python build tooling and regression tests for the build safeguards.
 
-The patch does not yet port Spaces, Arc-style Favorites/folders, the command palette, page framing, prototype data import or custom icons. Native tab behavior comes from upstream Chromium. The completed application is named `Cove.app`; its initial icon remains the upstream Chromium icon.
+The native palette opens with ⌘T and uses Chromium’s omnibox classifier to open URLs or default-engine searches. Return switches a selected tab or opens an unmatched query; ⌘Return opens the query regardless of tab matches. A centered Views bubble hosts the compact dark WebUI, and submission closes it. New profiles default to dark browser chrome; explicit saved theme preferences remain in effect.
+
+The patches do not yet port Spaces, Arc-style Favorites/folders, page framing, prototype data import or custom icons. Native tab behavior comes from upstream Chromium. The completed application is named `Cove.app`; its initial icon remains the upstream Chromium icon.
 
 ## Verify without a full checkout
 
@@ -20,7 +22,7 @@ npm run chromium:test
 npm run chromium:verify-patches
 ```
 
-The verifier's source download is bounded to 64 MiB total and 16 MiB per file; the two-patch series touches 316,079 bytes of upstream source. It accepts `--source /path/to/pinned/src` for offline verification against unmodified upstream files. The cache under `native/.cache/` is ignored by Git.
+The verifier's source download is bounded to 64 MiB total and 16 MiB per file; the source-file checksum manifest covers every patched upstream file. It accepts `--source /path/to/pinned/src` for offline verification against unmodified upstream files. The cache under `native/.cache/` is ignored by Git.
 
 These checks establish patch applicability and build-tool behavior. They do not establish that Chromium compiles, that the native unit tests pass, or that the UI matches Arc.
 
@@ -60,7 +62,7 @@ autoninja -C out/Cove unit_tests
 out/Cove/unit_tests --gtest_filter='CoveSidebarDefaultsTest.*:VerticalTabStripStateControllerTest.*'
 ```
 
-Run the native application with its separate profile. Check navigation, pinning, tab dragging, session restore, sidebar resize/collapse/hover, focus, fullscreen and reduced motion. The baseline native build is verified. Implement Spaces and the command palette in this native application, using the archive only as a behavior/design reference.
+Run the native application with its separate profile. Check navigation, pinning, tab dragging, session restore, sidebar resize/collapse/hover, focus, fullscreen and reduced motion. The baseline native build is verified. Implement Spaces and the remaining command-palette workflows in this native application, using the archive only as a behavior/design reference.
 
 ## Upstream references
 

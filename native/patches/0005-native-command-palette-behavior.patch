@@ -1,0 +1,316 @@
+diff --git a/chrome/browser/resources/tab_search/tab_search_api_proxy.ts b/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
+index 9f7dd6e445..95dbd96f02 100644
+--- a/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
++++ b/chrome/browser/resources/tab_search/tab_search_api_proxy.ts
+@@ -24,6 +24,8 @@ export interface TabSearchApiProxy {
+ 
+   closeWebUiTab(): void;
+ 
++  openSearch(text: string): void;
++
+   getProfileData(): Promise<{profileData: ProfileData}>;
+ 
+   getIsSplit(): Promise<{isSplit: boolean}>;
+@@ -65,6 +67,10 @@ export class TabSearchApiProxyImpl implements TabSearchApiProxy {
+     this.handler.closeWebUiTab();
+   }
+ 
++  openSearch(text: string) {
++    this.handler.openSearch(text);
++  }
++
+   getProfileData() {
+     return this.handler.getProfileData();
+   }
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.ts b/chrome/browser/resources/tab_search/tab_search_page.ts
+index bed19b1bd1..6fc01bf5cb 100644
+--- a/chrome/browser/resources/tab_search/tab_search_page.ts
++++ b/chrome/browser/resources/tab_search/tab_search_page.ts
+@@ -131,7 +131,7 @@ export class TabSearchPageElement extends TabSearchSearchFieldBase {
+   }
+ 
+   accessor availableHeight: number|undefined;
+-  private accessor searchText_: string = '';
++  protected accessor searchText_: string = '';
+   protected accessor listMaxHeight_: number|undefined;
+   protected accessor listItemSize_: number|undefined;
+   protected accessor searchQueryMaxLength_: number = SEARCH_QUERY_MAX_LENGTH;
+@@ -196,6 +196,7 @@ export class TabSearchPageElement extends TabSearchSearchFieldBase {
+     this.documentVisibilityChangedListener_ = () => {
+       if (document.visibilityState === 'visible') {
+         this.windowShownTimestamp_ = Date.now();
++        this.updateComplete.then(() => this.$.searchInput.focus());
+         this.activeDescendantEnabled_ = false;
+         if (loadTimeData.getBoolean('tabSearchPerformanceImprovements')) {
+           listenOnce(
+@@ -270,12 +271,12 @@ export class TabSearchPageElement extends TabSearchSearchFieldBase {
+        * Calculate the list's available height by subtracting the height used by
+        * the search and feedback fields.
+        */
+-      this.listMaxHeight_ = Math.max(
++      this.listMaxHeight_ = Math.min(276, Math.max(
+           this.availableHeight - this.$.searchField.offsetHeight -
+               this.$.divider.offsetHeight,
+           Math.round(
+               MINIMUM_AVAILABLE_HEIGHT_LIST_ITEM_COUNT *
+-              this.getStylePropertyPixelValue_('--mwb-item-height')));
++              this.getStylePropertyPixelValue_('--mwb-item-height'))));
+     }
+   }
+ 
+@@ -812,7 +813,26 @@ export class TabSearchPageElement extends TabSearchSearchFieldBase {
+   /**
+    * Handles key events when the search field has focus.
+    */
++  protected onSearchActionClick_() {
++    const query = this.searchText_.trim();
++    if (query) {
++      this.apiProxy_.openSearch(query);
++    }
++  }
++
+   protected onSearchKeydown_(e: KeyboardEvent) {
++    if (e.isComposing) {
++      return;
++    }
++    // With no matching tab, Return navigates the query. Command+Return always
++    // opens a new tab, even when a matching tab is selected in the results.
++    if (e.key === 'Enter' && this.searchText_.trim() &&
++        (e.metaKey || e.ctrlKey || this.$.tabsList.selected === -1)) {
++      this.apiProxy_.openSearch(this.searchText_.trim());
++      e.preventDefault();
++      e.stopPropagation();
++      return;
++    }
+     // In the event the search field has focus and the first item in the list is
+     // selected and we receive a Shift+Tab navigation event, ensure All DOM
+     // items are available so that the focus can transfer to the last item in
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+index 921461b9e9..9b446c3fc4 100644
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -753,7 +753,12 @@ void BrowserCommandController::HandleCommandWithDisposition(
+       CloseWindow(browser_);
+       break;
+     case IDC_NEW_TAB: {
+-      NewTab(browser_, NewTabTypes::kNewTabCommand);
++      if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
++          !profile()->IsOffTheRecord()) {
++        ShowTabSearch(browser_);
++      } else {
++        NewTab(browser_, NewTabTypes::kNewTabCommand);
++      }
+       break;
+     }
+     case IDC_NEW_TAB_TO_RIGHT: {
+diff --git a/chrome/browser/ui/webui/tab_search/BUILD.gn b/chrome/browser/ui/webui/tab_search/BUILD.gn
+index a9f7f6514c..45f90a9380 100644
+--- a/chrome/browser/ui/webui/tab_search/BUILD.gn
++++ b/chrome/browser/ui/webui/tab_search/BUILD.gn
+@@ -43,6 +43,7 @@ source_set("tab_search") {
+     "//base",
+     "//base:i18n",
+     "//chrome/app:command_ids",
++    "//chrome/browser/autocomplete",
+     "//chrome/browser/favicon",
+     "//chrome/browser/glic/resources:grit",
+     "//chrome/browser/profiles:profile",
+@@ -74,6 +75,7 @@ source_set("tab_search") {
+     "//components/browser_apis/tab_strip/aggregation",
+     "//components/browser_apis/tab_strip/observation",
+     "//components/favicon_base",
++    "//components/omnibox/browser",
+     "//components/prefs",
+     "//components/sessions",
+     "//components/signin/public/identity_manager",
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search.mojom b/chrome/browser/ui/webui/tab_search/tab_search.mojom
+index ea657bb212..ed5ba54433 100644
+--- a/chrome/browser/ui/webui/tab_search/tab_search.mojom
++++ b/chrome/browser/ui/webui/tab_search/tab_search.mojom
+@@ -261,6 +261,9 @@ interface PageHandler {
+   // Switch to a specific tab.
+   SwitchToTab(SwitchToTabInfo switch_to_tab_info);
+ 
++  // Open a URL or default-engine search from the command palette.
++  OpenSearch(string text);
++
+   // Open a recently closed tab or tab group.
+   OpenRecentlyClosedEntry(int32 session_id);
+ 
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
+index 5e5908bdcc..a073f51df5 100644
+--- a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
++++ b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc
+@@ -17,7 +17,9 @@
+ #include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "base/metrics/histogram_functions.h"
++#include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
+ #include "base/time/time.h"
+ #include "base/timer/timer.h"
+ #include "base/trace_event/trace_event.h"
+@@ -34,6 +36,7 @@
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/interaction/browser_elements.h"
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tab_ui_helper.h"
+ #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
+ #include "chrome/browser/ui/tabs/features.h"
+@@ -58,6 +61,8 @@
+ #include "components/browser_apis/tab_strip/aggregation/tab_strip_service_aggregator.h"
+ #include "components/browser_apis/tab_strip/tab_strip_service.h"
+ #include "components/browser_apis/tab_strip/types/node_id.h"
++#include "components/omnibox/browser/autocomplete_classifier.h"
++#include "components/omnibox/browser/autocomplete_match.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/sessions/core/session_id.h"
+ #include "components/signin/public/base/signin_metrics.h"
+@@ -80,6 +85,7 @@
+ #include "ui/base/window_open_disposition.h"
+ #include "ui/color/color_provider.h"
+ #include "ui/gfx/image/image_skia.h"
++#include "url/url_constants.h"
+ 
+ namespace {
+ constexpr base::TimeDelta kTabsChangeDelay = base::Milliseconds(50);
+@@ -391,6 +397,47 @@ void TabSearchPageHandler::SwitchToTab(
+             metrics_reporter->ClearMark("SwitchToTab");
+           },
+           metrics_reporter_));
++  if (auto embedder = webui_controller_->embedder()) {
++    embedder->CloseUI();
++  }
++}
++
++void TabSearchPageHandler::OpenSearch(const std::string& text) {
++  // Reuse the omnibox classifier so URL fixing and the user's chosen search
++  // engine stay consistent with normal address-bar navigation.
++  if (!browser_ || browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return;
++  }
++  std::u16string input;
++  base::TrimWhitespace(base::UTF8ToUTF16(text), base::TRIM_ALL, &input);
++  if (input.empty()) {
++    return;
++  }
++  auto* classifier = AutocompleteClassifierFactory::GetForProfile(profile_);
++  if (!classifier) {
++    return;
++  }
++  AutocompleteMatch match;
++  classifier->Classify(input, false, false, metrics::OmniboxEventProto::BLANK,
++                       &match, nullptr);
++  if (!match.destination_url.is_valid() ||
++      match.destination_url.SchemeIs(url::kJavaScriptScheme)) {
++    return;
++  }
++
++  NavigateParams params(browser_, match.destination_url,
++                        ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  params.user_gesture = true;
++  // Tab activation can close the bubble. Retain only its weak embedder across
++  // navigation so no handler-owned state is accessed after that activation.
++  auto embedder = webui_controller_->embedder();
++  Navigate(&params);
++
++  // Closing the native bubble also returns keyboard focus to the new page.
++  if (embedder) {
++    embedder->CloseUI();
++  }
+ }
+ 
+ void TabSearchPageHandler::OpenRecentlyClosedEntry(int32_t session_id) {
+diff --git a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
+index c3e2e0859c..4c4532784d 100644
+--- a/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
++++ b/chrome/browser/ui/webui/tab_search/tab_search_page_handler.h
+@@ -7,6 +7,8 @@
+ 
+ #include <stdint.h>
+ 
++#include <string>
++
+ #include "base/callback_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -88,6 +90,7 @@ class TabSearchPageHandler
+   void GetIsSplit(GetIsSplitCallback callback) override;
+   void SwitchToTab(
+       tab_search::mojom::SwitchToTabInfoPtr switch_to_tab_info) override;
++  void OpenSearch(const std::string& text) override;
+   void OpenRecentlyClosedEntry(int32_t session_id) override;
+   void ReplaceActiveSplitTab(int32_t replacement_tab_id) override;
+   void SaveRecentlyClosedExpandedPref(bool expanded) override;
+diff --git a/chrome/test/data/webui/tab_search/tab_search_page_test.ts b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+index 45cd3768ca..3c6052cf6a 100644
+--- a/chrome/test/data/webui/tab_search/tab_search_page_test.ts
++++ b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+@@ -866,6 +866,41 @@ suite('TabSearchAppTest', () => {
+     assertEquals(1, tabInfo.tabId);
+   });
+ 
++  test('ReturnNavigatesUnmatchedQuery', async () => {
++    await setupTest(createProfileData());
++    setSearchText('https://unmatched-cove-navigation.example/');
++    await microtasksFinished();
++    assertEquals(-1, tabSearchPage.$.tabsList.selected);
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    assertEquals(
++        'https://unmatched-cove-navigation.example/',
++        await testProxy.whenCalled('openSearch'));
++    assertEquals(0, testProxy.getCallCount('switchToTab'));
++  });
++
++  test('CommandReturnNavigatesDespiteSelectedMatch', async () => {
++    await setupTest(createProfileData());
++    setSearchText('google');
++    await microtasksFinished();
++    keyDownOn(tabSearchPage.getSearchInput(), 0, ['meta'], 'Enter');
++    assertEquals('google', await testProxy.whenCalled('openSearch'));
++    assertEquals(0, testProxy.getCallCount('switchToTab'));
++  });
++
++  test('CompositionReturnDoesNotNavigate', async () => {
++    await setupTest(createProfileData());
++    setSearchText('unmatched composition query');
++    await microtasksFinished();
++    tabSearchPage.getSearchInput().dispatchEvent(new KeyboardEvent('keydown', {
++      key: 'Enter',
++      isComposing: true,
++      bubbles: true,
++      composed: true,
++    }));
++    assertEquals(0, testProxy.getCallCount('openSearch'));
++    assertEquals(0, testProxy.getCallCount('switchToTab'));
++  });
++
+   test('KeyPressOnItemTriggersActions', async () => {
+     await setupTest(createProfileData());
+ 
+diff --git a/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts b/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
+index 29d2d91892..78a819b1f9 100644
+--- a/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
++++ b/chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts
+@@ -18,6 +18,7 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
+       'closeTab',
+       'closeTabs',
+       'closeWebUiTab',
++      'openSearch',
+       'getProfileData',
+       'getIsSplit',
+       'openRecentlyClosedEntry',
+@@ -45,6 +46,10 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
+     this.methodCalled('closeWebUiTab', []);
+   }
+ 
++  openSearch(text: string) {
++    this.methodCalled('openSearch', text);
++  }
++
+   getProfileData() {
+     this.methodCalled('getProfileData');
+     return Promise.resolve({profileData: this.profileData_!});

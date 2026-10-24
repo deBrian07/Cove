@@ -1,0 +1,79 @@
+diff --git a/chrome/browser/themes/theme_service.cc b/chrome/browser/themes/theme_service.cc
+index 404b10a09f..2d22970be2 100644
+--- a/chrome/browser/themes/theme_service.cc
++++ b/chrome/browser/themes/theme_service.cc
+@@ -325,11 +325,12 @@ void ThemeService::RegisterProfilePrefs(
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+   registry->RegisterIntegerPref(
+       prefs::kBrowserColorScheme,
+-      std::to_underlying(ThemeService::BrowserColorScheme::kSystem));
++      std::to_underlying(ThemeService::BrowserColorScheme::kDark));
+   registry->RegisterIntegerPref(
+       prefs::kDeprecatedUserColorDoNotUse, SK_ColorTRANSPARENT,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+-  registry->RegisterIntegerPref(prefs::kUserColor, SK_ColorTRANSPARENT);
++  registry->RegisterIntegerPref(prefs::kUserColor,
++                                SkColorSetRGB(0x7E, 0x6C, 0xA8));
+   registry->RegisterIntegerPref(
+       prefs::kDeprecatedBrowserColorVariantDoNotUse,
+       static_cast<int>(ui::mojom::BrowserColorVariant::kSystem),
+diff --git a/chrome/browser/ui/views/bubble/webui_bubble_dialog_view.cc b/chrome/browser/ui/views/bubble/webui_bubble_dialog_view.cc
+index 0e717ac10a..4aa15fe349 100644
+--- a/chrome/browser/ui/views/bubble/webui_bubble_dialog_view.cc
++++ b/chrome/browser/ui/views/bubble/webui_bubble_dialog_view.cc
+@@ -7,6 +7,7 @@
+ #include <optional>
+ 
+ #include "build/build_config.h"
++#include "chrome/common/webui_url_constants.h"
+ #include "components/input/native_web_keyboard_event.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -193,6 +194,11 @@ void WebUIBubbleDialogView::ShowUI() {
+     return;
+   }
+   GetWidget()->Show();
++  if (contents_wrapper_->web_contents()->GetVisibleURL().host() ==
++      chrome::kChromeUITabSearchHost) {
++    GetWidget()->Activate();
++    web_view_->RequestFocus();
++  }
+   web_view_->GetWebContents()->Focus();
+ }
+ 
+@@ -260,6 +266,12 @@ bool WebUIBubbleDialogView::ShouldDescendIntoChildForEventHandling(
+ }
+ 
+ gfx::Rect WebUIBubbleDialogView::GetAnchorRect() const {
++  if (arrow() == views::BubbleBorder::FLOAT && GetAnchorView() &&
++      contents_wrapper_ && contents_wrapper_->web_contents()->GetVisibleURL().host() ==
++          chrome::kChromeUITabSearchHost) {
++    const gfx::Rect bounds = GetAnchorView()->GetWidget()->GetWindowBoundsInScreen();
++    return gfx::Rect(bounds.CenterPoint(), gfx::Size());
++  }
+   if (bubble_anchor_) {
+     return bubble_anchor_.value();
+   }
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+index 01a6b7e97a..ea6ad2d32a 100644
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -201,15 +201,10 @@ bool TabSearchBubbleHost::ShowTabSearchBubble(
+       },
+       *bubble_created_time_));
+ 
+-  const tabs::TabSearchPosition position =
+-      tabs::GetTabSearchPosition(browser_window_interface_);
++  // Retain the native button anchor for focus/activation ownership. The
++  // palette's anchor rect is centered by WebUIBubbleDialogView.
+   webui_bubble_manager_->ShowBubble(
+-      button_,
+-      (position == tabs::TabSearchPosition::kLeadingHorizontalTabstrip ||
+-       position == tabs::TabSearchPosition::kVerticalTabstrip)
+-          ? views::BubbleBorder::TOP_LEFT
+-          : views::BubbleBorder::TOP_RIGHT,
+-      kTabSearchBubbleElementId);
++      button_, views::BubbleBorder::FLOAT, kTabSearchBubbleElementId);
+ 
+   auto* tracker =
+       feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
