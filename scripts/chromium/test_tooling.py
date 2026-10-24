@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -89,6 +90,84 @@ class ToolingTests(unittest.TestCase):
             self.assertFalse(untouched.exists())
             host.assert_not_called()
             execute.assert_not_called()
+
+    def test_disconnected_volume_bootstrap_never_falls_back_to_internal_disk(self):
+        target = Path("/Volumes/CoveBuild/checkout")
+        with mock.patch.object(Path, "is_mount", return_value=False) as mounted, \
+             mock.patch.object(Path, "exists") as exists, \
+             mock.patch.object(cove.shutil, "disk_usage") as disk_usage, \
+             mock.patch.object(cove, "run") as execute, mock.patch.object(Path, "mkdir") as mkdir:
+            with self.assertRaisesRegex(cove.BuildError, "Build volume is not mounted"):
+                cove.bootstrap(target, self.manifest)
+        mounted.assert_called_once_with()
+        exists.assert_not_called()
+        disk_usage.assert_not_called()
+        execute.assert_not_called()
+        mkdir.assert_not_called()
+
+    def test_apfs_filesystem_passes_for_nearest_existing_parent(self):
+        target = self.folder / "new" / "checkout"
+        result = subprocess.CompletedProcess([], 0, stdout=plistlib.dumps({
+            "FilesystemType": "apfs", "MountPoint": "/Volumes/CoveBuild"}).decode())
+        with mock.patch.object(Path, "is_mount", autospec=True, side_effect=lambda path: path == self.folder), \
+             mock.patch.object(cove, "run", return_value=result) as execute:
+            report = cove.require_filesystem(target)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["filesystem"], "apfs")
+        self.assertEqual(report["mount_point"], "/Volumes/CoveBuild")
+        execute.assert_called_once_with(["diskutil", "info", "-plist", str(self.folder)], capture=True)
+        self.assertFalse(target.exists())
+
+    def test_existing_checkout_queries_mount_instead_of_subdirectory(self):
+        result = subprocess.CompletedProcess([], 0, stdout=plistlib.dumps({
+            "FilesystemType": "apfs", "MountPoint": str(self.folder)}).decode())
+        with mock.patch.object(Path, "is_mount", autospec=True,
+                               side_effect=lambda path: path == self.folder) as mounted, \
+             mock.patch.object(cove, "run", return_value=result) as execute:
+            report = cove.require_filesystem(self.src)
+        execute.assert_called_once_with(["diskutil", "info", "-plist", str(self.folder)], capture=True)
+        self.assertEqual(report["volume_path"], str(self.folder))
+        self.assertIn(mock.call(self.src), mounted.call_args_list)
+        self.assertIn(mock.call(self.root), mounted.call_args_list)
+
+    def test_exfat_bootstrap_has_no_side_effects(self):
+        target = self.folder / "new-checkout"
+        result = subprocess.CompletedProcess([], 0, stdout=plistlib.dumps({
+            "FilesystemType": "exfat", "MountPoint": "/Volumes/External"}).decode())
+        with mock.patch.object(cove.shutil, "disk_usage", return_value=mock.Mock(free=700 * cove.GIB)), \
+             mock.patch.object(cove, "require_host"), \
+             mock.patch.object(Path, "is_mount", autospec=True, side_effect=lambda path: path == self.folder), \
+             mock.patch.object(cove, "run", return_value=result) as execute:
+            with self.assertRaisesRegex(cove.BuildError, "requires APFS"):
+                cove.bootstrap(target, self.manifest)
+        self.assertFalse(target.exists())
+        # Reading disk metadata is the only subprocess: no git/network command ran.
+        execute.assert_called_once_with(["diskutil", "info", "-plist", str(self.folder)], capture=True)
+
+    def test_filesystem_detection_fails_closed_on_invalid_metadata(self):
+        for payload in ("not a plist", plistlib.dumps({"FilesystemName": "APFS"}).decode()):
+            with self.subTest(payload=payload), \
+                 mock.patch.object(Path, "is_mount", autospec=True, side_effect=lambda path: path == self.folder), \
+                 mock.patch.object(cove, "run", return_value=subprocess.CompletedProcess([], 0, stdout=payload)):
+                with self.assertRaisesRegex(cove.BuildError, "Cannot determine"):
+                    cove.require_filesystem(self.root)
+
+    def test_doctor_reports_filesystem_and_refuses_exfat(self):
+        manifest_path = self.repo / "manifest.json"
+        manifest_path.write_text(json.dumps(self.manifest))
+        output = io.StringIO()
+        errors = io.StringIO()
+        result = subprocess.CompletedProcess([], 0, stdout=plistlib.dumps({
+            "FilesystemType": "exfat", "MountPoint": "/Volumes/External"}).decode())
+        with mock.patch.object(cove.shutil, "disk_usage", return_value=mock.Mock(free=700 * cove.GIB)), \
+             mock.patch.object(cove, "require_host"), \
+             mock.patch.object(Path, "is_mount", autospec=True, side_effect=lambda path: path == self.folder), \
+             mock.patch.object(cove, "run", return_value=result), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            code = cove.main(["doctor", "--manifest", str(manifest_path), "--checkout", str(self.root)])
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(output.getvalue())["filesystem"]["filesystem"], "exfat")
+        self.assertIn("requires APFS", errors.getvalue())
 
     def test_manifest_storage_threshold_used(self):
         with mock.patch.object(cove.shutil, "disk_usage", return_value=mock.Mock(free=120 * cove.GIB)):

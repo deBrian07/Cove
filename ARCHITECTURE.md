@@ -18,11 +18,13 @@ Acceptance requires a runnable Cove application built through Chromium's GN/Ninj
 
 The initial native source pin, GN arguments, build driver and sidebar-default patch are now in [`native/`](native/README.md). The patch has been applied to a disposable fixture of the exact pinned upstream files, with SHA-256 checks. Tooling tests exercise disk/revision safeguards. No full native compilation or native UI validation has been completed; `npm start` still runs the Electron prototype.
 
-The first patch reuses Chromium's native Views vertical tabs. It does not yet port Spaces, Favorites, folders, the command palette, page framing or branding. The build driver refuses to begin a full checkout on the current volume because it is below the configured 100 GiB bootstrap guardrail.
+The first patch reuses Chromium's native Views vertical tabs. It does not yet port Spaces, Favorites, folders, the command palette, page framing or branding. The original internal-disk storage blocker is resolved by the external SSD setup described in [`native/EXTERNAL_BUILD.md`](native/EXTERNAL_BUILD.md). The source checkout is in progress on its dedicated APFS build image.
 
 ## Build planning
 
-The current development machine is macOS arm64 with Xcode selected. On 2026-10-23, the native doctor most recently reported `41.58 GiB` free on the repository's volume. Choose a build location with sufficient headroom before a large source sync or compilation; a full source checkout and native compilation have not been started. Only bounded downloads of touched upstream files have been performed.
+The development machine is macOS arm64 with Xcode selected. The initial internal-disk check reported only `41.58 GiB` free. The user subsequently authorized the attached `SanDisk 1TB` SSD for the build.
+
+The SSD remains ExFAT. A growable 700 GiB APFS image inside `/Volumes/SanDisk 1TB/CoveChromium` is mounted at `/Volumes/CoveBuild`, with the dedicated checkout at `/Volumes/CoveBuild/checkout`. The mounted image passed the initial storage check with `699.63 GiB` free. Existing SSD files and the drive's partitioning were preserved. A full native compilation has not yet completed.
 
 Upstream Chromium is the selected base, initially pinned to `156.0.8078.48`. Helium is a useful native Chromium reference, but inheriting its patches and product decisions is a separate choice.
 

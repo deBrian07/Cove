@@ -40,7 +40,7 @@ npm run chromium:run
 
 `bootstrap` fetches pinned browser sources and dependencies; `sync` runs the Chromium hooks that obtain build tools. `patch` applies Cove's series. `gen` prepares `out/Cove`; `build` compiles the Chromium `chrome` target. `run` uses a separate `CoveDevelopment` user-data directory and refuses an override that could open an existing Chrome or Arc profile.
 
-The storage thresholds are Cove's conservative local guardrails, not measured upstream minimum requirements. Bootstrap requires 100 GiB free before any checkout or network mutation. The latest doctor check reported 41.58 GiB free on the current system volume, so the full bootstrap and native build cannot proceed there. No existing files are removed to make room.
+The storage thresholds are Cove's conservative local guardrails, not measured upstream minimum requirements. Bootstrap requires 100 GiB free before any checkout or network mutation. The internal volume initially failed this check. The user-authorized external SSD now has a dedicated APFS build image and checkout; see [the external build setup](EXTERNAL_BUILD.md). No existing files are removed to make room.
 
 The scripts refuse a mismatched revision, an unmanaged nonempty checkout, or an unsafe patch state rather than resetting a source tree. Keep source and build output out of this repository. Consult `python3 scripts/chromium/cove_chromium.py --help` for options and `scripts/chromium/README.md` for stage safeguards.
 

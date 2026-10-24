@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import re
 import shutil
 import subprocess
@@ -87,6 +88,13 @@ def checkout_path(value: str | None) -> Path:
 
 
 def nearest_existing(path: Path) -> Path:
+    # Never fall back to the internal /Volumes directory when an external build
+    # volume or disk image has been disconnected.
+    if path.is_absolute() and len(path.parts) >= 3 and path.parts[1] == "Volumes":
+        mount = Path(*path.parts[:3])
+        if not mount.is_mount():
+            raise BuildError(f"Build volume is not mounted: {mount}. Reconnect or attach it before retrying. "
+                             "No checkout or download was started.")
     while not path.exists():
         if path.parent == path:
             raise BuildError(f"Cannot find an existing parent of {path}")
@@ -110,6 +118,35 @@ def require_space(root: Path, stage: str, minimum_free_gib: int = 100) -> None:
                          f"{stage} requires {report['required_gib']} GiB by Cove's local guardrail. "
                          "Use a larger APFS volume with --checkout PATH, or free space before retrying. "
                          "No download or build was started.")
+
+
+def filesystem_report(root: Path) -> dict[str, Any]:
+    anchor = nearest_existing(root)
+    # diskutil accepts a mounted volume, not an arbitrary checkout subdirectory.
+    # Resolve the existing ancestor to its mount before requesting metadata.
+    while not anchor.is_mount():
+        if anchor.parent == anchor:
+            raise BuildError(f"Cannot find the filesystem mount for {root}")
+        anchor = anchor.parent
+    result = run(["diskutil", "info", "-plist", str(anchor)], capture=True)
+    try:
+        info = plistlib.loads(result.stdout.encode("utf-8"))
+    except (plistlib.InvalidFileException, ValueError, TypeError) as error:
+        raise BuildError(f"Cannot determine the build filesystem at {anchor}: invalid diskutil output") from error
+    if not isinstance(info, dict) or not isinstance(info.get("FilesystemType"), str):
+        raise BuildError(f"Cannot determine the build filesystem at {anchor}: diskutil omitted FilesystemType")
+    kind = info["FilesystemType"].lower()
+    return {"volume_path": str(anchor), "filesystem": kind,
+            "mount_point": info.get("MountPoint", str(anchor)), "ok": kind == "apfs"}
+
+
+def require_filesystem(root: Path, report: dict[str, Any] | None = None) -> dict[str, Any]:
+    report = filesystem_report(root) if report is None else report
+    if not report["ok"]:
+        raise BuildError(f"Filesystem gate: {report['volume_path']} uses {report['filesystem']}; "
+                         "Chromium's macOS build requires APFS. Use an APFS volume or an APFS disk image "
+                         "on the external drive. No checkout or download was started.")
+    return report
 
 
 def require_host() -> None:
@@ -275,6 +312,7 @@ def gclient_config(manifest: dict[str, Any]) -> str:
 def bootstrap(root: Path, manifest: dict[str, Any]) -> None:
     require_space(root, "bootstrap", manifest.get("minimum_free_gib", 100))
     require_host()
+    require_filesystem(root)
     if root.exists() and any(root.iterdir()):
         require_owned(root, manifest)
     else:
@@ -420,11 +458,13 @@ def main(argv: list[str] | None = None) -> int:
             raise BuildError("--jobs must be positive")
         if args.command == "doctor":
             report = space_report(root, args.stage, manifest.get("minimum_free_gib", 100))
+            require_host()
+            filesystem = filesystem_report(root)
             print(json.dumps({"checkout": str(root), "revision": manifest["revision"],
                               "target": "mac-arm64", "host": f"{sys.platform}-{platform.machine()}",
-                              "storage": report}, indent=2))
+                              "storage": report, "filesystem": filesystem}, indent=2))
             require_space(root, args.stage, manifest.get("minimum_free_gib", 100))
-            require_host()
+            require_filesystem(root, filesystem)
             print("Doctor passed; no files were changed and no download was started")
         elif args.command == "bootstrap":
             bootstrap(root, manifest)
