@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -672,9 +672,14 @@
+ 
+   DCHECK(IsCommandEnabled(id)) << "Invalid/disabled command " << id;
+ 
+-  // These local commands do not belong to Chromium's declarative action map.
+-  // Dispatch once here, rather than feeding them back through that adapter.
+-  if (::cove::IsSplitCommand(id)) {
++  // The declarative toolbar actions can be hidden while Cove's sidebar owns
++  // navigation. Dispatch its focus commands directly, just like split actions,
++  // so a hidden toolbar action cannot consume the native keyboard shortcut.
++  const bool cove_location_command =
++      (id == IDC_FOCUS_LOCATION || id == IDC_FOCUS_SEARCH) &&
++      browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++      !window()->IsLocationBarVisible();
++  if (::cove::IsSplitCommand(id) || cove_location_command) {
+     HandleCommandWithDisposition(id, disposition, time_stamp);
+     return true;
+   }

@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -3103,6 +3103,11 @@
+ }
+ 
+ bool BrowserView::IsLocationBarVisible() const {
++  // The hidden toolbar retains logical child visibility in Views. Its address
++  // field must not receive focus while Cove owns the sidebar address host.
++  if (vertical_tab_strip_region_view_ && !IsToolbarVisible()) {
++    return false;
++  }
+   return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+              WindowFeatureController::WindowFeature::kFeatureLocationBar) &&
+          GetLocationBar()->IsVisible();
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -644,8 +644,8 @@
+   }
+   if (::cove::IsSplitCommand(id)) {
+     const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
+-    return browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+-           tab && tab->IsSplit();
++    return browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL && tab &&
++           tab->IsSplit();
+   }
+   return command_updater_->IsCommandEnabled(id);
+ }
+@@ -1162,6 +1162,11 @@
+       FocusLocationBar(browser_);
+       break;
+     case IDC_FOCUS_SEARCH:
++      if (!window()->IsLocationBarVisible() &&
++          browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
++        window()->SetFocusToLocationBar(true);
++        break;
++      }
+       base::RecordAction(base::UserMetricsAction("Accel_Focus_Search"));
+       FocusSearch(browser_);
+       break;

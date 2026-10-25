@@ -34,3 +34,14 @@
 0034-native-archive-today.patch
 0035-sidebar-compile-cleanup.patch
 0036-retained-pin-keeps-window.patch
+0037-rendered-sidebar-layout-corrections.patch
+0038-native-sidebar-button-menu.patch
+0039-adaptive-favorites-grid.patch
+0040-covered-native-pin-visibility.patch
+0041-empty-canvas.patch
+0042-sidebar-focus-routing.patch
+0043-archive-owned-canvas-only.patch
+0044-command-bar-result-geometry.patch
+0045-sidebar-address-action-adapter.patch
+0046-native-sidebar-menu-lifetime.patch
+0047-direct-sidebar-focus-dispatch.patch

@@ -1,0 +1,45 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -123,6 +123,7 @@
+   std::map<const views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
++  views::ViewTracker menu_button_;
+   base::RepeatingClosure toggle_favorite_;
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -473,6 +473,7 @@
+   }
+   row_space_ids_.clear();
+   archive_button_.SetView(nullptr);
++  menu_button_.SetView(nullptr);
+   footer->RemoveAllChildViews();
+ 
+   auto* archive =
+@@ -527,6 +528,7 @@
+   add->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+   add->GetViewAccessibility().SetName(u"New and sidebar options");
+   add->SetTooltipText(u"New and sidebar options");
++  menu_button_.SetView(add);
+   footer->InvalidateLayout();
+ }
+ 
+@@ -597,10 +599,11 @@
+   menu_model_->AddItem(kNewFolderCommand, u"New folder");
+   menu_model_->AddItem(kNewSpaceCommand, u"New Space");
+   menu_runner_ = std::make_unique<views::MenuRunner>(
+-      menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++      menu_model_.get(), views::MenuRunner::HAS_MNEMONICS);
++  views::View* anchor = menu_button_.view() ? menu_button_.view() : footer;
+   menu_runner_->RunMenuAt(
+-      footer->GetWidget(), nullptr, footer->GetBoundsInScreen(),
+-      views::MenuAnchorPosition::kTopLeft, ui::mojom::MenuSourceType::kNone);
++      anchor->GetWidget(), nullptr, anchor->GetBoundsInScreen(),
++      views::MenuAnchorPosition::kTopRight, ui::mojom::MenuSourceType::kNone);
+ }
+ 
+ void CoveSidebarLibraryView::PinActivePage() {

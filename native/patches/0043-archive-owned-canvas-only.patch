@@ -1,0 +1,23 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -127,18 +127,10 @@
+   for (int index = 0; index < model->count(); ++index) {
+     tabs::TabInterface* tab = model->GetTabAtIndex(index);
+     if (!tab || tab->IsPinned() || !model->IsTabClosable(tab) ||
+-        !tab->GetContents()) {
++        !tab->GetContents() || IsCoveEmptyCanvas(tab->GetContents())) {
+       continue;
+     }
+     handles.push_back(tab->GetHandle());
+-  }
+-  // Spaces use one about:blank tab as their empty-canvas placeholder.
+-  if (handles.size() == 1) {
+-    tabs::TabInterface* only_tab = handles.front().Get();
+-    if (only_tab && only_tab->GetContents() &&
+-        only_tab->GetContents()->GetVisibleURL() == GURL("about:blank")) {
+-      handles.clear();
+-    }
+   }
+   return handles;
+ }

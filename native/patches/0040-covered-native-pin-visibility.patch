@@ -1,0 +1,242 @@
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.h b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.h
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+@@ -33,8 +33,7 @@
+ // regions and associates them to their scroll views. It also is responsible for
+ // scrolling to the active tab view when the active tab changes.
+ // Layout is managed by `TabStripViewLayout`.
+-class TabStripView final : public views::View,
+-                           public views::WidgetObserver {
++class TabStripView final : public views::View, public views::WidgetObserver {
+   METADATA_HEADER(TabStripView, views::View)
+ 
+  public:
+@@ -57,6 +56,9 @@
+     return unpinned_tabs_scroll_view_;
+   }
+ 
++  // Expanded Cove sidebars render covered native pins in the persistent
++  // library. This changes only presentation; tab models remain untouched.
++  void SetCovePinnedTabsCovered(bool covered);
+   void SetCollapsedState(bool is_collapsed);
+   void SetIsAnimatingSize(bool is_animating);
+ 
+@@ -148,6 +150,7 @@
+   raw_ptr<UnpinnedTabContainerView> unpinned_tabs_container_view_ = nullptr;
+   raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
+   bool is_collapsed_ = false;
++  bool cove_pinned_tabs_covered_ = false;
+ 
+   // Used for seek time metrics from the time the mouse enters the tabstrip.
+   std::optional<base::TimeTicks> mouse_entered_tabstrip_time_;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+@@ -477,6 +477,15 @@
+                : true;
+ }
+ 
++void TabStripView::SetCovePinnedTabsCovered(bool covered) {
++  if (cove_pinned_tabs_covered_ == covered) {
++    return;
++  }
++  cove_pinned_tabs_covered_ = covered;
++  InvalidateLayout();
++  PreferredSizeChanged();
++}
++
+ void TabStripView::SetCollapsedState(bool is_collapsed) {
+   if (is_collapsed != is_collapsed_) {
+     is_collapsed_ = is_collapsed;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+@@ -112,8 +112,7 @@
+   }
+ 
+   gfx::Rect pinned_bounds(x, 0, pinned_width, container_height);
+-  layouts.child_layouts.emplace_back(pinned_tabs_scroll_view,
+-                                     pinned_tabs_scroll_view->GetVisible(),
++  layouts.child_layouts.emplace_back(pinned_tabs_scroll_view, pinned_width > 0,
+                                      pinned_bounds);
+   const bool has_unpinned = unpinned_preferred_width > 0;
+   const bool is_pinned_overflowing = pinned_width < pinned_preferred_width;
+@@ -244,10 +243,14 @@
+   // Determine container preferred heights.
+   views::SizeBounds pinned_tab_container_size_bounds =
+       size_bounds.Inset(gfx::Insets::TLBR(0, region_horizontal_padding, 0, 0));
++  const bool hide_covered_pins =
++      tab_strip_view->cove_pinned_tabs_covered_ && !is_collapsed;
+   const int pinned_preferred_height =
+-      pinned_tabs_scroll_view
+-          ->GetPreferredSize(pinned_tab_container_size_bounds)
+-          .height();
++      hide_covered_pins
++          ? 0
++          : pinned_tabs_scroll_view
++                ->GetPreferredSize(pinned_tab_container_size_bounds)
++                .height();
+   const int unpinned_preferred_height =
+       unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
+ 
+@@ -289,7 +292,7 @@
+       pinned_tab_container_size_bounds.width().value(),
+       pinned_container_height);
+   layouts.child_layouts.emplace_back(pinned_tabs_scroll_view,
+-                                     pinned_tabs_scroll_view->GetVisible(),
++                                     pinned_container_height > 0,
+                                      pinned_container_bounds);
+ 
+   if (pinned_container_bounds.height()) {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -47,6 +47,7 @@
+   ~CoveSidebarLibraryView() override;
+ 
+   void SetCollapsed(bool collapsed);
++  void SetPinnedCoverageChangedCallback(base::RepeatingClosure callback);
+   std::unique_ptr<views::View> CreateSpaceFooter();
+   void SetFavoriteActions(base::RepeatingClosure toggle,
+                           base::RepeatingCallback<bool()> is_current);
+@@ -62,6 +63,9 @@
+   void RemovedFromWidget() override;
+ 
+   // TabStripModelObserver:
++  void OnTabStripModelChanged(TabStripModel*,
++                              const TabStripModelChange&,
++                              const TabStripSelectionChange&) override;
+   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+   void OnTabStripModelChanged(
+       TabStripModel* tab_strip_model,
+@@ -119,6 +123,7 @@
+   std::unique_ptr<SpaceTabs> closing_active_space_;
+   bool switching_space_ = false;
+   bool syncing_pins_ = false;
++  base::RepeatingClosure pinned_coverage_changed_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<const views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -250,6 +250,23 @@
+   views::View::RemovedFromWidget();
+ }
+ 
++void CoveSidebarLibraryView::SetPinnedCoverageChangedCallback(
++    base::RepeatingClosure callback) {
++  pinned_coverage_changed_ = std::move(callback);
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
++}
++
++void CoveSidebarLibraryView::OnTabStripModelChanged(
++    TabStripModel*,
++    const TabStripModelChange&,
++    const TabStripSelectionChange&) {
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
++}
++
+ void CoveSidebarLibraryView::SetCollapsed(bool collapsed) {
+   SetVisible(!collapsed);
+ }
+@@ -372,6 +389,9 @@
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+   const base::DictValue* space = FindSpace(root, active_space_id_);
+   if (!space) {
++    if (pinned_coverage_changed_) {
++      pinned_coverage_changed_.Run();
++    }
+     return;
+   }
+ 
+@@ -454,6 +474,9 @@
+ 
+   RebuildSpaceFooter();
+   InvalidateLayout();
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
+ }
+ 
+ std::unique_ptr<views::View> CoveSidebarLibraryView::CreateSpaceFooter() {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -11,6 +11,7 @@
+ #include "base/callback_list.h"
+ #include "base/containers/flat_set.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
+ #include "base/time/time.h"
+ #include "base/timer/timer.h"
+ #include "chrome/browser/ui/animation/browser_animation_types.h"
+@@ -212,6 +213,8 @@
+   // Used to create and destroy locks for the expand on hover state.
+   friend class VerticalTabStripExpandOnHoverLock;
+ 
++  void UpdateCovePinnedTabsVisibility();
++
+   // OrganizerPanelHost:
+   void SetOrganizerPanelView(std::unique_ptr<views::View> panel_view) override;
+   std::unique_ptr<views::View> TakeOrganizerPanelView() override;
+@@ -333,6 +336,7 @@
+   base::OneShotTimer mouse_exit_timer_;
+ 
+   base::CallbackListSubscription paint_as_active_subscription_;
++  base::WeakPtrFactory<VerticalTabStripRegionView> weak_factory_{this};
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -161,6 +161,9 @@
+             return favorites && favorites->IsCurrentPageFavorite();
+           },
+           favorites_view_->GetWeakPtr()));
++  library_view_->SetPinnedCoverageChangedCallback(base::BindRepeating(
++      &VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility,
++      weak_factory_.GetWeakPtr()));
+   space_footer_ = AddChildView(library_view_->CreateSpaceFooter());
+ 
+   // --------------
+@@ -904,6 +907,19 @@
+   }
+ }
+ 
++void VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility() {
++  if (!tab_strip_view() || !library_view_) {
++    return;
++  }
++  TabStripModel* model = browser_view()->browser()->GetTabStripModel();
++  const int pinned_count = model->IndexOfFirstNonPinnedTab();
++  bool all_covered = pinned_count > 0;
++  for (int index = 0; index < pinned_count && all_covered; ++index) {
++    all_covered = library_view_->RetainsPinForTab(model->GetTabAtIndex(index));
++  }
++  tab_strip_view()->SetCovePinnedTabsCovered(all_covered);
++}
++
+ void VerticalTabStripRegionView::AddTabStripView(
+     std::unique_ptr<views::View> view) {
+   view->SetProperty(
+@@ -944,10 +960,14 @@
+               base::Unretained(this)));
+ 
+   OnCollapseStateChanged(state_controller_->GetCollapseState());
++  UpdateCovePinnedTabsVisibility();
+ }
+ 
+ std::unique_ptr<views::View> VerticalTabStripRegionView::RemoveTabStripView(
+     views::View* view) {
++  if (tab_strip_view()) {
++    tab_strip_view()->SetCovePinnedTabsCovered(false);
++  }
+   on_animation_update_subscription_.reset();
+   expand_on_hover_enabled_changed_subscription_.reset();
+   omnibox_tab_helper_observation_.Reset();

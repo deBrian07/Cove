@@ -1,0 +1,506 @@
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -7,9 +7,16 @@
+ 
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+ 
++namespace content {
++class WebContents;
++}
++
+ namespace tabs {
+ class TabInterface;
+ }
++
++void MarkCoveEmptyCanvas(content::WebContents* contents);
++bool IsCoveEmptyCanvas(content::WebContents* contents);
+ 
+ // Window-scoped bridge between Spaces and the native browser unload pipeline.
+ // Inactive pages must rejoin the tab strip before beforeunload/session
+@@ -23,6 +30,7 @@
+   virtual bool HasPendingTabs() const = 0;
+   virtual void PrepareForClose() = 0;
+   virtual void CancelClose() = 0;
++  virtual void OnEmptyCanvasMarked() {}
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -4,4 +4,40 @@
+ 
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ 
++#include <memory>
++
++#include "base/supports_user_data.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/web_contents.h"
++#include "url/gurl.h"
++
++namespace {
++
++class CoveEmptyCanvasMarker : public base::SupportsUserData::Data {};
++
++const void* CoveEmptyCanvasUserDataKey() {
++  static int key;
++  return &key;
++}
++
++bool IsBareAboutBlank(content::WebContents* contents) {
++  return contents && contents->GetVisibleURL() == GURL("about:blank") &&
++         contents->GetController().GetEntryCount() <= 1;
++}
++
++}  // namespace
++
+ DEFINE_USER_DATA(CoveSpaceCloseHandler);
++
++void MarkCoveEmptyCanvas(content::WebContents* contents) {
++  if (!IsBareAboutBlank(contents)) {
++    return;
++  }
++  contents->SetUserData(CoveEmptyCanvasUserDataKey(),
++                        std::make_unique<CoveEmptyCanvasMarker>());
++}
++
++bool IsCoveEmptyCanvas(content::WebContents* contents) {
++  return IsBareAboutBlank(contents) &&
++         contents->GetUserData(CoveEmptyCanvasUserDataKey());
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -57,15 +57,13 @@
+   bool HasPendingTabs() const override;
+   void PrepareForClose() override;
+   void CancelClose() override;
++  void OnEmptyCanvasMarked() override;
+ 
+   // views::View:
+   void AddedToWidget() override;
+   void RemovedFromWidget() override;
+ 
+   // TabStripModelObserver:
+-  void OnTabStripModelChanged(TabStripModel*,
+-                              const TabStripModelChange&,
+-                              const TabStripSelectionChange&) override;
+   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+   void OnTabStripModelChanged(
+       TabStripModel* tab_strip_model,
+@@ -96,6 +94,12 @@
+   bool HasArchivableTabs() const;
+   void ArchiveToday();
+   void UpdateArchiveButtonState();
++  void ScheduleCleanupForInsertedTabs(std::vector<tabs::TabHandle> handles,
++                                      int generation);
++  void ScheduleEmptyCanvasCleanup();
++  void QueueEmptyCanvasCleanup();
++  void CleanupEmptyCanvases(int generation);
++  void InvalidateEmptyCanvasCleanup();
+   void BeginRename(int kind, std::string id);
+   void RenameItem(int kind,
+                   std::string space_id,
+@@ -123,6 +127,8 @@
+   std::unique_ptr<SpaceTabs> closing_active_space_;
+   bool switching_space_ = false;
+   bool syncing_pins_ = false;
++  bool empty_canvas_cleanup_posted_ = false;
++  int empty_canvas_cleanup_generation_ = 0;
+   base::RepeatingClosure pinned_coverage_changed_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<const views::View*, std::string> row_pin_ids_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -11,9 +11,11 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/functional/bind.h"
++#include "base/location.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -260,8 +262,37 @@
+ 
+ void CoveSidebarLibraryView::OnTabStripModelChanged(
+     TabStripModel*,
+-    const TabStripModelChange&,
++    const TabStripModelChange& change,
+     const TabStripSelectionChange&) {
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
++  if (!switching_space_ && !closing_active_space_) {
++    UpdateArchiveButtonState();
++  }
++  if (switching_space_ || closing_active_space_) {
++    return;
++  }
++  if (change.type() != TabStripModelChange::kInserted) {
++    return;
++  }
++  std::vector<tabs::TabHandle> handles;
++  for (const auto& contents : change.GetInsert()->contents) {
++    if (contents.tab) {
++      handles.push_back(contents.tab->GetHandle());
++    }
++  }
++  if (!handles.empty()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(&CoveSidebarLibraryView::ScheduleCleanupForInsertedTabs,
++                       weak_factory_.GetWeakPtr(), std::move(handles),
++                       empty_canvas_cleanup_generation_));
++  }
++}
++
++void CoveSidebarLibraryView::OnEmptyCanvasMarked() {
++  InvalidateEmptyCanvasCleanup();
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
+   }
+@@ -340,16 +371,6 @@
+   Rebuild();
+ }
+ 
+-void CoveSidebarLibraryView::OnTabStripModelChanged(
+-    TabStripModel*,
+-    const TabStripModelChange&,
+-    const TabStripSelectionChange&) {
+-  if (switching_space_ || closing_active_space_) {
+-    return;
+-  }
+-  UpdateArchiveButtonState();
+-}
+-
+ void CoveSidebarLibraryView::EnsureDefaultLibrary() {
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   if (const auto* spaces = prefs->GetDict(kCoveSidebarPref).FindList("spaces");
+@@ -588,6 +609,8 @@
+                           ui::PAGE_TRANSITION_TYPED);
+     params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+     Navigate(&params);
++    MarkCoveEmptyCanvas(params.navigated_or_inserted_contents.get());
++    OnEmptyCanvasMarked();
+   }
+ 
+   for (const tabs::TabHandle& handle : handles) {
+@@ -602,6 +625,86 @@
+     model->CloseWebContentsAt(index,
+                               TabCloseTypes::CLOSE_USER_GESTURE |
+                                   TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++  }
++}
++
++void CoveSidebarLibraryView::ScheduleCleanupForInsertedTabs(
++    std::vector<tabs::TabHandle> handles,
++    int generation) {
++  if (generation != empty_canvas_cleanup_generation_ || switching_space_ ||
++      closing_active_space_) {
++    return;
++  }
++  for (const tabs::TabHandle& handle : handles) {
++    tabs::TabInterface* tab = handle.Get();
++    if (tab && tab->GetContents() &&
++        !IsCoveEmptyCanvas(tab->GetContents())) {
++      ScheduleEmptyCanvasCleanup();
++      return;
++    }
++  }
++}
++
++void CoveSidebarLibraryView::ScheduleEmptyCanvasCleanup() {
++  if (switching_space_ || closing_active_space_) {
++    return;
++  }
++  QueueEmptyCanvasCleanup();
++}
++
++void CoveSidebarLibraryView::QueueEmptyCanvasCleanup() {
++  if (empty_canvas_cleanup_posted_) {
++    return;
++  }
++  empty_canvas_cleanup_posted_ = true;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(&CoveSidebarLibraryView::CleanupEmptyCanvases,
++                     weak_factory_.GetWeakPtr(),
++                     empty_canvas_cleanup_generation_));
++}
++
++void CoveSidebarLibraryView::InvalidateEmptyCanvasCleanup() {
++  ++empty_canvas_cleanup_generation_;
++  empty_canvas_cleanup_posted_ = false;
++}
++
++void CoveSidebarLibraryView::CleanupEmptyCanvases(int generation) {
++  if (generation != empty_canvas_cleanup_generation_) {
++    return;
++  }
++  empty_canvas_cleanup_posted_ = false;
++  if (switching_space_ || closing_active_space_) {
++    return;
++  }
++
++  TabStripModel* model = browser_->GetTabStripModel();
++  bool has_real_tab = false;
++  std::vector<tabs::TabHandle> canvases;
++  for (int index = 0; index < model->count(); ++index) {
++    tabs::TabInterface* tab = model->GetTabAtIndex(index);
++    if (!tab || !tab->GetContents()) {
++      continue;
++    }
++    if (IsCoveEmptyCanvas(tab->GetContents())) {
++      canvases.push_back(tab->GetHandle());
++    } else {
++      has_real_tab = true;
++    }
++  }
++  if (!has_real_tab) {
++    return;
++  }
++  for (const tabs::TabHandle& handle : canvases) {
++    tabs::TabInterface* tab = handle.Get();
++    if (!tab || !tab->GetContents() || !IsCoveEmptyCanvas(tab->GetContents()) ||
++        !model->IsTabClosable(tab) || model->count() <= 1) {
++      continue;
++    }
++    const int index = model->GetIndexOfTab(tab);
++    if (index != TabStripModel::kNoTab) {
++      model->CloseWebContentsAt(index, TabCloseTypes::CLOSE_USER_GESTURE);
++    }
+   }
+ }
+ 
+@@ -794,6 +897,7 @@
+     tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
+     tab.Set("pinned", model->IsTabPinned(i));
+     tab.Set("active", model->active_index() == i);
++    tab.Set("empty_canvas", IsCoveEmptyCanvas(contents));
+     tabs.Append(std::move(tab));
+   }
+   // This is a compatibility fallback for first load/restart, never the runtime
+@@ -846,6 +950,10 @@
+         params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
+       }
+       Navigate(&params);
++      if (tab->FindBool("empty_canvas").value_or(false)) {
++        MarkCoveEmptyCanvas(params.navigated_or_inserted_contents.get());
++        OnEmptyCanvasMarked();
++      }
+       if (tab->FindBool("active").value_or(false) &&
+           params.navigated_or_inserted_contents) {
+         if (auto* inserted = tabs::TabInterface::GetFromContents(
+@@ -867,6 +975,8 @@
+                             ui::PAGE_TRANSITION_TYPED);
+       params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+       Navigate(&params);
++      MarkCoveEmptyCanvas(params.navigated_or_inserted_contents.get());
++      OnEmptyCanvasMarked();
+       for (int i = 0; i < model->count(); ++i) {
+         auto handle = model->GetTabAtIndex(i)->GetHandle();
+         if (!std::ranges::contains(outgoing->handles, handle)) {
+@@ -898,6 +1008,7 @@
+     update->Set("active", space_id);  // Last-used startup default only.
+   }
+   Rebuild();
++  QueueEmptyCanvasCleanup();
+ }
+ 
+ bool CoveSidebarLibraryView::HasPendingTabs() const {
+@@ -913,6 +1024,7 @@
+   if (switching_space_ || closing_active_space_ || !HasPendingTabs()) {
+     return;
+   }
++  InvalidateEmptyCanvasCleanup();
+   base::AutoReset<bool> switching(&switching_space_, true);
+   SaveActiveSnapshot();
+   closing_active_space_ = CaptureCurrentTabs();
+@@ -929,6 +1041,7 @@
+   if (!closing_active_space_) {
+     return;
+   }
++  InvalidateEmptyCanvasCleanup();
+   base::AutoReset<bool> switching(&switching_space_, true);
+   if (closing_active_space_->handles.empty()) {
+     // If the user closed the final tab in this Space, canceling window close
+@@ -938,6 +1051,8 @@
+     params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+     Navigate(&params);
+     if (auto* contents = params.navigated_or_inserted_contents.get()) {
++      MarkCoveEmptyCanvas(contents);
++      OnEmptyCanvasMarked();
+       if (auto* tab = tabs::TabInterface::GetFromContents(contents)) {
+         closing_active_space_->handles.push_back(tab->GetHandle());
+         closing_active_space_->selection.SetSelectedIndex(0);
+@@ -949,6 +1064,10 @@
+   }
+   RestoreSelection(*closing_active_space_);
+   closing_active_space_.reset();
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
++  UpdateArchiveButtonState();
+ }
+ 
+ bool CoveSidebarLibraryView::RetainsPinForTab(
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1534,7 +1534,10 @@
+           selected_tabs.size() ==
+           static_cast<size_t>(browser->GetTabStripModel()->count());
+       if (closes_every_tab) {
+-        AddTabAt(browser, GURL("about:blank"), -1, /*foreground=*/false);
++        content::WebContents* canvas = AddAndReturnTabAt(
++            browser, GURL("about:blank"), -1, /*foreground=*/false);
++        MarkCoveEmptyCanvas(canvas);
++        pins->OnEmptyCanvasMarked();
+       }
+       CloseSelectedTabAndRecordTabCountMetric(browser);
+       return;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.h b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.h
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.h
+@@ -59,6 +59,7 @@
+   // Expanded Cove sidebars render covered native pins in the persistent
+   // library. This changes only presentation; tab models remain untouched.
+   void SetCovePinnedTabsCovered(bool covered);
++  void SetCoveEmptyCanvasOnly(bool only_empty_canvases);
+   void SetCollapsedState(bool is_collapsed);
+   void SetIsAnimatingSize(bool is_animating);
+ 
+@@ -151,6 +152,7 @@
+   raw_ptr<TabScrollButtonContainer> tab_scroll_button_container_ = nullptr;
+   bool is_collapsed_ = false;
+   bool cove_pinned_tabs_covered_ = false;
++  bool cove_empty_canvas_only_ = false;
+ 
+   // Used for seek time metrics from the time the mouse enters the tabstrip.
+   std::optional<base::TimeTicks> mouse_entered_tabstrip_time_;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+@@ -486,6 +486,15 @@
+   PreferredSizeChanged();
+ }
+ 
++void TabStripView::SetCoveEmptyCanvasOnly(bool only_empty_canvases) {
++  if (cove_empty_canvas_only_ == only_empty_canvases) {
++    return;
++  }
++  cove_empty_canvas_only_ = only_empty_canvases;
++  InvalidateLayout();
++  PreferredSizeChanged();
++}
++
+ void TabStripView::SetCollapsedState(bool is_collapsed) {
+   if (is_collapsed != is_collapsed_) {
+     is_collapsed_ = is_collapsed;
+diff --git a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+@@ -251,8 +251,12 @@
+           : pinned_tabs_scroll_view
+                 ->GetPreferredSize(pinned_tab_container_size_bounds)
+                 .height();
++  const bool hide_cove_empty_canvas =
++      tab_strip_view->cove_empty_canvas_only_;
+   const int unpinned_preferred_height =
+-      unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
++      hide_cove_empty_canvas
++          ? 0
++          : unpinned_tabs_scroll_view->GetPreferredSize(size_bounds).height();
+ 
+   const bool should_show_separator = pinned_preferred_height != 0 &&
+                                      unpinned_preferred_height != 0 &&
+@@ -324,17 +328,20 @@
+                                       unpinned_preferred_height);
+   if (size_bounds.height().is_bounded()) {
+     int min_unpinned_height = 0;
+-    if (const auto* unpinned_container =
+-            tab_strip_view->GetUnpinnedTabsContainer()) {
+-      min_unpinned_height = unpinned_container->GetMinimumSize().height();
++    if (!hide_cove_empty_canvas) {
++      if (const auto* unpinned_container =
++              tab_strip_view->GetUnpinnedTabsContainer()) {
++        min_unpinned_height = unpinned_container->GetMinimumSize().height();
++      }
+     }
+     unpinned_container_bounds.set_height(
+         std::max(std::min(unpinned_container_bounds.height(), remaining_height),
+                  min_unpinned_height));
+   }
+-  layouts.child_layouts.emplace_back(unpinned_tabs_scroll_view,
+-                                     unpinned_tabs_scroll_view->GetVisible(),
+-                                     unpinned_container_bounds);
++  layouts.child_layouts.emplace_back(
++      unpinned_tabs_scroll_view,
++      !hide_cove_empty_canvas && unpinned_tabs_scroll_view->GetVisible(),
++      unpinned_container_bounds);
+ 
+   layouts.host_size = gfx::Size(size_bounds.width().value(),
+                                 unpinned_container_bounds.bottom());
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -22,6 +22,7 @@
+ #include "chrome/browser/ui/animation/browser_animation_types.h"
+ #include "chrome/browser/ui/browser_actions.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -918,6 +919,14 @@
+     all_covered = library_view_->RetainsPinForTab(model->GetTabAtIndex(index));
+   }
+   tab_strip_view()->SetCovePinnedTabsCovered(all_covered);
++
++  const int first_unpinned = model->IndexOfFirstNonPinnedTab();
++  bool only_empty_canvases = first_unpinned < model->count();
++  for (int index = first_unpinned;
++       index < model->count() && only_empty_canvases; ++index) {
++    only_empty_canvases = IsCoveEmptyCanvas(model->GetWebContentsAt(index));
++  }
++  tab_strip_view()->SetCoveEmptyCanvasOnly(only_empty_canvases);
+ }
+ 
+ void VerticalTabStripRegionView::AddTabStripView(
+@@ -967,6 +976,7 @@
+     views::View* view) {
+   if (tab_strip_view()) {
+     tab_strip_view()->SetCovePinnedTabsCovered(false);
++    tab_strip_view()->SetCoveEmptyCanvasOnly(false);
+   }
+   on_animation_update_subscription_.reset();
+   expand_on_hover_enabled_changed_subscription_.reset();
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -578,6 +578,7 @@
+       "cove_space_close_handler.h",
+     ]
+     public_deps = [ "//ui/base/unowned_user_data" ]
++    deps = [ "//content/public/browser" ]
+   }
+ 
+   source_set("unload_controller") {
+diff --git a/chrome/browser/ui/views/tabs/common/BUILD.gn b/chrome/browser/ui/views/tabs/common/BUILD.gn
+--- a/chrome/browser/ui/views/tabs/common/BUILD.gn
++++ b/chrome/browser/ui/views/tabs/common/BUILD.gn
+@@ -28,6 +28,7 @@
+   deps = [
+     "//base",
+     "//chrome/browser/ui:layout_constants",
++    "//chrome/browser/ui:cove_space_close_handler",
+     "//chrome/browser/ui/tabs",
+     "//chrome/browser/ui/tabs:tab_menu",
+     "//chrome/browser/ui/tabs:tab_strip",

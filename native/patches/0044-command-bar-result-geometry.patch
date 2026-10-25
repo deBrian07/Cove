@@ -1,0 +1,171 @@
+diff --git a/chrome/browser/resources/tab_search/tab_search_item.css b/chrome/browser/resources/tab_search/tab_search_item.css
+--- a/chrome/browser/resources/tab_search/tab_search_item.css
++++ b/chrome/browser/resources/tab_search/tab_search_item.css
+@@ -68,6 +68,7 @@
+ 
+ .text-container {
+   flex-grow: 1;
++  min-width: 0;
+   overflow: hidden;
+   user-select: none;
+ }
+@@ -206,7 +207,7 @@
+ 
+ :host(.mwb-list-item) {
+   box-sizing: border-box;
+-  margin-inline: 8px;
++  min-width: 0;
+ }
+ 
+ :host(.mwb-list-item.selected) {
+@@ -249,3 +250,8 @@
+ :host(.hovered) .action-hint.has-close-button {
+   display: flex;
+ }
++
++:host(.selected) #primaryText,
++:host(.selected) .action-hint {
++  color: #fff;
++}
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.css b/chrome/browser/resources/tab_search/tab_search_page.css
+--- a/chrome/browser/resources/tab_search/tab_search_page.css
++++ b/chrome/browser/resources/tab_search/tab_search_page.css
+@@ -37,6 +37,7 @@
+ #searchWrapper {
+   display: flex;
+   flex: 1;
++  min-width: 0;
+   height: 100%;
+   position: relative;
+ }
+@@ -75,6 +76,7 @@
+   border-radius: 8px;
+   color: var(--cr-primary-text-color);
+   flex: 1;
++  min-width: 0;
+   font-family: inherit;
+   font-size: 16px;
+   font-style: inherit;
+@@ -239,3 +241,14 @@
+   font: inherit;
+   font-size: 18px;
+ }
++
++/* Inset the scroll viewport. Lazy-list rows themselves remain 100% wide. */
++#tabsList {
++  box-sizing: border-box;
++  padding: 4px 8px 8px;
++}
++
++#tabsList .mwb-list-item {
++  border-radius: 8px;
++  box-sizing: border-box;
++}
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.ts b/chrome/browser/resources/tab_search/tab_search_page.ts
+--- a/chrome/browser/resources/tab_search/tab_search_page.ts
++++ b/chrome/browser/resources/tab_search/tab_search_page.ts
+@@ -289,7 +289,7 @@
+        * Calculate the list's available height by subtracting the height used by
+        * the search and feedback fields.
+        */
+-      this.listMaxHeight_ = Math.min(276, Math.max(
++      this.listMaxHeight_ = Math.min(252, Math.max(
+           this.availableHeight - this.$.searchField.offsetHeight -
+               this.$.divider.offsetHeight,
+           Math.round(
+@@ -531,8 +531,7 @@
+    */
+   private lastSelectableIndex_(): number {
+     return this.filteredItems_.findLastIndex(
+-               item => !(item instanceof TitleItem)) ||
+-        -1;
++        item => !(item instanceof TitleItem));
+   }
+ 
+   protected onItemClick_(e: Event) {
+@@ -1114,8 +1113,8 @@
+                false);
+       this.initiallySelectedIndex_ =
+           (isMedia || filteredMediaTabs.length === 0) ?
+-          1 :
+-          filteredMediaTabs.length + 2;
++          0 :
++          filteredMediaTabs.length;
+     }
+ 
+     if (this.searchText_.length === 0) {
+@@ -1176,32 +1175,14 @@
+               .slice(0, this.recentlyClosedDefaultItemDisplayCount_);
+     }
+ 
++    // Cove has a single result list. Hidden section titles must not enter the
++    // virtualizer: it reserves a full row for every item, even invisible ones.
+     this.filteredOpenHeaderIndices_ = [];
+-    let numItems = 0;
+-    [filteredMediaTabs, filteredOpenTabs, filteredRecentlyClosedItems].forEach(
+-        list => {
+-          if (list.length > 0) {
+-            this.filteredOpenHeaderIndices_.push(numItems);
+-            numItems += list.length + 1;
+-          }
+-        });
+-
+-    this.filteredItems_ =
+-        ([
+-          [this.mediaTabsTitleItem_, filteredMediaTabs],
+-          [this.openTabsTitleItem_, filteredOpenTabs],
+-          [this.recentlyClosedTitleItem_, filteredRecentlyClosedItems],
+-        ] as Array<[TitleItem, Array<TabData|TabGroupData|SplitViewData>]>)
+-            .reduce((acc, [sectionTitle, sectionItems]) => {
+-              if (sectionItems.length !== 0) {
+-                acc.push(sectionTitle);
+-                if (!sectionTitle.expandable ||
+-                    sectionTitle.expandable && sectionTitle.expanded) {
+-                  acc.push(...sectionItems);
+-                }
+-              }
+-              return acc;
+-            }, [] as Array<TitleItem|TabData|TabGroupData|SplitViewData>);
++    this.filteredItems_ = [
++      ...filteredMediaTabs,
++      ...filteredOpenTabs,
++      ...filteredRecentlyClosedItems,
++    ];
+     this.searchResultText_ = this.getA11ySearchResultText_();
+ 
+     // If there was no previously selected index, set the selected index to be
+diff --git a/chrome/test/data/webui/tab_search/tab_search_page_test.ts b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+--- a/chrome/test/data/webui/tab_search/tab_search_page_test.ts
++++ b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+@@ -1005,6 +1005,31 @@
+     assertEquals(0, testProxy.getCallCount('switchToTab'));
+   });
+ 
++  test('CoveSingleResultHasNoPhantomHeaderOrOverflow', async () => {
++    await setupTest(createProfileData({
++      windows: [{
++        active: true, isHostWindow: true, height: SAMPLE_WINDOW_HEIGHT,
++        tabs: [createTab({tabId: 42, title: 'Only result'})],
++      }],
++      recentlyClosedTabs: [], recentlyClosedTabGroups: [],
++      recentlyClosedSplitViews: [],
++    }));
++    await tabSearchPage.$.tabsList.ensureAllDomItemsAvailable();
++    await new Promise(resolve => requestAnimationFrame(resolve));
++    const rows = queryRows();
++    assertEquals(1, rows.length);
++    assertEquals(0, queryListTitle().length);
++    assertEquals(0, tabSearchPage.$.tabsList.selected);
++    const listBounds = tabSearchPage.$.tabsList.getBoundingClientRect();
++    const rowBounds = rows[0]!.getBoundingClientRect();
++    assertTrue(rowBounds.left >= listBounds.left + 8);
++    assertTrue(rowBounds.right <= listBounds.right - 8);
++    assertTrue(listBounds.height <= rowBounds.height + 13);
++    keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
++    const [tabInfo] = await testProxy.whenCalled('switchToTab');
++    assertEquals(42, tabInfo.tabId);
++  });
++
+   test('CommandReturnNavigatesDespiteSelectedMatch', async () => {
+     await setupTest(createProfileData());
+     setSearchText('google');

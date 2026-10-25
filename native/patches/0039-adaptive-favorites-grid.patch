@@ -1,0 +1,90 @@
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -51,7 +51,8 @@
+ constexpr char kCoveSidebarPref[] = "cove.sidebar";
+ constexpr int kRemoveFavoriteCommand = 1;
+ constexpr int kColumns = 3;
+-constexpr int kTileWidth = 72;
++constexpr int kPreferredTileWidth = 72;
++constexpr int kMinimumTileWidth = 48;
+ constexpr int kTileHeight = 48;
+ constexpr int kColumnGap = 4;
+ constexpr int kRowGap = 4;
+@@ -80,7 +81,8 @@
+     SetImageLabelSpacing(4);
+     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 5)));
+     SetFocusRingCornerRadius(12);
+-    SetPreferredSize(gfx::Size(kTileWidth, kTileHeight));
++    SetPreferredSize(gfx::Size(kPreferredTileWidth, kTileHeight));
++    SetMinSize(gfx::Size(kMinimumTileWidth, kTileHeight));
+     SetImageModel(STATE_NORMAL,
+                   ui::ImageModel::FromVectorIcon(vector_icons::kGlobeIcon,
+                                                  ui::kColorIcon, kIconSize));
+@@ -108,26 +110,8 @@
+ 
+ CoveFavoritesView::CoveFavoritesView(BrowserWindowInterface* browser)
+     : browser_(browser) {
+-  auto layout = std::make_unique<views::TableLayout>();
+-  layout->AddColumn(views::LayoutAlignment::kStretch,
+-                    views::LayoutAlignment::kStretch,
+-                    views::TableLayout::kFixedSize,
+-                    views::TableLayout::ColumnSize::kFixed, kTileWidth,
+-                    kTileWidth)
+-      .AddPaddingColumn(views::TableLayout::kFixedSize, kColumnGap)
+-      .AddColumn(views::LayoutAlignment::kStretch,
+-                 views::LayoutAlignment::kStretch,
+-                 views::TableLayout::kFixedSize,
+-                 views::TableLayout::ColumnSize::kFixed, kTileWidth,
+-                 kTileWidth)
+-      .AddPaddingColumn(views::TableLayout::kFixedSize, kColumnGap)
+-      .AddColumn(views::LayoutAlignment::kStretch,
+-                 views::LayoutAlignment::kStretch,
+-                 views::TableLayout::kFixedSize,
+-                 views::TableLayout::ColumnSize::kFixed, kTileWidth,
+-                 kTileWidth);
+   SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(2, 4)));
+-  SetLayoutManager(std::move(layout));
++  SetLayoutManager(std::make_unique<views::TableLayout>());
+   Rebuild();
+   pref_change_registrar_.Init(browser_->GetProfile()->GetPrefs());
+   pref_change_registrar_.Add(
+@@ -200,14 +184,14 @@
+   const base::ListValue* favorites =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref)
+           .FindList("favorites");
++  auto* layout = static_cast<views::TableLayout*>(GetLayoutManager());
++  layout->RemoveRows(layout->NumRows());
++  layout->RemoveColumns(layout->NumColumns());
+   if (collapsed_ || !favorites || favorites->empty()) {
+     SetVisible(false);
+     return;
+   }
+-  SetVisible(true);
+ 
+-  auto* layout = static_cast<views::TableLayout*>(GetLayoutManager());
+-  layout->RemoveRows(layout->NumRows());
+   const size_t count = std::count_if(
+       favorites->begin(), favorites->end(), [](const base::Value& value) {
+         const base::DictValue* favorite = value.GetIfDict();
+@@ -218,7 +202,20 @@
+     SetVisible(false);
+     return;
+   }
+-  const size_t rows = (count + kColumns - 1) / kColumns;
++  SetVisible(true);
++
++  const size_t columns = std::min<size_t>(kColumns, count);
++  for (size_t column = 0; column < columns; ++column) {
++    if (column > 0) {
++      layout->AddPaddingColumn(views::TableLayout::kFixedSize, kColumnGap);
++    }
++    layout->AddColumn(views::LayoutAlignment::kStretch,
++                      views::LayoutAlignment::kStretch, 1.0f,
++                      views::TableLayout::ColumnSize::kUsePreferred, 0,
++                      kMinimumTileWidth);
++  }
++
++  const size_t rows = (count + columns - 1) / columns;
+   for (size_t row = 0; row < rows; ++row) {
+     layout->AddRows(1, views::TableLayout::kFixedSize, kTileHeight);
+     if (row + 1 < rows) {

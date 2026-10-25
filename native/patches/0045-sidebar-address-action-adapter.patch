@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
+--- a/chrome/browser/ui/browser_actions.cc
++++ b/chrome/browser/ui/browser_actions.cc
+@@ -3564,7 +3564,10 @@
+           base::BindRepeating(
+               [](BrowserWindowInterface* bwi, actions::ActionItem* item,
+                  actions::ActionInvocationContext context) {
+-                if (!BrowserWindow::FromBrowser(bwi)->IsLocationBarVisible()) {
++                // A normal Cove window owns its address field in the sidebar.
++                // This action adapter also serves the native macOS accelerator.
++                if (!BrowserWindow::FromBrowser(bwi)->IsLocationBarVisible() &&
++                    bwi->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+                   return;
+                 }
+                 chrome::FocusLocationBar(bwi);
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -2691,7 +2691,13 @@
+ void FocusSearch(BrowserWindowInterface* browser) {
+   // TODO(beng): replace this with FocusLocationBar
+   base::RecordAction(UserMetricsAction("FocusSearch"));
+-  BrowserWindow::FromBrowser(browser)->GetLocationBar()->FocusSearch();
++  auto* window = BrowserWindow::FromBrowser(browser);
++  if (!window->IsLocationBarVisible() &&
++      browser->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
++    window->SetFocusToLocationBar(true);
++    return;
++  }
++  window->GetLocationBar()->FocusSearch();
+ }
+ 
+ void FocusAppMenu(BrowserWindowInterface* browser) {

@@ -1,0 +1,118 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -51,11 +51,13 @@
+ #include "ui/views/background.h"
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/button/menu_button.h"
+ #include "ui/views/controls/label.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/layout/flex_layout.h"
+ #include "ui/views/view_class_properties.h"
++#include "ui/views/view_utils.h"
+ #include "url/gurl.h"
+ 
+ namespace {
+@@ -556,13 +558,19 @@
+   static_cast<views::BoxLayout*>(footer->GetLayoutManager())
+       ->SetFlexForView(spacer, 1);
+ 
+-  auto* add =
+-      MakeRow(footer, u"+",
+-              base::BindRepeating(&CoveSidebarLibraryView::ShowLibraryMenu,
+-                                  weak_factory_.GetWeakPtr()));
++  // MenuButton owns the native menu controller, including mouse capture,
++  // pressed-state locking and keyboard/accessibility activation.
++  auto menu_button = std::make_unique<views::MenuButton>(
++      base::BindRepeating(&CoveSidebarLibraryView::ShowLibraryMenu,
++                          weak_factory_.GetWeakPtr()),
++      u"+");
++  menu_button->SetTextSubpixelRenderingEnabled(false);
++  menu_button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++  auto* add = footer->AddChildView(std::move(menu_button));
+   add->SetPreferredSize(gfx::Size(28, 28));
+   add->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+   add->GetViewAccessibility().SetName(u"New and sidebar options");
++  add->GetViewAccessibility().SetHasPopup(ax::mojom::HasPopup::kMenu);
+   add->SetTooltipText(u"New and sidebar options");
+   menu_button_.SetView(add);
+   footer->InvalidateLayout();
+@@ -629,8 +637,7 @@
+   }
+   for (const tabs::TabHandle& handle : handles) {
+     tabs::TabInterface* tab = handle.Get();
+-    if (tab && tab->GetContents() &&
+-        !IsCoveEmptyCanvas(tab->GetContents())) {
++    if (tab && tab->GetContents() && !IsCoveEmptyCanvas(tab->GetContents())) {
+       ScheduleEmptyCanvasCleanup();
+       return;
+     }
+@@ -650,10 +657,9 @@
+   }
+   empty_canvas_cleanup_posted_ = true;
+   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+-      FROM_HERE,
+-      base::BindOnce(&CoveSidebarLibraryView::CleanupEmptyCanvases,
+-                     weak_factory_.GetWeakPtr(),
+-                     empty_canvas_cleanup_generation_));
++      FROM_HERE, base::BindOnce(&CoveSidebarLibraryView::CleanupEmptyCanvases,
++                                weak_factory_.GetWeakPtr(),
++                                empty_canvas_cleanup_generation_));
+ }
+ 
+ void CoveSidebarLibraryView::InvalidateEmptyCanvasCleanup() {
+@@ -705,6 +711,7 @@
+   if (!footer || !footer->GetWidget()) {
+     return;
+   }
++  menu_runner_.reset();
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+   menu_model_->AddItem(kArchiveTodayCommand, u"Archive Today");
+   if (toggle_favorite_) {
+@@ -716,12 +723,16 @@
+   menu_model_->AddItem(kPinCurrentPageCommand, u"Pin this page");
+   menu_model_->AddItem(kNewFolderCommand, u"New folder");
+   menu_model_->AddItem(kNewSpaceCommand, u"New Space");
++  auto* anchor = views::AsViewClass<views::MenuButton>(menu_button_.view());
++  if (!anchor || !anchor->GetWidget()) {
++    return;
++  }
+   menu_runner_ = std::make_unique<views::MenuRunner>(
+       menu_model_.get(), views::MenuRunner::HAS_MNEMONICS);
+-  views::View* anchor = menu_button_.view() ? menu_button_.view() : footer;
+-  menu_runner_->RunMenuAt(
+-      anchor->GetWidget(), nullptr, anchor->GetBoundsInScreen(),
+-      views::MenuAnchorPosition::kTopRight, ui::mojom::MenuSourceType::kNone);
++  menu_runner_->RunMenuAt(anchor->GetWidget(), anchor->button_controller(),
++                          anchor->GetBoundsInScreen(),
++                          views::MenuAnchorPosition::kTopRight,
++                          ui::mojom::MenuSourceType::kNone);
+ }
+ 
+ void CoveSidebarLibraryView::PinActivePage() {
+@@ -1348,6 +1359,7 @@
+   if (const auto folder = row_folder_ids_.find(source);
+       folder != row_folder_ids_.end()) {
+     context_folder_id_ = folder->second;
++    menu_runner_.reset();
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     menu_model_->AddItem(kRenameFolderCommand, u"Rename Folder");
+     menu_model_->AddItem(kRemoveFolderCommand, u"Remove Folder");
+@@ -1357,6 +1369,7 @@
+   if (const auto space = row_space_ids_.find(source);
+       space != row_space_ids_.end()) {
+     context_space_id_ = space->second;
++    menu_runner_.reset();
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space");
+     RunContextMenu(source, point, source_type);
+@@ -1371,6 +1384,7 @@
+     return;
+   }
+   menu_folder_ids_.clear();
++  menu_runner_.reset();
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+   menu_model_->AddItem(kRenamePinCommand, u"Rename Pin");
+   menu_model_->AddItem(kRemovePinCommand, u"Remove pin");

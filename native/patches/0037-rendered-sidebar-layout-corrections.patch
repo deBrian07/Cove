@@ -1,0 +1,75 @@
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -131,6 +131,8 @@
+ 
+   location_view_ =
+       AddChildView(std::make_unique<CoveLocationView>(browser_view->browser()));
++  top_button_container_->SetCoveNavigationControls(
++      location_view_->TakeNavigationControls());
+ 
+   auto content_area_view = std::make_unique<views::FlexLayoutView>();
+   content_area_view->SetOrientation(views::LayoutOrientation::kVertical);
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -658,7 +658,7 @@
+ 
+   int width = std::max({toolbar_size.width(), bookmark_bar_size.width(),
+                         infobar_container_size.width(),
+-                            kContentsContainerMinimumWidth});
++                        kContentsContainerMinimumWidth});
+   const int height = toolbar_size.height() + bookmark_bar_size.height() +
+                      infobar_container_size.height() + contents_size.height();
+ 
+@@ -750,7 +750,7 @@
+   }
+ 
+   if (!vertical_tabstrip_size.IsEmpty() &&
+-      !is_fullscreen(delegate().GetBrowserWindowState()) && !in_glass_mode()) {
++      !is_fullscreen(delegate().GetBrowserWindowState())) {
+     // Keep the existing minimum page area available inside Cove's frame.
+     min_width += 2 * kCovePageFrameInset;
+     min_height += 2 * kCovePageFrameInset;
+@@ -777,7 +777,7 @@
+   BrowserLayoutParams params = layout_data_->revised_params;
+   const bool cove_page_frame =
+       layout_data_->tab_strip_type == TabStripType::kVertical &&
+-      !is_fullscreen(layout_data_->window_state) && !in_glass_mode();
++      !is_fullscreen(layout_data_->window_state);
+   bool needs_exclusion = true;
+   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
+ 
+@@ -1877,7 +1877,7 @@
+     // Use the live frame theme so activation, custom themes and contrast modes
+     // keep their native colors rather than a hard-coded purple.
+     if (layout_data_->tab_strip_type == TabStripType::kVertical &&
+-        !is_fullscreen(layout_data_->window_state) && !in_glass_mode()) {
++        !is_fullscreen(layout_data_->window_state)) {
+       main_background->SetPrimaryColor(CustomCornersBackground::FrameTheme());
+     } else {
+       main_background->SetPrimaryColor(CustomCornersBackground::ToolbarTheme());
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -185,6 +185,7 @@
+   auto* button = parent->AddChildView(
+       std::make_unique<views::LabelButton>(std::move(callback), text));
+   button->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  button->SetTextSubpixelRenderingEnabled(false);
+   button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
+   return button;
+ }
+@@ -206,9 +207,9 @@
+       views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 8), 1));
+   layout->set_cross_axis_alignment(
+       views::BoxLayout::CrossAxisAlignment::kStretch);
+-  // The sidebar paints on a non-opaque layer. An opaque background keeps text
+-  // rendering checks from failing in that layer.
+-  SetBackground(views::CreateSolidBackground(ui::kColorFrameActive));
++  // Share the native sidebar surface, including its Glass treatment. Row
++  // labels use grayscale antialiasing rather than requiring an opaque panel.
++  SetBackground(nullptr);
+   EnsureDefaultLibrary();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
