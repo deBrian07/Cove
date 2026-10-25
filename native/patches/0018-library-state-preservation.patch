@@ -1,0 +1,1187 @@
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
++#define CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
++
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
++
++// Window-scoped bridge between Spaces and the native browser unload pipeline.
++// Inactive pages must rejoin the tab strip before beforeunload/session
++// shutdown.
++class CoveSpaceCloseHandler {
++ public:
++  DECLARE_USER_DATA(CoveSpaceCloseHandler);
++  virtual ~CoveSpaceCloseHandler() = default;
++  virtual bool HasPendingTabs() const = 0;
++  virtual void PrepareForClose() = 0;
++  virtual void CancelClose() = 0;
++};
++
++#endif  // CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -0,0 +1,7 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
++
++DEFINE_USER_DATA(CoveSpaceCloseHandler);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -5,18 +5,23 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
+ #define CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
+ 
++#include <map>
++#include <memory>
+ #include <string>
+ #include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "components/prefs/pref_change_registrar.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/menus/simple_menu_model.h"
+ #include "ui/views/context_menu_controller.h"
+ #include "ui/views/view.h"
+ 
+ class BrowserWindowInterface;
++class GURL;
+ 
+ namespace views {
+ class MenuRunner;
+@@ -26,6 +31,7 @@
+ // space switcher. Pins persist after their tab is closed. Each space keeps
+ // its own pins, folders, and open tabs.
+ class CoveSidebarLibraryView : public views::View,
++                               public CoveSpaceCloseHandler,
+                                public TabStripModelObserver,
+                                public views::ContextMenuController,
+                                public ui::SimpleMenuModel::Delegate {
+@@ -39,6 +45,11 @@
+   ~CoveSidebarLibraryView() override;
+ 
+   void SetCollapsed(bool collapsed);
++
++  // CoveSpaceCloseHandler:
++  bool HasPendingTabs() const override;
++  void PrepareForClose() override;
++  void CancelClose() override;
+ 
+   // views::View:
+   void AddedToWidget() override;
+@@ -57,17 +68,33 @@
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
++  struct SpaceTabs;
++  std::unique_ptr<SpaceTabs> CaptureCurrentTabs() const;
++  void DetachSpaceTabs(SpaceTabs& space);
++  void InsertSpaceTabs(SpaceTabs& space);
++  void RestoreSelection(const SpaceTabs& space);
++  void SaveActiveSnapshot();
+   void EnsureDefaultLibrary();
+   void Rebuild();
+   void PinActivePage();
+   void AddFolder();
+   void AddSpace();
+-  void SwitchSpace(const std::string& space_id);
++  void SwitchSpace(std::string space_id);
+   void OpenPin(const GURL& url);
+   void RemovePin(const std::string& pin_id);
+   void MovePinToFolder(const std::string& pin_id, const std::string& folder_id);
+ 
+   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
++  ui::ScopedUnownedUserData<CoveSpaceCloseHandler> close_handler_registration_;
++  // Active space and live tab ownership are per window, never profile-global.
++  std::string active_space_id_;
++  PrefChangeRegistrar pref_change_registrar_;
++  std::map<std::string, std::unique_ptr<SpaceTabs>> inactive_spaces_;
++  std::unique_ptr<SpaceTabs> closing_active_space_;
++  bool switching_space_ = false;
++  bool syncing_pins_ = false;
++  std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
++  std::map<const views::View*, std::string> row_pin_ids_;
+   std::string context_pin_id_;
+   std::vector<std::string> menu_folder_ids_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -4,8 +4,13 @@
+ 
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
++#include <algorithm>
++#include <optional>
+ #include <utility>
+-
++#include <variant>
++
++#include "base/auto_reset.h"
++#include "base/functional/bind.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/uuid.h"
+@@ -18,26 +23,29 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/prefs/scoped_user_pref_update.h"
++#include "components/tabs/public/split_tab_collection.h"
++#include "components/tabs/public/tab_group_tab_collection.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/web_contents.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/list_selection_model.h"
+ #include "ui/base/mojom/menu_source_type.mojom.h"
+-#include "ui/events/event.h"
+ #include "ui/base/page_transition_types.h"
+ #include "ui/base/window_open_disposition.h"
++#include "ui/color/color_id.h"
++#include "ui/events/event.h"
+ #include "ui/gfx/geometry/insets.h"
+ #include "ui/gfx/geometry/point.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/text_constants.h"
+-#include "ui/base/metadata/metadata_impl_macros.h"
+-#include "ui/color/color_id.h"
+ #include "ui/menus/simple_menu_model.h"
+-#include "third_party/skia/include/core/SkColor.h"
+ #include "ui/views/background.h"
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/label.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+-#include "ui/views/controls/label.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/layout/flex_layout.h"
+ #include "ui/views/view_class_properties.h"
+@@ -65,7 +73,7 @@
+ }
+ 
+ const base::DictValue* FindSpace(const base::DictValue& root,
+-                                   std::string_view id) {
++                                 std::string_view id) {
+   const base::ListValue* spaces = root.FindList("spaces");
+   if (!spaces) {
+     return nullptr;
+@@ -100,8 +108,17 @@
+ 
+ }  // namespace
+ 
++struct CoveSidebarLibraryView::SpaceTabs {
++  std::vector<std::variant<std::unique_ptr<DetachedTab>,
++                           std::unique_ptr<DetachedTabCollection>>>
++      items;
++  std::vector<tabs::TabHandle> handles;
++  ui::ListSelectionModel selection;
++};
++
+ CoveSidebarLibraryView::CoveSidebarLibraryView(BrowserWindowInterface* browser)
+-    : browser_(browser) {
++    : browser_(browser),
++      close_handler_registration_(browser->GetUnownedUserDataHost(), *this) {
+   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 8), 1));
+   layout->set_cross_axis_alignment(
+@@ -110,10 +127,30 @@
+   // rendering checks from failing in that layer.
+   SetBackground(views::CreateSolidBackground(SkColorSetRGB(0x3a, 0x36, 0x4a)));
+   EnsureDefaultLibrary();
++  const base::DictValue& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const std::string* active = root.FindString("active");
++  if (active && FindSpace(root, *active)) {
++    active_space_id_ = *active;
++  } else if (const base::ListValue* spaces = root.FindList("spaces")) {
++    for (const base::Value& value : *spaces) {
++      const base::DictValue* space = value.GetIfDict();
++      if (space && space->FindString("id")) {
++        active_space_id_ = *space->FindString("id");
++        break;
++      }
++    }
++  }
+   Rebuild();
+-}
+-
+-CoveSidebarLibraryView::~CoveSidebarLibraryView() = default;
++  pref_change_registrar_.Init(browser_->GetProfile()->GetPrefs());
++  pref_change_registrar_.Add(
++      kCoveSidebarPref, base::BindRepeating(&CoveSidebarLibraryView::Rebuild,
++                                            weak_factory_.GetWeakPtr()));
++}
++
++CoveSidebarLibraryView::~CoveSidebarLibraryView() {
++  TabStripModelObserver::StopObservingAll(this);
++}
+ 
+ void CoveSidebarLibraryView::AddedToWidget() {
+   views::View::AddedToWidget();
+@@ -135,43 +172,77 @@
+ 
+ void CoveSidebarLibraryView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
+                                                      int index) {
+-  if (!tab || !tab->IsPinned() || !tab->GetContents()) {
++  if (switching_space_ || syncing_pins_ || !tab || !tab->GetContents()) {
++    return;
++  }
++  const int handle = tab->GetHandle().raw_value();
++  if (!tab->IsPinned()) {
++    // This notification runs inside the tab-strip pin mutation. Only update
++    // the persisted record here, never re-enter model selection/pin methods.
++    base::AutoReset<bool> syncing(&syncing_pins_, true);
++    auto binding = tab_pin_ids_.find(handle);
++    if (binding != tab_pin_ids_.end() &&
++        binding->second.first == active_space_id_) {
++      const std::string id = binding->second.second;
++      tab_pin_ids_.erase(binding);
++      RemovePin(id);
++    } else {
++      const auto& root =
++          browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++      const auto* space = FindSpace(root, active_space_id_);
++      const auto* pins = space ? space->FindList("pins") : nullptr;
++      if (pins) {
++        for (const base::Value& value : *pins) {
++          const auto* pin = value.GetIfDict();
++          const auto* url = pin ? pin->FindString("url") : nullptr;
++          const auto* id = pin ? pin->FindString("id") : nullptr;
++          if (url && id && *url == tab->GetContents()->GetVisibleURL().spec()) {
++            const std::string pin_id = *id;
++            RemovePin(pin_id);
++            break;
++          }
++        }
++      }
++    }
+     return;
+   }
+   content::WebContents* contents = tab->GetContents();
+   const GURL url = contents->GetVisibleURL();
+   if (!url.is_valid() || url.SchemeIs("chrome") || url.SchemeIs("cove") ||
+-      url.SchemeIs("devtools")) {
++      url.SchemeIs("devtools") || url.SchemeIs("javascript")) {
+     return;
+   }
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  const std::string* active = update->FindString("active");
+-  base::DictValue* space =
+-      active ? FindSpace(*update, *active) : nullptr;
++  base::DictValue* space = FindSpace(*update, active_space_id_);
+   if (!space) {
+     return;
+   }
+   base::ListValue* pins = space->EnsureList("pins");
+-  for (const base::Value& pin : *pins) {
+-    const base::DictValue* dict = pin.GetIfDict();
+-    const std::string* existing = dict ? dict->FindString("url") : nullptr;
+-    if (existing && *existing == url.spec()) {
++  for (const base::Value& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* existing = pin ? pin->FindString("url") : nullptr;
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    if (existing && id && *existing == url.spec()) {
++      tab_pin_ids_[handle] = {active_space_id_, *id};
+       return;
+     }
+   }
+   base::DictValue pin;
+-  pin.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
++  const std::string id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  pin.Set("id", id);
+   pin.Set("url", url.spec());
+   pin.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
+   pin.Set("folder", "");
+   pins->Append(std::move(pin));
++  tab_pin_ids_[handle] = {active_space_id_, id};
+   Rebuild();
+ }
+ 
+ void CoveSidebarLibraryView::EnsureDefaultLibrary() {
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  if (prefs->GetDict(kCoveSidebarPref).FindList("spaces")) {
++  if (const auto* spaces = prefs->GetDict(kCoveSidebarPref).FindList("spaces");
++      spaces && !spaces->empty()) {
+     return;
+   }
+   base::DictValue personal;
+@@ -200,12 +271,12 @@
+ }
+ 
+ void CoveSidebarLibraryView::Rebuild() {
++  row_pin_ids_.clear();
+   RemoveAllChildViews();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+-  const std::string* active_id = root.FindString("active");
+-  const base::DictValue* space =
+-      active_id ? FindSpace(root, *active_id) : nullptr;
++  const std::string* active_id = &active_space_id_;
++  const base::DictValue* space = FindSpace(root, active_space_id_);
+   if (!space) {
+     return;
+   }
+@@ -236,7 +307,7 @@
+                               weak_factory_.GetWeakPtr(), GURL(*url)));
+       row->set_context_menu_controller(this);
+       row->SetTooltipText(base::UTF8ToUTF16(*url));
+-      row->SetAccessibleName(base::UTF8ToUTF16(*id));
++      row_pin_ids_[row] = *id;
+     }
+   }
+   MakeRow(this, any_loose_pin ? u"Pin this page" : u"Pin this page",
+@@ -262,7 +333,8 @@
+       }
+       for (const base::Value& pin_value : *pins) {
+         const base::DictValue* pin = pin_value.GetIfDict();
+-        const std::string* pin_folder = pin ? pin->FindString("folder") : nullptr;
++        const std::string* pin_folder =
++            pin ? pin->FindString("folder") : nullptr;
+         if (!pin || !pin_folder || *pin_folder != folder_id) {
+           continue;
+         }
+@@ -274,11 +346,12 @@
+         }
+         auto* row = MakeRow(
+             this,
+-            u"    " + base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
++            u"    " +
++                base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+             base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+                                 weak_factory_.GetWeakPtr(), GURL(*url)));
+         row->set_context_menu_controller(this);
+-        row->SetAccessibleName(base::UTF8ToUTF16(*id));
++        row_pin_ids_[row] = *id;
+         row->SetTooltipText(base::UTF8ToUTF16(*url));
+       }
+     }
+@@ -296,10 +369,10 @@
+         continue;
+       }
+       const std::string id = *item->FindString("id");
+-      auto* chip = MakeRow(
+-          chips, base::UTF8ToUTF16(*item->FindString("name")),
+-          base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+-                              weak_factory_.GetWeakPtr(), id));
++      auto* chip =
++          MakeRow(chips, base::UTF8ToUTF16(*item->FindString("name")),
++                  base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
++                                      weak_factory_.GetWeakPtr(), id));
+       if (active_id && id == *active_id) {
+         chip->SetEnabledTextColors(ui::kColorButtonForegroundProminent);
+       }
+@@ -312,48 +385,23 @@
+ }
+ 
+ void CoveSidebarLibraryView::PinActivePage() {
+-  content::WebContents* contents =
+-      browser_->GetTabStripModel()->GetActiveWebContents();
+-  if (!contents) {
+-    return;
+-  }
+-  const GURL url = contents->GetVisibleURL();
+-  if (!url.is_valid()) {
+-    return;
+-  }
+-  PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  const std::string* active = update->FindString("active");
+-  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
+-  if (!space) {
+-    return;
+-  }
+-  base::ListValue* pins = space->EnsureList("pins");
+-  for (const base::Value& pin : *pins) {
+-    const base::DictValue* dict = pin.GetIfDict();
+-    const std::string* existing = dict ? dict->FindString("url") : nullptr;
+-    if (existing && *existing == url.spec()) {
+-      return;
+-    }
+-  }
+-  base::DictValue pin;
+-  pin.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
+-  pin.Set("url", url.spec());
+-  std::string title = base::UTF16ToUTF8(contents->GetTitle());
+-  if (title.empty()) {
+-    title = url.spec();
+-  }
+-  pin.Set("title", title);
+-  pin.Set("folder", "");
+-  pins->Append(std::move(pin));
+-  Rebuild();
++  TabStripModel* model = browser_->GetTabStripModel();
++  tabs::TabInterface* tab = model->GetActiveTab();
++  if (!tab) {
++    return;
++  }
++  if (tab->IsPinned()) {
++    OnTabPinnedStateChanged(tab, model->active_index());
++  } else {
++    model->ExecuteContextMenuCommand(model->active_index(),
++                                     TabStripModel::CommandTogglePinned);
++  }
+ }
+ 
+ void CoveSidebarLibraryView::AddFolder() {
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  const std::string* active = update->FindString("active");
+-  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  base::DictValue* space = FindSpace(*update, active_space_id_);
+   if (!space) {
+     return;
+   }
+@@ -382,73 +430,252 @@
+   SwitchSpace(id);
+ }
+ 
+-void CoveSidebarLibraryView::SwitchSpace(const std::string& space_id) {
++std::unique_ptr<CoveSidebarLibraryView::SpaceTabs>
++CoveSidebarLibraryView::CaptureCurrentTabs() const {
++  auto space = std::make_unique<SpaceTabs>();
++  TabStripModel* model = browser_->GetTabStripModel();
++  space->selection = model->selection_model().GetListSelectionModel();
++  for (int i = 0; i < model->count(); ++i) {
++    space->handles.push_back(model->GetTabAtIndex(i)->GetHandle());
++  }
++  return space;
++}
++
++void CoveSidebarLibraryView::DetachSpaceTabs(SpaceTabs& space) {
++  TabStripModel* model = browser_->GetTabStripModel();
++  std::vector<int> indices;
++  for (const auto& handle : space.handles) {
++    if (auto* tab = handle.Get()) {
++      const int index = model->GetIndexOfTab(tab);
++      if (index != TabStripModel::kNoTab) {
++        indices.push_back(index);
++      }
++    }
++  }
++  std::ranges::sort(indices);
++  if (!indices.empty()) {
++    space.items = model->DetachTabsAndCollectionsForInsertion(indices);
++  }
++}
++
++void CoveSidebarLibraryView::InsertSpaceTabs(SpaceTabs& space) {
++  TabStripModel* model = browser_->GetTabStripModel();
++  for (auto& entry : space.items) {
++    if (auto* tab = std::get_if<std::unique_ptr<DetachedTab>>(&entry)) {
++      const int add_types =
++          (*tab)->was_pinned_at_time_of_removal ? AddTabTypes::ADD_PINNED : 0;
++      model->InsertDetachedTabAt(model->count(), std::move((*tab)->tab),
++                                 add_types);
++    } else if (auto* collection =
++                   std::get_if<std::unique_ptr<DetachedTabCollection>>(
++                       &entry)) {
++      if (std::holds_alternative<std::unique_ptr<tabs::TabGroupTabCollection>>(
++              (*collection)->collection_)) {
++        model->InsertDetachedTabGroupAt(std::move(*collection), model->count());
++      } else {
++        const bool pinned = (*collection)->pinned_;
++        model->InsertDetachedSplitTabAt(
++            std::move(*collection),
++            pinned ? model->IndexOfFirstNonPinnedTab() : model->count(),
++            pinned);
++      }
++    }
++  }
++  space.items.clear();
++}
++
++void CoveSidebarLibraryView::RestoreSelection(const SpaceTabs& space) {
++  TabStripModel* model = browser_->GetTabStripModel();
++  const auto index_for =
++      [&](std::optional<size_t> saved) -> std::optional<size_t> {
++    if (!saved || *saved >= space.handles.size()) {
++      return std::nullopt;
++    }
++    auto* tab = space.handles[*saved].Get();
++    const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
++    return index == TabStripModel::kNoTab ? std::nullopt
++                                          : std::make_optional<size_t>(index);
++  };
++  ui::ListSelectionModel restored;
++  for (size_t selected : space.selection.selected_indices()) {
++    if (const auto index = index_for(selected)) {
++      restored.AddIndexToSelection(*index);
++    }
++  }
++  restored.set_active(index_for(space.selection.active()));
++  restored.set_anchor(index_for(space.selection.anchor()));
++  if (restored.active()) {
++    model->SetSelectionFromModel(restored);
++  } else if (!model->empty()) {
++    model->ActivateTabAt(0);
++  }
++}
++
++void CoveSidebarLibraryView::SaveActiveSnapshot() {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  base::DictValue* space = FindSpace(*update, active_space_id_);
++  if (!space) {
++    return;
++  }
++  base::ListValue tabs;
++  TabStripModel* model = browser_->GetTabStripModel();
++  for (int i = 0; i < model->count(); ++i) {
++    content::WebContents* contents = model->GetWebContentsAt(i);
++    base::DictValue tab;
++    tab.Set("url", contents->GetVisibleURL().spec());
++    tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
++    tab.Set("pinned", model->IsTabPinned(i));
++    tab.Set("active", model->active_index() == i);
++    tabs.Append(std::move(tab));
++  }
++  // This is a compatibility fallback for first load/restart, never the runtime
++  // representation of a Space. Live WebContents stay owned in inactive_spaces_.
++  space->Set("tabs", std::move(tabs));
++}
++
++void CoveSidebarLibraryView::SwitchSpace(std::string space_id) {
++  if (switching_space_ || closing_active_space_ ||
++      active_space_id_ == space_id) {
++    return;
++  }
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  const std::string* active =
+-      prefs->GetDict(kCoveSidebarPref).FindString("active");
+-  if (active && *active == space_id) {
+-    return;
+-  }
+-  TabStripModel* model = browser_->GetTabStripModel();
++  const auto* target = FindSpace(prefs->GetDict(kCoveSidebarPref), space_id);
++  if (!target) {
++    return;
++  }
++  // Copy fallback data before updating preferences, which may invalidate it.
++  base::ListValue fallback = target->FindList("tabs")
++                                 ? target->FindList("tabs")->Clone()
++                                 : base::ListValue();
++  base::AutoReset<bool> switching(&switching_space_, true);
++  SaveActiveSnapshot();
++  auto outgoing = CaptureCurrentTabs();
++  auto incoming = std::make_unique<SpaceTabs>();
++  const auto found = inactive_spaces_.find(space_id);
++  if (found != inactive_spaces_.end()) {
++    incoming = std::move(found->second);
++    inactive_spaces_.erase(found);
++    InsertSpaceTabs(*incoming);
++  } else {
++    TabStripModel* model = browser_->GetTabStripModel();
++    std::optional<tabs::TabHandle> active;
++    for (const base::Value& value : fallback) {
++      const auto* tab = value.GetIfDict();
++      const auto* text = tab ? tab->FindString("url") : nullptr;
++      const GURL url(text ? *text : "");
++      if (!url.is_valid() || url.SchemeIs("javascript")) {
++        continue;
++      }
++      NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++      if (tab->FindBool("pinned").value_or(false)) {
++        params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
++      }
++      Navigate(&params);
++      if (tab->FindBool("active").value_or(false) &&
++          params.navigated_or_inserted_contents) {
++        if (auto* inserted = tabs::TabInterface::GetFromContents(
++                params.navigated_or_inserted_contents)) {
++          active = inserted->GetHandle();
++        }
++      }
++    }
++    // Find newly created tabs by stable handles: pinned insertions can shift
++    // every old tab index, so a saved numeric old_count is not sufficient.
++    for (int i = 0; i < model->count(); ++i) {
++      auto handle = model->GetTabAtIndex(i)->GetHandle();
++      if (!std::ranges::contains(outgoing->handles, handle)) {
++        incoming->handles.push_back(handle);
++      }
++    }
++    if (incoming->handles.empty()) {
++      NavigateParams params(browser_, GURL("chrome://newtab/"),
++                            ui::PAGE_TRANSITION_TYPED);
++      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++      Navigate(&params);
++      for (int i = 0; i < model->count(); ++i) {
++        auto handle = model->GetTabAtIndex(i)->GetHandle();
++        if (!std::ranges::contains(outgoing->handles, handle)) {
++          incoming->handles.push_back(handle);
++        }
++      }
++    }
++    incoming->selection.SetSelectedIndex(0);
++    if (active) {
++      for (size_t i = 0; i < incoming->handles.size(); ++i) {
++        if (incoming->handles[i] == *active) {
++          incoming->selection.SetSelectedIndex(i);
++          break;
++        }
++      }
++    }
++  }
++  // There is always an incoming tab before detaching outgoing tabs. The native
++  // browser therefore never sees an empty tab strip and cannot close itself.
++  if (incoming->handles.empty()) {
++    return;
++  }
++  DetachSpaceTabs(*outgoing);
++  inactive_spaces_[active_space_id_] = std::move(outgoing);
++  active_space_id_ = space_id;
++  RestoreSelection(*incoming);
+   {
+     ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-    const std::string* current = update->FindString("active");
+-    base::DictValue* from = current ? FindSpace(*update, *current) : nullptr;
+-    if (from) {
+-      base::ListValue tabs;
+-      for (int i = 0; i < model->count(); ++i) {
+-        content::WebContents* contents = model->GetWebContentsAt(i);
+-        if (!contents) {
+-          continue;
+-        }
+-        base::DictValue tab;
+-        tab.Set("url", contents->GetVisibleURL().spec());
+-        tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
+-        tabs.Append(std::move(tab));
+-      }
+-      from->Set("tabs", std::move(tabs));
+-    }
+-    update->Set("active", space_id);
+-  }
+-
+-  const base::ListValue* tabs =
+-      FindSpace(prefs->GetDict(kCoveSidebarPref), space_id)
+-          ? FindSpace(prefs->GetDict(kCoveSidebarPref), space_id)->FindList("tabs")
+-          : nullptr;
+-  const int old_count = model->count();
+-  int added = 0;
+-  if (tabs) {
+-    for (const base::Value& tab_value : *tabs) {
+-      const base::DictValue* tab = tab_value.GetIfDict();
+-      const std::string* url_text = tab ? tab->FindString("url") : nullptr;
+-      if (!url_text) {
+-        continue;
+-      }
+-      GURL url(*url_text);
+-      if (!url.is_valid()) {
+-        continue;
+-      }
+-      NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
+-      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+-      Navigate(&params);
+-      ++added;
+-    }
+-  }
+-  if (added == 0) {
++    update->Set("active", space_id);  // Last-used startup default only.
++  }
++  Rebuild();
++}
++
++bool CoveSidebarLibraryView::HasPendingTabs() const {
++  for (const auto& [id, space] : inactive_spaces_) {
++    if (!space->items.empty()) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void CoveSidebarLibraryView::PrepareForClose() {
++  if (switching_space_ || closing_active_space_ || !HasPendingTabs()) {
++    return;
++  }
++  base::AutoReset<bool> switching(&switching_space_, true);
++  SaveActiveSnapshot();
++  closing_active_space_ = CaptureCurrentTabs();
++  for (auto& [id, space] : inactive_spaces_) {
++    InsertSpaceTabs(*space);
++  }
++  RestoreSelection(*closing_active_space_);
++  // All pages are now visible to Chromium's beforeunload, session persistence,
++  // crash handling and normal window teardown. No cached page is destroyed by
++  // the sidebar destructor behind the unload controller's back.
++}
++
++void CoveSidebarLibraryView::CancelClose() {
++  if (!closing_active_space_) {
++    return;
++  }
++  base::AutoReset<bool> switching(&switching_space_, true);
++  if (closing_active_space_->handles.empty()) {
++    // If the user closed the final tab in this Space, canceling window close
++    // must leave an active page before inactive Spaces are parked again.
+     NavigateParams params(browser_, GURL("chrome://newtab/"),
+                           ui::PAGE_TRANSITION_TYPED);
+-    params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+     Navigate(&params);
+-    ++added;
+-  }
+-  for (int i = old_count - 1; i >= 0; --i) {
+-    model->CloseWebContentsAt(
+-        i, CLOSE_USER_GESTURE | CLOSE_CREATE_HISTORICAL_TAB);
+-  }
+-  if (model->count() > 0) {
+-    model->ActivateTabAt(0);
+-  }
+-  Rebuild();
++    if (auto* contents = params.navigated_or_inserted_contents.get()) {
++      if (auto* tab = tabs::TabInterface::GetFromContents(contents)) {
++        closing_active_space_->handles.push_back(tab->GetHandle());
++        closing_active_space_->selection.SetSelectedIndex(0);
++      }
++    }
++  }
++  for (auto& [id, space] : inactive_spaces_) {
++    DetachSpaceTabs(*space);
++  }
++  RestoreSelection(*closing_active_space_);
++  closing_active_space_.reset();
+ }
+ 
+ void CoveSidebarLibraryView::OpenPin(const GURL& url) {
+@@ -460,31 +687,73 @@
+     content::WebContents* contents = model->GetWebContentsAt(i);
+     if (contents && contents->GetVisibleURL() == url) {
+       model->ActivateTabAt(i);
++      if (!model->IsTabPinned(i)) {
++        model->ExecuteContextMenuCommand(i, TabStripModel::CommandTogglePinned);
++      }
+       return;
+     }
+   }
+   NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
+   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
+   Navigate(&params);
+ }
+ 
+ void CoveSidebarLibraryView::RemovePin(const std::string& pin_id) {
+-  PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  const std::string* active = update->FindString("active");
+-  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
+-  base::ListValue* pins = space ? space->FindList("pins") : nullptr;
+-  if (!pins) {
+-    return;
+-  }
+-  for (size_t i = 0; i < pins->size(); ++i) {
+-    const base::DictValue* pin = (*pins)[i].GetIfDict();
+-    const std::string* id = pin ? pin->FindString("id") : nullptr;
+-    if (id && *id == pin_id) {
+-      pins->erase(pins->begin() + static_cast<ptrdiff_t>(i));
+-      break;
+-    }
+-  }
++  const std::string removed_id = pin_id;
++  std::string removed_url;
++  {
++    ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                                kCoveSidebarPref);
++    auto* space = FindSpace(*update, active_space_id_);
++    auto* pins = space ? space->FindList("pins") : nullptr;
++    if (!pins) {
++      return;
++    }
++    for (size_t i = 0; i < pins->size(); ++i) {
++      const auto* pin = (*pins)[i].GetIfDict();
++      const auto* id = pin ? pin->FindString("id") : nullptr;
++      if (id && *id == removed_id) {
++        if (const auto* url = pin->FindString("url")) {
++          removed_url = *url;
++        }
++        pins->erase(pins->begin() + static_cast<ptrdiff_t>(i));
++        break;
++      }
++    }
++  }
++  if (syncing_pins_) {
++    return;
++  }
++  base::AutoReset<bool> syncing(&syncing_pins_, true);
++  TabStripModel* model = browser_->GetTabStripModel();
++  auto before = CaptureCurrentTabs();
++  for (const auto& handle : before->handles) {
++    auto* tab = handle.Get();
++    if (!tab || !tab->IsPinned()) {
++      continue;
++    }
++    const auto binding = tab_pin_ids_.find(handle.raw_value());
++    const bool matches_binding = binding != tab_pin_ids_.end() &&
++                                 binding->second.first == active_space_id_ &&
++                                 binding->second.second == removed_id;
++    if (!matches_binding &&
++        (removed_url.empty() ||
++         tab->GetContents()->GetVisibleURL().spec() != removed_url)) {
++      continue;
++    }
++    const int index = model->GetIndexOfTab(tab);
++    if (index == TabStripModel::kNoTab || tab->IsSplit()) {
++      continue;
++    }
++    // Isolate this loose tab from unrelated multi-selection before using the
++    // native pin command. Split membership is never broken by removing a row.
++    ui::ListSelectionModel selection;
++    selection.SetSelectedIndex(index);
++    model->SetSelectionFromModel(selection);
++    model->ExecuteContextMenuCommand(index, TabStripModel::CommandTogglePinned);
++  }
++  RestoreSelection(*before);
+   Rebuild();
+ }
+ 
+@@ -492,8 +761,7 @@
+                                              const std::string& folder_id) {
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  const std::string* active = update->FindString("active");
+-  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  base::DictValue* space = FindSpace(*update, active_space_id_);
+   base::ListValue* pins = space ? space->FindList("pins") : nullptr;
+   if (!pins) {
+     return;
+@@ -513,7 +781,11 @@
+     views::View* source,
+     const gfx::Point& point,
+     ui::mojom::MenuSourceType source_type) {
+-  context_pin_id_ = base::UTF16ToUTF8(source->GetAccessibleName());
++  const auto found = row_pin_ids_.find(source);
++  if (found == row_pin_ids_.end()) {
++    return;
++  }
++  context_pin_id_ = found->second;
+   if (context_pin_id_.empty()) {
+     return;
+   }
+@@ -522,8 +794,7 @@
+   menu_model_->AddItem(kRemovePinCommand, u"Remove pin");
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+-  const std::string* active = root.FindString("active");
+-  const base::DictValue* space = active ? FindSpace(root, *active) : nullptr;
++  const base::DictValue* space = FindSpace(root, active_space_id_);
+   const base::ListValue* folders = space ? space->FindList("folders") : nullptr;
+   if (folders) {
+     for (const base::Value& folder_value : *folders) {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+@@ -0,0 +1,161 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++
++#include "base/test/test_future.h"
++#include "chrome/browser/sessions/tab_restore_service_factory.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/unload_controller.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/sessions/core/tab_restore_service.h"
++#include "components/split_tabs/split_tab_visual_data.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/test/button_test_api.h"
++#include "ui/views/view_utils.h"
++
++namespace {
++
++views::LabelButton* FindButton(views::View* view, std::u16string_view text) {
++  if (auto* button = views::AsViewClass<views::LabelButton>(view);
++      button && button->GetText() == text) {
++    return button;
++  }
++  for (auto* child : view->children()) {
++    if (auto* button = FindButton(child, text)) {
++      return button;
++    }
++  }
++  return nullptr;
++}
++
++class CoveSidebarLibraryBrowserTest : public InProcessBrowserTest {
++ protected:
++  CoveSidebarLibraryView* Library(BrowserWindowInterface* window) {
++    return static_cast<CoveSidebarLibraryView*>(
++        CoveSpaceCloseHandler::Get(window->GetUnownedUserDataHost()));
++  }
++
++  void Switch(BrowserWindowInterface* window, std::u16string_view name) {
++    auto* library = Library(window);
++    ASSERT_TRUE(library);
++    auto* button = FindButton(library, name);
++    ASSERT_TRUE(button);
++    views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(
++    CoveSidebarLibraryBrowserTest,
++    SwitchingPreservesLivePageHistoryAndPinWithoutArchiving) {
++  const GURL page("data:text/html,<input id=draft><title>Space draft</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), page));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.spaceValue = 37;
++    document.getElementById('draft').value = 'unsent draft';
++    window.beforeUnloadCount = 0;
++    window.addEventListener('beforeunload', () => ++window.beforeUnloadCount);
++    history.pushState({}, '', '#kept');
++  )"));
++  const int history_count = contents->GetController().GetEntryCount();
++  model->SetTabPinned(0, true);
++  auto* restore = TabRestoreServiceFactory::GetForProfile(browser()->profile());
++  ASSERT_TRUE(restore);
++  const size_t archived_count = restore->entries().size();
++
++  Switch(browser(), u"Work");
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(37, content::EvalJs(contents, "window.spaceValue"));
++  EXPECT_EQ(
++      "unsent draft",
++      content::EvalJs(contents, "document.getElementById('draft').value"));
++  EXPECT_EQ(0, content::EvalJs(contents, "window.beforeUnloadCount"));
++  Switch(browser(), u"Personal");
++  ASSERT_EQ(1, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(0));
++  EXPECT_EQ(history_count, contents->GetController().GetEntryCount());
++  EXPECT_EQ(archived_count, restore->entries().size());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarLibraryBrowserTest,
++                       SwitchingRetainsGroupSplitAndActivePane) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Left</title>")));
++  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
++      browser(), GURL("data:text/html,<title>Right</title>"),
++      WindowOpenDisposition::NEW_FOREGROUND_TAB,
++      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
++  auto* model = browser()->GetTabStripModel();
++  const auto group = model->AddToNewGroup({0, 1});
++  const auto split =
++      model->AddToNewSplit({0, 1}, split_tabs::SplitTabVisualData(),
++                           split_tabs::SplitTabCreatedSource::kExtensionsApi);
++  model->ActivateTabAt(1);
++  auto* active = model->GetActiveWebContents();
++  Switch(browser(), u"Work");
++  Switch(browser(), u"Personal");
++  ASSERT_EQ(2, model->count());
++  EXPECT_EQ(group, model->GetTabAtIndex(0)->GetGroup());
++  EXPECT_EQ(group, model->GetTabAtIndex(1)->GetGroup());
++  EXPECT_EQ(split, model->GetTabAtIndex(0)->GetSplit());
++  EXPECT_EQ(split, model->GetTabAtIndex(1)->GetSplit());
++  EXPECT_EQ(active, model->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarLibraryBrowserTest,
++                       InactivePagesParticipateInUnloadAndCanceledShutdown) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Inactive form</title>")));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.beforeUnloadCount = 0;
++    window.addEventListener('beforeunload', () => ++window.beforeUnloadCount);
++  )"));
++  Switch(browser(), u"Work");
++  auto* library = Library(browser());
++  ASSERT_TRUE(library->HasPendingTabs());
++  auto* unload = UnloadController::From(browser());
++  EXPECT_EQ(
++      BrowserWindowInterface::ClosingStatus::kDeniedUnloadHandlersNeedTime,
++      unload->GetBrowserClosingStatus());
++  base::test::TestFuture<bool> confirmed;
++  ASSERT_TRUE(unload->RunBeforeUnloadForShutdown(
++      false, confirmed.GetRepeatingCallback()));
++  ASSERT_TRUE(confirmed.Get());
++  EXPECT_FALSE(library->HasPendingTabs());
++  EXPECT_EQ(2, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(1, content::EvalJs(contents, "window.beforeUnloadCount"));
++  unload->ResetBeforeUnloadForShutdown();
++  EXPECT_TRUE(library->HasPendingTabs());
++  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
++  Switch(browser(), u"Personal");
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarLibraryBrowserTest,
++                       SwitchingInAnotherWindowDoesNotChangeLocalSpace) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Personal page</title>")));
++  auto* personal = browser()->GetTabStripModel()->GetActiveWebContents();
++  Switch(browser(), u"Work");
++  auto* second = CreateBrowser(browser()->profile());
++  Switch(second, u"Personal");
++  // The profile-wide last-used default is now Personal, but the first window
++  // still needs to switch its own Work tab strip back to its own live Personal.
++  Switch(browser(), u"Personal");
++  EXPECT_EQ(personal, browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++}  // namespace
+diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_controller.cc
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -28,6 +28,7 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+ #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
+ #include "chrome/browser/ui/chrome_pages.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_group_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -107,6 +108,17 @@
+ }
+ 
+ bool UnloadController::HandleBeforeClose() {
++  if (auto* spaces =
++          CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++    // Closing the last tab in the active Space can mark the window unload
++    // complete while inactive Spaces still own live pages. Those pages have
++    // not run beforeunload yet and must go through the normal pipeline.
++    if (spaces->HasPendingTabs() && state_ == State::kUnloadCompleted &&
++        !is_delete_scheduled_) {
++      TransitionTo(State::kIdle);
++    }
++    spaces->PrepareForClose();
++  }
+   // If `force_skip_warning_user_on_close_` is true, then we should immediately
+   // return true.
+   if (force_skip_warning_user_on_close()) {
+@@ -459,6 +471,13 @@
+     return BrowserWindowInterface::ClosingStatus::kDeniedByPolicy;
+   }
+ 
++  // This query must stay non-mutating. Force the normal close pipeline to
++  // prepare inactive Spaces before deciding whether beforeunload is needed.
++  if (const auto* spaces =
++          CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost());
++      spaces && spaces->HasPendingTabs()) {
++    return BrowserWindowInterface::ClosingStatus::kDeniedUnloadHandlersNeedTime;
++  }
+   if (HasCompletedUnloadProcessing()) {
+     return BrowserWindowInterface::ClosingStatus::kPermitted;
+   }
+@@ -499,6 +518,17 @@
+ bool UnloadController::RunBeforeUnloadForShutdown(
+     bool skip_beforeunload,
+     const base::RepeatingCallback<void(bool)>& on_close_confirmed) {
++  if (auto* spaces =
++          CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++    // Closing the last tab in the active Space can mark the window unload
++    // complete while inactive Spaces still own live pages. Those pages have
++    // not run beforeunload yet and must go through the normal pipeline.
++    if (spaces->HasPendingTabs() && state_ == State::kUnloadCompleted &&
++        !is_delete_scheduled_) {
++      TransitionTo(State::kIdle);
++    }
++    spaces->PrepareForClose();
++  }
+   cancel_download_confirmation_state_ =
+       CancelDownloadConfirmationState::kResponseReceived;
+   // The devtools browser gets its beforeunload events as the results of
+@@ -526,6 +556,10 @@
+       CancelDownloadConfirmationState::kNotPrompted;
+   if (state_ != State::kRunningBeforeUnloadForShutdown &&
+       state_ != State::kBeforeUnloadConfirmed) {
++    if (auto* spaces =
++            CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++      spaces->CancelClose();
++    }
+     return;
+   }
+   CancelWindowClose();
+@@ -573,6 +607,10 @@
+   base::RepeatingCallback<void(bool)> on_close_confirmed =
+       std::move(on_close_confirmed_);
+   TransitionTo(State::kIdle);
++  if (auto* spaces =
++          CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++    spaces->CancelClose();
++  }
+   if (previous_state == State::kRunningBeforeUnloadForShutdown ||
+       previous_state == State::kBeforeUnloadConfirmed) {
+     CHECK(!on_close_confirmed.is_null());
+@@ -1109,6 +1147,15 @@
+ 
+ void UnloadController::NotifyWindowCloseCancelled(
+     BrowserWindowInterface::ClosingStatus status) {
++  // Waiting for beforeunload is not cancellation: those pages must remain in
++  // the tab strip until the native unload state machine has finished.
++  if (status == BrowserWindowInterface::ClosingStatus::kDeniedByUser ||
++      status == BrowserWindowInterface::ClosingStatus::kDeniedByPolicy) {
++    if (auto* spaces =
++            CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++      spaces->CancelClose();
++    }
++  }
+   browser_close_cancelled_callback_list_.Notify(browser_, status);
+ }
+ 
+diff --git a/chrome/browser/ui/browser.cc b/chrome/browser/ui/browser.cc
+--- a/chrome/browser/ui/browser.cc
++++ b/chrome/browser/ui/browser.cc
+@@ -82,6 +82,7 @@
+ #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+ #include "chrome/browser/ui/chrome_pages.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/dialogs/browser_dialogs.h"
+ #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+ #include "chrome/browser/ui/find_bar/find_bar_controller.h"
+@@ -623,6 +624,22 @@
+     return;
+   }
+ 
++  if (auto* spaces = CoveSpaceCloseHandler::Get(GetUnownedUserDataHost());
++      spaces && spaces->HasPendingTabs()) {
++    // This callback runs inside the tab-strip removal guard. Restoring Spaces
++    // synchronously from window Close() would re-enter the same model mutation.
++    // Defer normal window close until the guard and removal notifications end.
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(
++                       [](base::WeakPtr<BrowserWindowInterface> browser) {
++                         if (browser && browser->GetTabStripModel()->empty()) {
++                           browser->GetWindow()->Close();
++                         }
++                       },
++                       GetWeakPtr()));
++    return;
++  }
++
+   // Note: even though the tab strip is empty, the call to Close() may not
+   // result in closing this Browser. This can happen in the case of closing
+   // the last Browser with ongoing downloads.

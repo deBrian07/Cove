@@ -10,3 +10,13 @@
 0010-native-arc-shortcuts.patch
 0011-native-palette-actions.patch
 0012-native-control-regressions.patch
+0013-sidebar-location.patch
+0014-window-title-cove.patch
+0015-collapsed-sidebar-rail.patch
+0016-arc-command-bar-rows.patch
+0017-sidebar-library.patch
+0018-library-state-preservation.patch
+0019-native-sidebar-navigation.patch
+0020-detached-tab-metrics.patch
+0021-parked-navigation-safety.patch
+0022-compact-working-folders.patch

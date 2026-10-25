@@ -1,0 +1,138 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -1152,6 +1152,11 @@
+       break;
+     case IDC_FOCUS_LOCATION:
+       if (!window()->IsLocationBarVisible()) {
++        // The sidebar search field replaces the hidden address bar.
++        if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
++            !profile()->IsOffTheRecord()) {
++          ShowTabSearch(browser_);
++        }
+         break;
+       }
+       base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
+
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index b68f089aeb..7f9e7767c3 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -3076,6 +3076,15 @@ bool BrowserView::IsToolbarVisible() const {
+   }
+ #endif
+ 
++  // Cove's vertical sidebar owns navigation. The page starts at the top edge
++  // instead of under a full-width address bar.
++  if (auto* vertical_tabs =
++          tabs::VerticalTabStripStateController::From(browser())) {
++    if (vertical_tabs->ShouldDisplayVerticalTabs()) {
++      return false;
++    }
++  }
++
+   // It's possible to reach here before we've been notified of being added to a
+   // widget, so |toolbar_| is still null.  Return false in this case so callers
+   // don't assume they can access the toolbar yet.
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+index fdfdd93f07..4960ccedfc 100644
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/ui/animation/browser_animation_controller.h"
+ #include "chrome/browser/ui/animation/browser_animation_types.h"
+ #include "chrome/browser/ui/browser_actions.h"
++#include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -68,6 +69,8 @@
+ #include "ui/display/screen.h"
+ #include "ui/events/event.h"
+ #include "ui/gfx/geometry/point.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/controls/focus_ring.h"
+ #include "ui/views/controls/resize_area.h"
+@@ -123,6 +126,19 @@ VerticalTabStripRegionView::VerticalTabStripRegionView(
+       AddChildView(std::make_unique<VerticalTabStripTopContainer>(
+           state_controller_, root_action_item, browser_view->browser()));
+ 
++  search_button_ = AddChildView(std::make_unique<views::LabelButton>(
++      base::BindRepeating(
++          [](BrowserView* browser_view) {
++            chrome::ShowTabSearch(browser_view->browser());
++          },
++          browser_view),
++      u"Search or Enter URL"));
++  search_button_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  search_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 10)));
++  search_button_->SetBackground(views::CreateRoundedRectBackground(
++      kColorLocationBarBackground, 8));
++  search_button_->SetEnabledTextColors(kColorOmniboxTextDimmed);
++
+   auto content_area_view = std::make_unique<views::FlexLayoutView>();
+   content_area_view->SetOrientation(views::LayoutOrientation::kVertical);
+   content_area_view->SetCollapseMargins(true);
+@@ -402,6 +418,11 @@ views::ProposedLayout VerticalTabStripRegionView::CalculateProposedLayout(
+   }
+   const gfx::Size button_size =
+       top_button_container_->GetPreferredSize(button_available_size);
++  const bool show_search =
++      search_button_ && !state_controller_->IsCollapsed();
++  constexpr int kSearchFieldHeight = 32;
++  const int search_block =
++      show_search ? kSearchFieldHeight + vertical_padding : 0;
+   const gfx::Size tab_strip_size =
+       tab_strip_view() ? tab_strip_view()->GetPreferredSize() : gfx::Size();
+   const gfx::Size organizer_panel_size =
+@@ -415,7 +436,7 @@ views::ProposedLayout VerticalTabStripRegionView::CalculateProposedLayout(
+           std::max({button_size.width() + 2 * horizontal_padding,
+                     tab_strip_size.width(), organizer_panel_size.width()})),
+       size_bounds.height().value_or(
+-          button_size.height() +
++          button_size.height() + search_block +
+           std::max(tab_strip_size.height(), organizer_panel_size.height()) +
+           vertical_padding));
+   gfx::Rect available(layout.host_size);
+@@ -433,6 +454,19 @@ views::ProposedLayout VerticalTabStripRegionView::CalculateProposedLayout(
+                      button_size.height())});
+   available.Inset(gfx::Insets::TLBR(button_size.height(), 0, 0, 0));
+ 
++  if (search_button_) {
++    const int search_width =
++        std::max(0, available.width() - 2 * horizontal_padding);
++    layout.child_layouts.push_back(
++        {.child_view = search_button_.get(),
++         .visible = show_search,
++         .bounds = gfx::Rect(horizontal_padding, available.y(), search_width,
++                             show_search ? kSearchFieldHeight : 0)});
++    if (show_search) {
++      available.Inset(gfx::Insets::TLBR(search_block, 0, 0, 0));
++    }
++  }
++
+   // Just so that there's never a zero-size tabstrip.
+   available.set_height(std::max(1, available.height()));
+ 
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+index 52ee4b9479..70f1408673 100644
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -45,6 +45,7 @@ class VerticalTabStripStateController;
+ }  // namespace tabs
+ 
+ namespace views {
++class LabelButton;
+ class ResizeArea;
+ class Separator;
+ class View;
+@@ -258,6 +259,7 @@ class VerticalTabStripRegionView final
+ 
+   raw_ptr<views::View> content_area_view_ = nullptr;
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
++  raw_ptr<views::LabelButton> search_button_ = nullptr;
+   raw_ptr<views::Separator> top_button_separator_ = nullptr;
+   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
+   raw_ptr<views::View> gemini_button_ = nullptr;

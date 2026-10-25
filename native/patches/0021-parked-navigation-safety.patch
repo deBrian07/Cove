@@ -1,0 +1,55 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -563,7 +563,13 @@
+     for (const base::Value& value : fallback) {
+       const auto* tab = value.GetIfDict();
+       const auto* text = tab ? tab->FindString("url") : nullptr;
+-      const GURL url(text ? *text : "");
++      GURL url(text ? *text : "");
++      // Older snapshots stored the virtual NTP URL as a real navigation.
++      // Empty Spaces are a blank canvas; Cmd+T opens the native command bar.
++      if (url == GURL("chrome://newtab/") ||
++          url == GURL("chrome://new-tab-page/")) {
++        url = GURL("about:blank");
++      }
+       if (!url.is_valid() || url.SchemeIs("javascript")) {
+         continue;
+       }
+@@ -590,7 +596,7 @@
+       }
+     }
+     if (incoming->handles.empty()) {
+-      NavigateParams params(browser_, GURL("chrome://newtab/"),
++      NavigateParams params(browser_, GURL("about:blank"),
+                             ui::PAGE_TRANSITION_TYPED);
+       params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+       Navigate(&params);
+@@ -660,7 +666,7 @@
+   if (closing_active_space_->handles.empty()) {
+     // If the user closed the final tab in this Space, canceling window close
+     // must leave an active page before inactive Spaces are parked again.
+-    NavigateParams params(browser_, GURL("chrome://newtab/"),
++    NavigateParams params(browser_, GURL("about:blank"),
+                           ui::PAGE_TRANSITION_TYPED);
+     params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+     Navigate(&params);
+diff --git a/chrome/browser/ui/tab_ui_helper.cc b/chrome/browser/ui/tab_ui_helper.cc
+--- a/chrome/browser/ui/tab_ui_helper.cc
++++ b/chrome/browser/ui/tab_ui_helper.cc
+@@ -353,9 +353,11 @@
+   // persist across navigations. crbug.com/544891511
+   default_favicon_model_ = ui::ImageModel();
+ 
+-  if (tab().IsSplit()) {
+-    split_tabs::LogSplitViewUpdatedUKM(
+-        tab().GetBrowserWindowInterface()->GetTabStripModel(),
+-        tab().GetSplit().value());
++  // A parked split can still finish a background navigation while its tabs
++  // are detached from the window. Skip window-level metrics in that state.
++  auto* browser = tab().GetBrowserWindowInterface();
++  if (browser && tab().IsSplit()) {
++    split_tabs::LogSplitViewUpdatedUKM(browser->GetTabStripModel(),
++                                       tab().GetSplit().value());
+   }
+ }

@@ -1,0 +1,123 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -78,6 +78,7 @@
+   void Rebuild();
+   void PinActivePage();
+   void AddFolder();
++  void ToggleFolder(std::string folder_id);
+   void AddSpace();
+   void SwitchSpace(std::string space_id);
+   void OpenPin(const GURL& url);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -281,9 +281,10 @@
+     return;
+   }
+ 
+-  MakeHeader(this, u"Pinned");
++  if (const auto* name = space->FindString("name")) {
++    MakeHeader(this, base::UTF8ToUTF16(*name));
++  }
+   const base::ListValue* pins = space->FindList("pins");
+-  bool any_loose_pin = false;
+   if (pins) {
+     for (const base::Value& pin_value : *pins) {
+       const base::DictValue* pin = pin_value.GetIfDict();
+@@ -300,7 +301,6 @@
+       if (!url || !id) {
+         continue;
+       }
+-      any_loose_pin = true;
+       auto* row = MakeRow(
+           this, base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+           base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+@@ -310,14 +310,6 @@
+       row_pin_ids_[row] = *id;
+     }
+   }
+-  MakeRow(this, any_loose_pin ? u"Pin this page" : u"Pin this page",
+-          base::BindRepeating(&CoveSidebarLibraryView::PinActivePage,
+-                              weak_factory_.GetWeakPtr()));
+-
+-  MakeHeader(this, u"Folders");
+-  MakeRow(this, u"New folder",
+-          base::BindRepeating(&CoveSidebarLibraryView::AddFolder,
+-                              weak_factory_.GetWeakPtr()));
+   const base::ListValue* folders = space->FindList("folders");
+   if (folders) {
+     for (const base::Value& folder_value : *folders) {
+@@ -326,9 +318,16 @@
+         continue;
+       }
+       const std::string& folder_id = *folder->FindString("id");
+-      MakeRow(this, base::UTF8ToUTF16(*folder->FindString("name")),
+-              base::BindRepeating([](const ui::Event&) {}));
+-      if (!pins) {
++      const bool collapsed = folder->FindBool("collapsed").value_or(false);
++      auto* folder_row =
++          MakeRow(this,
++                  (collapsed ? u"▸ " : u"▾ ") +
++                      base::UTF8ToUTF16(*folder->FindString("name")),
++                  base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
++                                      weak_factory_.GetWeakPtr(), folder_id));
++      folder_row->SetTooltipText(collapsed ? u"Expand folder"
++                                           : u"Collapse folder");
++      if (collapsed || !pins) {
+         continue;
+       }
+       for (const base::Value& pin_value : *pins) {
+@@ -357,7 +356,15 @@
+     }
+   }
+ 
+-  MakeHeader(this, u"Spaces");
++  auto* actions = AddChildView(std::make_unique<views::View>());
++  actions->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 0), 4));
++  MakeRow(actions, u"Pin this page",
++          base::BindRepeating(&CoveSidebarLibraryView::PinActivePage,
++                              weak_factory_.GetWeakPtr()));
++  MakeRow(actions, u"New folder",
++          base::BindRepeating(&CoveSidebarLibraryView::AddFolder,
++                              weak_factory_.GetWeakPtr()));
+   auto* chips = AddChildView(std::make_unique<views::View>());
+   chips->SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
+@@ -374,7 +381,9 @@
+                   base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+                                       weak_factory_.GetWeakPtr(), id));
+       if (active_id && id == *active_id) {
+-        chip->SetEnabledTextColors(ui::kColorButtonForegroundProminent);
++        chip->SetEnabledTextColors(ui::kColorLabelForeground);
++        chip->SetBackground(views::CreateRoundedRectBackground(
++            SkColorSetARGB(0x38, 0xff, 0xff, 0xff), 6));
+       }
+     }
+   }
+@@ -411,6 +420,24 @@
+   folder.Set("name", "Folder " + base::NumberToString(folders->size() + 1));
+   folders->Append(std::move(folder));
+   Rebuild();
++}
++
++void CoveSidebarLibraryView::ToggleFolder(std::string folder_id) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  auto* space = FindSpace(*update, active_space_id_);
++  auto* folders = space ? space->FindList("folders") : nullptr;
++  if (!folders) {
++    return;
++  }
++  for (auto& value : *folders) {
++    auto* folder = value.GetIfDict();
++    if (folder && folder->FindString("id") &&
++        *folder->FindString("id") == folder_id) {
++      folder->Set("collapsed", !folder->FindBool("collapsed").value_or(false));
++      return;  // The preference observer rebuilds every window's library.
++    }
++  }
+ }
+ 
+ void CoveSidebarLibraryView::AddSpace() {

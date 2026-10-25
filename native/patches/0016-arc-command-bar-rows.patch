@@ -1,0 +1,111 @@
+diff --git a/chrome/browser/resources/tab_search/tab_search_item.html.ts b/chrome/browser/resources/tab_search/tab_search_item.html.ts
+--- a/chrome/browser/resources/tab_search/tab_search_item.html.ts
++++ b/chrome/browser/resources/tab_search/tab_search_item.html.ts
+@@ -43,7 +43,7 @@
+     aria-hidden="true">
+   <span>${this.data.type === TabItemType.OPEN_TAB ?
+       'Switch to Tab' : 'Reopen'}</span>
+-  <span class="action-arrow">↵</span>
++  <span class="action-arrow">→</span>
+ </div>
+ ${this.isCloseable_() ? html`
+   <div class="${this.getButtonContainerStyles_()}">
+diff --git a/chrome/browser/resources/tab_search/tab_search_item.css b/chrome/browser/resources/tab_search/tab_search_item.css
+--- a/chrome/browser/resources/tab_search/tab_search_item.css
++++ b/chrome/browser/resources/tab_search/tab_search_item.css
+@@ -225,10 +225,27 @@
+ }
+ 
+ .action-arrow {
+-  font-size: 16px;
++  align-items: center;
++  border-radius: 6px;
++  color: #8e8e93;
++  display: flex;
++  font-size: 14px;
++  height: 22px;
++  justify-content: center;
+   line-height: 1;
++  width: 22px;
+ }
+ 
+-:host(.hovered) .action-hint.has-close-button {
++:host(.selected) .action-arrow {
++  background: #fff;
++  color: #1c1c1e;
++}
++
++.button-container,
++#closeButton {
+   display: none;
+ }
++
++:host(.hovered) .action-hint.has-close-button {
++  display: flex;
++}
+diff --git a/chrome/browser/resources/tab_search/tab_search_page.css b/chrome/browser/resources/tab_search/tab_search_page.css
+--- a/chrome/browser/resources/tab_search/tab_search_page.css
++++ b/chrome/browser/resources/tab_search/tab_search_page.css
+@@ -50,15 +50,19 @@
+   color: var(--cr-secondary-text-color);
+   cursor: text;
+   display: flex;
+-  font-size: 14px;
+-  font-weight: var(--mwb-secondary-text-font-weight);
++  font-size: 16px;
++  font-weight: 500;
+   height: 100%;
+-  justify-content: space-between;
++  justify-content: flex-start;
+   margin-inline-start: 1px;
+   position: absolute;
+   width: 100%;
+ }
+ 
++#searchLabel span:nth-child(2) {
++  display: none;
++}
++
+ #searchResultText {
+   clip: rect(0,0,0,0);
+   display: inline-block;
+@@ -136,10 +140,10 @@
+ }
+ 
+ .list-section-title {
++  display: none;
+   align-items: center;
+   background-color: var(--mwb-background-color);
+   color: var(--cr-secondary-text-color);
+-  display: flex;
+   font-size: var(--mwb-primary-text-font-size);
+   font-weight: var(--mwb-primary-text-font-weight);
+   height: var(--mwb-list-section-title-height);
+@@ -162,9 +166,7 @@
+ }
+ 
+ #divider {
+-  width: 100%;
+-  height: 1px;
+-  background-color: var(--cr-separator-color);
++  display: none;
+ }
+ 
+ tab-search-item:hover,
+diff --git a/chrome/browser/resources/tab_search/app.css b/chrome/browser/resources/tab_search/app.css
+--- a/chrome/browser/resources/tab_search/app.css
++++ b/chrome/browser/resources/tab_search/app.css
+@@ -23,10 +23,10 @@
+   --cr-tabs-selection-bar-radius: 0;
+   --cr-tabs-selection-bar-unselected-opacity: 1;
+   --cr-tabs-unselected-color: var(--color-tab-search-divider);
+-  --mwb-background-color: #141519;
++  --mwb-background-color: #1c1c1e;
+   --mwb-icon-button-fill-color: var(--color-tab-search-secondary-foreground);
+-  --mwb-list-item-hover-background-color: #25262c;
+-  --mwb-list-item-selected-background-color: #3730e8;
++  --mwb-list-item-hover-background-color: #2c2c2e;
++  --mwb-list-item-selected-background-color: #5b5cf0;
+   --mwb-item-height: 48px;
+   --mwb-list-item-horizontal-margin: 8px;
+   --mwb-list-section-title-height: 36px;

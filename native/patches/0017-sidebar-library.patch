@@ -1,0 +1,740 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 238f8625e4..7fadbbfa5a 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3534,6 +3534,8 @@ static_library("ui") {
+       "views/frame/browser_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.h",
++      "views/cove/cove_sidebar_library_view.cc",
++      "views/cove/cove_sidebar_library_view.h",
+       "views/frame/vertical_tab_strip_region_view.cc",
+       "views/frame/vertical_tab_strip_region_view.h",
+     ]
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -0,0 +1,78 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
++
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/menus/simple_menu_model.h"
++#include "ui/views/context_menu_controller.h"
++#include "ui/views/view.h"
++
++class BrowserWindowInterface;
++
++namespace views {
++class MenuRunner;
++}  // namespace views
++
++// Sidebar library for the active Cove space: pinned pages, folders, and the
++// space switcher. Pins persist after their tab is closed. Each space keeps
++// its own pins, folders, and open tabs.
++class CoveSidebarLibraryView : public views::View,
++                               public TabStripModelObserver,
++                               public views::ContextMenuController,
++                               public ui::SimpleMenuModel::Delegate {
++ public:
++  METADATA_HEADER(CoveSidebarLibraryView, views::View)
++
++ public:
++  explicit CoveSidebarLibraryView(BrowserWindowInterface* browser);
++  CoveSidebarLibraryView(const CoveSidebarLibraryView&) = delete;
++  CoveSidebarLibraryView& operator=(const CoveSidebarLibraryView&) = delete;
++  ~CoveSidebarLibraryView() override;
++
++  void SetCollapsed(bool collapsed);
++
++  // views::View:
++  void AddedToWidget() override;
++  void RemovedFromWidget() override;
++
++  // TabStripModelObserver:
++  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
++
++  // views::ContextMenuController:
++  void ShowContextMenuForViewImpl(
++      views::View* source,
++      const gfx::Point& point,
++      ui::mojom::MenuSourceType source_type) override;
++
++  // ui::SimpleMenuModel::Delegate:
++  void ExecuteCommand(int command_id, int event_flags) override;
++
++ private:
++  void EnsureDefaultLibrary();
++  void Rebuild();
++  void PinActivePage();
++  void AddFolder();
++  void AddSpace();
++  void SwitchSpace(const std::string& space_id);
++  void OpenPin(const GURL& url);
++  void RemovePin(const std::string& pin_id);
++  void MovePinToFolder(const std::string& pin_id, const std::string& folder_id);
++
++  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
++  std::string context_pin_id_;
++  std::vector<std::string> menu_folder_ids_;
++  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<views::MenuRunner> menu_runner_;
++  base::WeakPtrFactory<CoveSidebarLibraryView> weak_factory_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -0,0 +1,560 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++
++#include <utility>
++
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/uuid.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/tabs/tab_enums.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/mojom/menu_source_type.mojom.h"
++#include "ui/events/event.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/gfx/text_constants.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/menus/simple_menu_model.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/layout/flex_layout.h"
++#include "ui/views/view_class_properties.h"
++#include "url/gurl.h"
++
++namespace {
++
++constexpr char kCoveSidebarPref[] = "cove.sidebar";
++
++constexpr int kRemovePinCommand = 1;
++constexpr int kMovePinCommandBase = 100;
++
++base::DictValue* FindSpace(base::DictValue& root, std::string_view id) {
++  base::ListValue* spaces = root.FindList("spaces");
++  if (!spaces) {
++    return nullptr;
++  }
++  for (base::Value& space : *spaces) {
++    base::DictValue* dict = space.GetIfDict();
++    if (dict && dict->FindString("id") && *dict->FindString("id") == id) {
++      return dict;
++    }
++  }
++  return nullptr;
++}
++
++const base::DictValue* FindSpace(const base::DictValue& root,
++                                   std::string_view id) {
++  const base::ListValue* spaces = root.FindList("spaces");
++  if (!spaces) {
++    return nullptr;
++  }
++  for (const base::Value& space : *spaces) {
++    const base::DictValue* dict = space.GetIfDict();
++    if (dict && dict->FindString("id") && *dict->FindString("id") == id) {
++      return dict;
++    }
++  }
++  return nullptr;
++}
++
++views::Label* MakeHeader(views::View* parent, const std::u16string& text) {
++  auto* label = parent->AddChildView(std::make_unique<views::Label>(text));
++  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  label->SetSkipSubpixelRenderingOpacityCheck(true);
++  label->SetEnabledColor(ui::kColorLabelForegroundSecondary);
++  label->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(8, 2, 2, 2));
++  return label;
++}
++
++views::LabelButton* MakeRow(views::View* parent,
++                            const std::u16string& text,
++                            views::Button::PressedCallback callback) {
++  auto* button = parent->AddChildView(
++      std::make_unique<views::LabelButton>(std::move(callback), text));
++  button->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++  return button;
++}
++
++}  // namespace
++
++CoveSidebarLibraryView::CoveSidebarLibraryView(BrowserWindowInterface* browser)
++    : browser_(browser) {
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 8), 1));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++  // The sidebar paints on a non-opaque layer. An opaque background keeps text
++  // rendering checks from failing in that layer.
++  SetBackground(views::CreateSolidBackground(SkColorSetRGB(0x3a, 0x36, 0x4a)));
++  EnsureDefaultLibrary();
++  Rebuild();
++}
++
++CoveSidebarLibraryView::~CoveSidebarLibraryView() = default;
++
++void CoveSidebarLibraryView::AddedToWidget() {
++  views::View::AddedToWidget();
++  if (browser_) {
++    browser_->GetTabStripModel()->AddObserver(this);
++  }
++}
++
++void CoveSidebarLibraryView::RemovedFromWidget() {
++  if (browser_) {
++    browser_->GetTabStripModel()->RemoveObserver(this);
++  }
++  views::View::RemovedFromWidget();
++}
++
++void CoveSidebarLibraryView::SetCollapsed(bool collapsed) {
++  SetVisible(!collapsed);
++}
++
++void CoveSidebarLibraryView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
++                                                     int index) {
++  if (!tab || !tab->IsPinned() || !tab->GetContents()) {
++    return;
++  }
++  content::WebContents* contents = tab->GetContents();
++  const GURL url = contents->GetVisibleURL();
++  if (!url.is_valid() || url.SchemeIs("chrome") || url.SchemeIs("cove") ||
++      url.SchemeIs("devtools")) {
++    return;
++  }
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  const std::string* active = update->FindString("active");
++  base::DictValue* space =
++      active ? FindSpace(*update, *active) : nullptr;
++  if (!space) {
++    return;
++  }
++  base::ListValue* pins = space->EnsureList("pins");
++  for (const base::Value& pin : *pins) {
++    const base::DictValue* dict = pin.GetIfDict();
++    const std::string* existing = dict ? dict->FindString("url") : nullptr;
++    if (existing && *existing == url.spec()) {
++      return;
++    }
++  }
++  base::DictValue pin;
++  pin.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
++  pin.Set("url", url.spec());
++  pin.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
++  pin.Set("folder", "");
++  pins->Append(std::move(pin));
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::EnsureDefaultLibrary() {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  if (prefs->GetDict(kCoveSidebarPref).FindList("spaces")) {
++    return;
++  }
++  base::DictValue personal;
++  personal.Set("id", "personal");
++  personal.Set("name", "Personal");
++  personal.Set("color", "#6d6784");
++  personal.Set("tabs", base::ListValue());
++  personal.Set("pins", base::ListValue());
++  personal.Set("folders", base::ListValue());
++
++  base::DictValue work;
++  work.Set("id", "work");
++  work.Set("name", "Work");
++  work.Set("color", "#3d6f8f");
++  work.Set("tabs", base::ListValue());
++  work.Set("pins", base::ListValue());
++  work.Set("folders", base::ListValue());
++
++  base::ListValue spaces;
++  spaces.Append(std::move(personal));
++  spaces.Append(std::move(work));
++  base::DictValue root;
++  root.Set("active", "personal");
++  root.Set("spaces", std::move(spaces));
++  prefs->SetDict(kCoveSidebarPref, std::move(root));
++}
++
++void CoveSidebarLibraryView::Rebuild() {
++  RemoveAllChildViews();
++  const base::DictValue& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const std::string* active_id = root.FindString("active");
++  const base::DictValue* space =
++      active_id ? FindSpace(root, *active_id) : nullptr;
++  if (!space) {
++    return;
++  }
++
++  MakeHeader(this, u"Pinned");
++  const base::ListValue* pins = space->FindList("pins");
++  bool any_loose_pin = false;
++  if (pins) {
++    for (const base::Value& pin_value : *pins) {
++      const base::DictValue* pin = pin_value.GetIfDict();
++      if (!pin) {
++        continue;
++      }
++      const std::string* folder = pin->FindString("folder");
++      if (folder && !folder->empty()) {
++        continue;
++      }
++      const std::string* url = pin->FindString("url");
++      const std::string* title = pin->FindString("title");
++      const std::string* id = pin->FindString("id");
++      if (!url || !id) {
++        continue;
++      }
++      any_loose_pin = true;
++      auto* row = MakeRow(
++          this, base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
++          base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
++                              weak_factory_.GetWeakPtr(), GURL(*url)));
++      row->set_context_menu_controller(this);
++      row->SetTooltipText(base::UTF8ToUTF16(*url));
++      row->SetAccessibleName(base::UTF8ToUTF16(*id));
++    }
++  }
++  MakeRow(this, any_loose_pin ? u"Pin this page" : u"Pin this page",
++          base::BindRepeating(&CoveSidebarLibraryView::PinActivePage,
++                              weak_factory_.GetWeakPtr()));
++
++  MakeHeader(this, u"Folders");
++  MakeRow(this, u"New folder",
++          base::BindRepeating(&CoveSidebarLibraryView::AddFolder,
++                              weak_factory_.GetWeakPtr()));
++  const base::ListValue* folders = space->FindList("folders");
++  if (folders) {
++    for (const base::Value& folder_value : *folders) {
++      const base::DictValue* folder = folder_value.GetIfDict();
++      if (!folder || !folder->FindString("name") || !folder->FindString("id")) {
++        continue;
++      }
++      const std::string& folder_id = *folder->FindString("id");
++      MakeRow(this, base::UTF8ToUTF16(*folder->FindString("name")),
++              base::BindRepeating([](const ui::Event&) {}));
++      if (!pins) {
++        continue;
++      }
++      for (const base::Value& pin_value : *pins) {
++        const base::DictValue* pin = pin_value.GetIfDict();
++        const std::string* pin_folder = pin ? pin->FindString("folder") : nullptr;
++        if (!pin || !pin_folder || *pin_folder != folder_id) {
++          continue;
++        }
++        const std::string* url = pin->FindString("url");
++        const std::string* title = pin->FindString("title");
++        const std::string* id = pin->FindString("id");
++        if (!url || !id) {
++          continue;
++        }
++        auto* row = MakeRow(
++            this,
++            u"    " + base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
++            base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
++                                weak_factory_.GetWeakPtr(), GURL(*url)));
++        row->set_context_menu_controller(this);
++        row->SetAccessibleName(base::UTF8ToUTF16(*id));
++        row->SetTooltipText(base::UTF8ToUTF16(*url));
++      }
++    }
++  }
++
++  MakeHeader(this, u"Spaces");
++  auto* chips = AddChildView(std::make_unique<views::View>());
++  chips->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
++  const base::ListValue* spaces = root.FindList("spaces");
++  if (spaces) {
++    for (const base::Value& space_value : *spaces) {
++      const base::DictValue* item = space_value.GetIfDict();
++      if (!item || !item->FindString("id") || !item->FindString("name")) {
++        continue;
++      }
++      const std::string id = *item->FindString("id");
++      auto* chip = MakeRow(
++          chips, base::UTF8ToUTF16(*item->FindString("name")),
++          base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
++                              weak_factory_.GetWeakPtr(), id));
++      if (active_id && id == *active_id) {
++        chip->SetEnabledTextColors(ui::kColorButtonForegroundProminent);
++      }
++    }
++  }
++  MakeRow(chips, u"+",
++          base::BindRepeating(&CoveSidebarLibraryView::AddSpace,
++                              weak_factory_.GetWeakPtr()));
++  InvalidateLayout();
++}
++
++void CoveSidebarLibraryView::PinActivePage() {
++  content::WebContents* contents =
++      browser_->GetTabStripModel()->GetActiveWebContents();
++  if (!contents) {
++    return;
++  }
++  const GURL url = contents->GetVisibleURL();
++  if (!url.is_valid()) {
++    return;
++  }
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  const std::string* active = update->FindString("active");
++  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  if (!space) {
++    return;
++  }
++  base::ListValue* pins = space->EnsureList("pins");
++  for (const base::Value& pin : *pins) {
++    const base::DictValue* dict = pin.GetIfDict();
++    const std::string* existing = dict ? dict->FindString("url") : nullptr;
++    if (existing && *existing == url.spec()) {
++      return;
++    }
++  }
++  base::DictValue pin;
++  pin.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
++  pin.Set("url", url.spec());
++  std::string title = base::UTF16ToUTF8(contents->GetTitle());
++  if (title.empty()) {
++    title = url.spec();
++  }
++  pin.Set("title", title);
++  pin.Set("folder", "");
++  pins->Append(std::move(pin));
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::AddFolder() {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  const std::string* active = update->FindString("active");
++  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  if (!space) {
++    return;
++  }
++  base::ListValue* folders = space->EnsureList("folders");
++  base::DictValue folder;
++  folder.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
++  folder.Set("name", "Folder " + base::NumberToString(folders->size() + 1));
++  folders->Append(std::move(folder));
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::AddSpace() {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  base::ListValue* spaces = update->EnsureList("spaces");
++  base::DictValue space;
++  std::string id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  space.Set("id", id);
++  space.Set("name", "Space " + base::NumberToString(spaces->size() + 1));
++  space.Set("color", "#6d6784");
++  space.Set("tabs", base::ListValue());
++  space.Set("pins", base::ListValue());
++  space.Set("folders", base::ListValue());
++  spaces->Append(std::move(space));
++  Rebuild();
++  SwitchSpace(id);
++}
++
++void CoveSidebarLibraryView::SwitchSpace(const std::string& space_id) {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  const std::string* active =
++      prefs->GetDict(kCoveSidebarPref).FindString("active");
++  if (active && *active == space_id) {
++    return;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  {
++    ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++    const std::string* current = update->FindString("active");
++    base::DictValue* from = current ? FindSpace(*update, *current) : nullptr;
++    if (from) {
++      base::ListValue tabs;
++      for (int i = 0; i < model->count(); ++i) {
++        content::WebContents* contents = model->GetWebContentsAt(i);
++        if (!contents) {
++          continue;
++        }
++        base::DictValue tab;
++        tab.Set("url", contents->GetVisibleURL().spec());
++        tab.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
++        tabs.Append(std::move(tab));
++      }
++      from->Set("tabs", std::move(tabs));
++    }
++    update->Set("active", space_id);
++  }
++
++  const base::ListValue* tabs =
++      FindSpace(prefs->GetDict(kCoveSidebarPref), space_id)
++          ? FindSpace(prefs->GetDict(kCoveSidebarPref), space_id)->FindList("tabs")
++          : nullptr;
++  const int old_count = model->count();
++  int added = 0;
++  if (tabs) {
++    for (const base::Value& tab_value : *tabs) {
++      const base::DictValue* tab = tab_value.GetIfDict();
++      const std::string* url_text = tab ? tab->FindString("url") : nullptr;
++      if (!url_text) {
++        continue;
++      }
++      GURL url(*url_text);
++      if (!url.is_valid()) {
++        continue;
++      }
++      NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++      Navigate(&params);
++      ++added;
++    }
++  }
++  if (added == 0) {
++    NavigateParams params(browser_, GURL("chrome://newtab/"),
++                          ui::PAGE_TRANSITION_TYPED);
++    params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++    Navigate(&params);
++    ++added;
++  }
++  for (int i = old_count - 1; i >= 0; --i) {
++    model->CloseWebContentsAt(
++        i, CLOSE_USER_GESTURE | CLOSE_CREATE_HISTORICAL_TAB);
++  }
++  if (model->count() > 0) {
++    model->ActivateTabAt(0);
++  }
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::OpenPin(const GURL& url) {
++  if (!url.is_valid()) {
++    return;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  for (int i = 0; i < model->count(); ++i) {
++    content::WebContents* contents = model->GetWebContentsAt(i);
++    if (contents && contents->GetVisibleURL() == url) {
++      model->ActivateTabAt(i);
++      return;
++    }
++  }
++  NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  Navigate(&params);
++}
++
++void CoveSidebarLibraryView::RemovePin(const std::string& pin_id) {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  const std::string* active = update->FindString("active");
++  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  base::ListValue* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins) {
++    return;
++  }
++  for (size_t i = 0; i < pins->size(); ++i) {
++    const base::DictValue* pin = (*pins)[i].GetIfDict();
++    const std::string* id = pin ? pin->FindString("id") : nullptr;
++    if (id && *id == pin_id) {
++      pins->erase(pins->begin() + static_cast<ptrdiff_t>(i));
++      break;
++    }
++  }
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::MovePinToFolder(const std::string& pin_id,
++                                             const std::string& folder_id) {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++  const std::string* active = update->FindString("active");
++  base::DictValue* space = active ? FindSpace(*update, *active) : nullptr;
++  base::ListValue* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins) {
++    return;
++  }
++  for (base::Value& pin_value : *pins) {
++    base::DictValue* pin = pin_value.GetIfDict();
++    const std::string* id = pin ? pin->FindString("id") : nullptr;
++    if (id && *id == pin_id) {
++      pin->Set("folder", folder_id);
++      break;
++    }
++  }
++  Rebuild();
++}
++
++void CoveSidebarLibraryView::ShowContextMenuForViewImpl(
++    views::View* source,
++    const gfx::Point& point,
++    ui::mojom::MenuSourceType source_type) {
++  context_pin_id_ = base::UTF16ToUTF8(source->GetAccessibleName());
++  if (context_pin_id_.empty()) {
++    return;
++  }
++  menu_folder_ids_.clear();
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kRemovePinCommand, u"Remove pin");
++  const base::DictValue& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const std::string* active = root.FindString("active");
++  const base::DictValue* space = active ? FindSpace(root, *active) : nullptr;
++  const base::ListValue* folders = space ? space->FindList("folders") : nullptr;
++  if (folders) {
++    for (const base::Value& folder_value : *folders) {
++      const base::DictValue* folder = folder_value.GetIfDict();
++      if (!folder || !folder->FindString("id") || !folder->FindString("name")) {
++        continue;
++      }
++      menu_folder_ids_.push_back(*folder->FindString("id"));
++      menu_model_->AddItem(
++          kMovePinCommandBase + static_cast<int>(menu_folder_ids_.size()) - 1,
++          u"Move to " + base::UTF8ToUTF16(*folder->FindString("name")));
++    }
++  }
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++  menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
++                          gfx::Rect(point, gfx::Size()),
++                          views::MenuAnchorPosition::kTopLeft, source_type);
++}
++
++BEGIN_METADATA(CoveSidebarLibraryView)
++END_METADATA
++
++void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kRemovePinCommand) {
++    RemovePin(context_pin_id_);
++    return;
++  }
++  const int folder_index = command_id - kMovePinCommandBase;
++  if (folder_index >= 0 &&
++      folder_index < static_cast<int>(menu_folder_ids_.size())) {
++    MovePinToFolder(context_pin_id_, menu_folder_ids_[folder_index]);
++  }
++}
+
+diff --git a/chrome/browser/ui/browser_ui_prefs.cc b/chrome/browser/ui/browser_ui_prefs.cc
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -122,6 +122,7 @@
+   registry->RegisterIntegerPref(prefs::kSessionRestoreInfoBarTimesShown, 0);
+ #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+ 
++  registry->RegisterDictionaryPref("cove.sidebar");
+   registry->RegisterBooleanPref(prefs::kHomePageIsNewTabPage, true,
+                                 pref_registration_flags);
+   registry->RegisterBooleanPref(prefs::kShowHomeButton, false,
+
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -35,6 +35,7 @@
+ #include "ui/views/layout/delegating_layout_manager.h"
+ 
+ class BrowserView;
++class CoveSidebarLibraryView;
+ class VerticalTabStripTopContainer;
+ class VerticalTabStripBottomContainer;
+ class VerticalTabStripFocusSwipeController;
+
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -261,6 +261,7 @@
+   raw_ptr<views::View> content_area_view_ = nullptr;
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
+   raw_ptr<views::LabelButton> search_button_ = nullptr;
++  raw_ptr<CoveSidebarLibraryView> library_view_ = nullptr;
+   raw_ptr<views::Separator> top_button_separator_ = nullptr;
+   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
+   raw_ptr<views::View> gemini_button_ = nullptr;
+
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
+ #include <algorithm>
+ #include <optional>
+
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -156,6 +156,9 @@
+   content_area_view_->SetPaintToLayer();
+   content_area_view_->layer()->SetFillsBoundsOpaquely(false);
+ 
++  library_view_ = content_area_view_->AddChildView(
++      std::make_unique<CoveSidebarLibraryView>(browser_view->browser()));
++
+   // --------------
+   // Views that go into the content area below
+ 
+
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -933,7 +933,11 @@
+   // Apply padding immediately at the start of the animation by including
+   // the collapsing state.
+   bool collapsed = state != tabs::VerticalTabStripCollapseState::kExpanded;
+ 
++  if (library_view_) {
++    library_view_->SetCollapsed(collapsed);
++  }
++
+   resize_area_->SetVisible(!collapsed ||
+                            !state_controller_->IsExpandOnHoverEnabled() ||
+                            resize_area_->is_resizing());

@@ -1,0 +1,59 @@
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
+index d69e4dd30f..db046f3ac7 100644
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
+@@ -63,6 +63,9 @@ VerticalTabStripTopContainer::VerticalTabStripTopContainer(
+       combo_button_orientation_ = state_controller->IsCollapsed()
+                                       ? views::LayoutOrientation::kVertical
+                                       : views::LayoutOrientation::kHorizontal);
++  // Cove uses the sidebar search field. The tab-groups and tab-search combo
++  // leaves a stack of unused icons in the collapsed rail.
++  combo_button_->SetVisible(false);
+ }
+ 
+ VerticalTabStripTopContainer::~VerticalTabStripTopContainer() = default;
+@@ -147,7 +150,7 @@ views::ProposedLayout VerticalTabStripTopContainer::CalculateProposedLayout(
+       current_y += pref_size.height();
+     }
+ 
+-    if (combo_button_) {
++    if (combo_button_ && combo_button_->GetVisible()) {
+       // In the case that neither of the combo button components are visible, we
+       // do not want to add any extra padding to the top container.
+       bool start_button_visible = combo_button_->start_button() &&
+@@ -256,7 +259,7 @@ views::ProposedLayout VerticalTabStripTopContainer::CalculateProposedLayout(
+     bool wrap_during_animation =
+         caption_button_width_ != 0 && available_width < GetPreferredWidth();
+ 
+-    if (combo_button_) {
++    if (combo_button_ && combo_button_->GetVisible()) {
+       const gfx::Size pref_size = combo_button_->GetPreferredSizeForOrientation(
+           combo_button_orientation_);
+       right_alignment -= pref_size.width();
+@@ -430,11 +433,12 @@ int VerticalTabStripTopContainer::GetPreferredWidth() const {
+   int padding =
+       GetLayoutConstant(LayoutConstant::kVerticalTabStripTopButtonPadding);
+ 
+-  // Combo Button
+-  total_width += combo_button_
+-                     ->GetPreferredSizeForOrientation(
+-                         views::LayoutOrientation::kHorizontal)
+-                     .width();
++  if (combo_button_ && combo_button_->GetVisible()) {
++    total_width += combo_button_
++                       ->GetPreferredSizeForOrientation(
++                           views::LayoutOrientation::kHorizontal)
++                       .width();
++  }
+ 
+   // Collapse Button
+   if (collapse_button_ && collapse_button_->GetVisible()) {
+@@ -459,7 +463,7 @@ int VerticalTabStripTopContainer::GetBaselineMinHeight() const {
+     min_height =
+         std::max(min_height, collapse_button_->GetPreferredSize().height());
+   }
+-  if (combo_button_) {
++  if (combo_button_ && combo_button_->GetVisible()) {
+     min_height =
+         std::max(min_height, combo_button_
+                                  ->GetPreferredSizeForOrientation(

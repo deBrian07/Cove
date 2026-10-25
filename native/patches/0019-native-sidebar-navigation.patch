@@ -1,0 +1,470 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -572,6 +572,14 @@
+     ]
+   }
+ 
++  source_set("cove_space_close_handler") {
++    sources = [
++      "cove_space_close_handler.cc",
++      "cove_space_close_handler.h",
++    ]
++    public_deps = [ "//ui/base/unowned_user_data" ]
++  }
++
+   source_set("unload_controller") {
+     public = [ "unload_controller.h" ]
+     public_deps = [
+@@ -591,6 +599,7 @@
+       "//chrome/browser:browser_public_dependencies",
+     ]
+     deps = [
++      ":cove_space_close_handler",
+       ":browser_commands",
+       ":browser_live_tab_context",
+       ":browser_manager_service",
+@@ -1589,6 +1598,9 @@
+   ]
+ 
+   deps = [
++    ":cove_space_close_handler",
++    "//chrome/browser/autocomplete",
++    "//components/omnibox/browser",
+     ":browser_element_identifiers",
+     ":browser_otr_state",
+     ":browser_ui_prefs",
+@@ -3534,6 +3546,8 @@
+       "views/frame/browser_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.h",
++      "views/cove/cove_location_view.cc",
++      "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+       "views/cove/cove_sidebar_library_view.h",
+       "views/frame/vertical_tab_strip_region_view.cc",
+@@ -5049,6 +5063,7 @@
+     testonly = true
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     sources = [
++      "views/cove/cove_sidebar_library_view_browsertest.cc",
+       "ask_google_for_suggestions_dialog_browsertest.cc",
+       "breadcrumb_manager_browser_agent_browsertest.cc",
+       "browser_actions_browsertest.cc",
+@@ -5079,6 +5094,9 @@
+     # -Wno-sign-compare. Depend on it here to inherit that suppression.
+     # Remove once crbug.com/527094632 is fixed.
+     deps = [
++      ":cove_space_close_handler",
++      ":unload_controller",
++      "//ui/views:test_support",
+       ":breadcrumb_manager_browser_agent",
+       ":browser_actions",
+       ":browser_command_controller",
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ 
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++#include "chrome/browser/ui/views/cove/cove_location_view.h"
+ 
+ #include <algorithm>
+ #include <optional>
+@@ -128,18 +129,8 @@
+       AddChildView(std::make_unique<VerticalTabStripTopContainer>(
+           state_controller_, root_action_item, browser_view->browser()));
+ 
+-  search_button_ = AddChildView(std::make_unique<views::LabelButton>(
+-      base::BindRepeating(
+-          [](BrowserView* browser_view) {
+-            chrome::ShowTabSearch(browser_view->browser());
+-          },
+-          browser_view),
+-      u"Search or Enter URL"));
+-  search_button_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+-  search_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 10)));
+-  search_button_->SetBackground(views::CreateRoundedRectBackground(
+-      kColorLocationBarBackground, 8));
+-  search_button_->SetEnabledTextColors(kColorOmniboxTextDimmed);
++  location_view_ = AddChildView(
++      std::make_unique<CoveLocationView>(browser_view->browser()));
+ 
+   auto content_area_view = std::make_unique<views::FlexLayoutView>();
+   content_area_view->SetOrientation(views::LayoutOrientation::kVertical);
+@@ -245,6 +236,14 @@
+   state_controller_->SetDelegate(nullptr);
+ }
+ 
++void VerticalTabStripRegionView::FocusLocation() {
++  if (state_controller_->IsCollapsed()) RequestCollapse(false);
++  location_view_->SetVisible(true);
++  InvalidateLayout();
++  if (GetWidget()) GetWidget()->LayoutRootViewIfNecessary();
++  location_view_->FocusLocation();
++}
++
+ bool VerticalTabStripRegionView::IsAnimatingSize() const {
+   return BrowserAnimationController::From(browser_view()->browser())
+       ->IsAnimating(TabStripAnimations::kVerticalTabStrip);
+@@ -424,8 +423,8 @@
+   const gfx::Size button_size =
+       top_button_container_->GetPreferredSize(button_available_size);
+   const bool show_search =
+-      search_button_ && !state_controller_->IsCollapsed();
+-  constexpr int kSearchFieldHeight = 32;
++      location_view_ && !state_controller_->IsCollapsed();
++  constexpr int kSearchFieldHeight = 64;
+   const int search_block =
+       show_search ? kSearchFieldHeight + vertical_padding : 0;
+   const gfx::Size tab_strip_size =
+@@ -459,11 +458,11 @@
+                      button_size.height())});
+   available.Inset(gfx::Insets::TLBR(button_size.height(), 0, 0, 0));
+ 
+-  if (search_button_) {
++  if (location_view_) {
+     const int search_width =
+         std::max(0, available.width() - 2 * horizontal_padding);
+     layout.child_layouts.push_back(
+-        {.child_view = search_button_.get(),
++        {.child_view = location_view_.get(),
+          .visible = show_search,
+          .bounds = gfx::Rect(horizontal_padding, available.y(), search_width,
+                              show_search ? kSearchFieldHeight : 0)});
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -36,6 +36,7 @@
+ 
+ class BrowserView;
+ class CoveSidebarLibraryView;
++class CoveLocationView;
+ class VerticalTabStripTopContainer;
+ class VerticalTabStripBottomContainer;
+ class VerticalTabStripFocusSwipeController;
+@@ -85,6 +86,8 @@
+   VerticalTabStripRegionView& operator=(const VerticalTabStripRegionView&) =
+       delete;
+   ~VerticalTabStripRegionView() override;
++
++  void FocusLocation();
+ 
+   VerticalTabStripTopContainer* GetTopContainer() {
+     return top_button_container_;
+@@ -260,7 +263,7 @@
+ 
+   raw_ptr<views::View> content_area_view_ = nullptr;
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
+-  raw_ptr<views::LabelButton> search_button_ = nullptr;
++  raw_ptr<CoveLocationView> location_view_ = nullptr;
+   raw_ptr<CoveSidebarLibraryView> library_view_ = nullptr;
+   raw_ptr<views::Separator> top_button_separator_ = nullptr;
+   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -2361,6 +2361,9 @@
+   }
+ #endif
+   if (!IsLocationBarVisible()) {
++    if (vertical_tab_strip_region_view_) {
++      vertical_tab_strip_region_view_->FocusLocation();
++    }
+     return;
+   }
+ 
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -1153,9 +1153,8 @@
+     case IDC_FOCUS_LOCATION:
+       if (!window()->IsLocationBarVisible()) {
+         // The sidebar search field replaces the hidden address bar.
+-        if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
+-            !profile()->IsOffTheRecord()) {
+-          ShowTabSearch(browser_);
++        if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
++          window()->SetFocusToLocationBar(true);
+         }
+         break;
+       }
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.h b/chrome/browser/ui/views/cove/cove_location_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_location_view.h
+@@ -0,0 +1,61 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_LOCATION_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_LOCATION_VIEW_H_
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "content/public/browser/web_contents_observer.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/controls/textfield/textfield_controller.h"
++#include "ui/views/focus/focus_manager.h"
++#include "ui/views/view.h"
++
++class BrowserWindowInterface;
++namespace views {
++class ImageButton;
++class Textfield;
++}  // namespace views
++
++// Native sidebar navigation. Editing always targets the focused page/pane.
++class CoveLocationView final : public views::View,
++                               public views::TextfieldController,
++                               public views::FocusChangeListener,
++                               public TabStripModelObserver,
++                               public content::WebContentsObserver {
++  METADATA_HEADER(CoveLocationView, views::View)
++ public:
++  explicit CoveLocationView(BrowserWindowInterface* browser);
++  ~CoveLocationView() override;
++  void FocusLocation();
++  void Refresh();
++  void AddedToWidget() override;
++  void RemovedFromWidget() override;
++  bool HandleKeyEvent(views::Textfield*, const ui::KeyEvent&) override;
++  void OnWillChangeFocus(views::View*, views::View*) override {}
++  void OnDidChangeFocus(views::View*, views::View*) override;
++  void OnTabStripModelChanged(TabStripModel*,
++                              const TabStripModelChange&,
++                              const TabStripSelectionChange&) override;
++  void OnTabStripModelDestroyed(TabStripModel*) override;
++  void DidFinishNavigation(content::NavigationHandle*) override;
++  void DidStopLoading() override;
++
++ private:
++  void ObserveActiveTab();
++  void RunNavigationCommand(int command);
++  void ShowSiteInformation();
++  void FocusPage();
++  base::WeakPtr<BrowserWindowInterface> browser_;
++  raw_ptr<views::Textfield> address_ = nullptr;
++  raw_ptr<views::ImageButton> back_ = nullptr;
++  raw_ptr<views::ImageButton> forward_ = nullptr;
++  base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
++      focus_{this};
++  base::WeakPtrFactory<CoveLocationView> weak_factory_{this};
++};
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_LOCATION_VIEW_H_
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.cc b/chrome/browser/ui/views/cove/cove_location_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_location_view.cc
+@@ -0,0 +1,207 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/views/cove/cove_location_view.h"
++
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/bubble_anchor_util.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/page_info/page_info_dialog.h"
++#include "components/omnibox/browser/autocomplete_classifier.h"
++#include "components/omnibox/browser/autocomplete_match.h"
++#include "components/vector_icons/vector_icons.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/events/event.h"
++#include "ui/events/keycodes/keyboard_codes.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/image_button.h"
++#include "ui/views/controls/button/image_button_factory.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/layout/box_layout.h"
++#include "url/url_constants.h"
++
++CoveLocationView::CoveLocationView(BrowserWindowInterface* browser)
++    : browser_(browser->GetWeakPtr()) {
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 4));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++  auto* navigation = AddChildView(std::make_unique<views::View>());
++  navigation->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
++  auto add_button = [this, navigation](const gfx::VectorIcon& icon, int command,
++                                       const std::u16string& name) {
++    auto button = views::CreateVectorImageButtonWithNativeTheme(
++        base::BindRepeating(&CoveLocationView::RunNavigationCommand,
++                            weak_factory_.GetWeakPtr(), command),
++        icon, 16);
++    button->SetPreferredSize(gfx::Size(28, 28));
++    button->SetTooltipText(name);
++    button->GetViewAccessibility().SetName(name);
++    return navigation->AddChildView(std::move(button));
++  };
++  back_ = add_button(vector_icons::kArrowBackIcon, IDC_BACK, u"Back");
++  forward_ =
++      add_button(vector_icons::kArrowForwardIcon, IDC_FORWARD, u"Forward");
++  add_button(vector_icons::kRefreshIcon, IDC_RELOAD, u"Reload");
++  auto info = views::CreateVectorImageButtonWithNativeTheme(
++      base::BindRepeating(&CoveLocationView::ShowSiteInformation,
++                          weak_factory_.GetWeakPtr()),
++      vector_icons::kInfoIcon, 16);
++  info->SetPreferredSize(gfx::Size(28, 28));
++  info->SetTooltipText(u"Site information and permissions");
++  info->GetViewAccessibility().SetName(u"Site information and permissions");
++  navigation->AddChildView(std::move(info));
++
++  address_ = AddChildView(std::make_unique<views::Textfield>());
++  address_->set_controller(this);
++  address_->SetTextInputType(ui::TEXT_INPUT_TYPE_URL);
++  address_->SetPlaceholderText(u"Search or Enter URL");
++  address_->SetDefaultWidthInChars(1);
++  address_->SetPreferredSize(gfx::Size(100, 32));
++  address_->SetTextColorId(kColorOmniboxText);
++  address_->SetBackgroundColor(kColorLocationBarBackground);
++  address_->GetViewAccessibility().SetName(u"Address and search bar");
++  browser->GetTabStripModel()->AddObserver(this);
++  ObserveActiveTab();
++}
++
++CoveLocationView::~CoveLocationView() = default;
++void CoveLocationView::AddedToWidget() {
++  views::View::AddedToWidget();
++  if (GetFocusManager()) {
++    focus_.Observe(GetFocusManager());
++  }
++}
++void CoveLocationView::RemovedFromWidget() {
++  focus_.Reset();
++  views::View::RemovedFromWidget();
++}
++void CoveLocationView::ObserveActiveTab() {
++  Observe(browser_ ? browser_->GetTabStripModel()->GetActiveWebContents()
++                   : nullptr);
++  Refresh();
++}
++void CoveLocationView::OnTabStripModelChanged(TabStripModel*,
++                                              const TabStripModelChange&,
++                                              const TabStripSelectionChange&) {
++  ObserveActiveTab();
++}
++void CoveLocationView::OnTabStripModelDestroyed(TabStripModel*) {
++  Observe(nullptr);
++}
++void CoveLocationView::DidFinishNavigation(content::NavigationHandle*) {
++  Refresh();
++}
++void CoveLocationView::DidStopLoading() {
++  Refresh();
++}
++void CoveLocationView::Refresh() {
++  content::WebContents* contents = web_contents();
++  back_->SetEnabled(contents && contents->GetController().CanGoBack());
++  forward_->SetEnabled(contents && contents->GetController().CanGoForward());
++  if (!contents || address_->HasFocus()) {
++    return;
++  }
++  const GURL& url = contents->GetVisibleURL();
++  const std::string_view display =
++      url == GURL("about:blank") ? ""
++                                 : (url.has_host() ? url.host() : url.spec());
++  address_->SetText(base::UTF8ToUTF16(display));
++  address_->SetTooltipText(base::UTF8ToUTF16(url.spec()));
++}
++void CoveLocationView::FocusLocation() {
++  address_->RequestFocus();
++  if (web_contents()) {
++    address_->SetText(
++        base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
++    address_->SelectAll(false);
++  }
++}
++void CoveLocationView::OnDidChangeFocus(views::View* before, views::View* now) {
++  if (now == address_) {
++    if (web_contents()) {
++      address_->SetText(
++          base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
++      address_->SelectAll(false);
++    }
++  } else if (before == address_) {
++    Refresh();
++  }
++}
++void CoveLocationView::FocusPage() {
++  if (browser_) {
++    if (auto* page = browser_->GetTabStripModel()->GetActiveWebContents()) {
++      page->Focus();
++    }
++  }
++}
++void CoveLocationView::RunNavigationCommand(int command) {
++  if (browser_) {
++    chrome::ExecuteCommand(browser_.get(), command);
++  }
++}
++void CoveLocationView::ShowSiteInformation() {
++  if (web_contents()) {
++    ShowPageInfoDialog(web_contents(), base::DoNothing(),
++                       bubble_anchor_util::Anchor::kLocationBar);
++  }
++}
++bool CoveLocationView::HandleKeyEvent(views::Textfield*,
++                                      const ui::KeyEvent& event) {
++  if (event.type() != ui::EventType::kKeyPressed ||
++      address_->IsIMEComposing()) {
++    return false;
++  }
++  if (event.key_code() == ui::VKEY_ESCAPE) {
++    FocusPage();
++    Refresh();
++    return true;
++  }
++  if (event.key_code() != ui::VKEY_RETURN || !browser_) {
++    return false;
++  }
++  std::u16string input(address_->GetText());
++  base::TrimWhitespace(input, base::TRIM_ALL, &input);
++  if (input.empty()) {
++    return true;
++  }
++  auto* classifier =
++      AutocompleteClassifierFactory::GetForProfile(browser_->GetProfile());
++  if (!classifier) {
++    return true;
++  }
++  AutocompleteMatch match;
++  classifier->Classify(input, false, false, metrics::OmniboxEventProto::BLANK,
++                       &match, nullptr);
++  if (!match.destination_url.is_valid() ||
++      match.destination_url.SchemeIs(url::kJavaScriptScheme)) {
++    return true;
++  }
++  NavigateParams params(browser_.get(), match.destination_url,
++                        ui::PAGE_TRANSITION_TYPED);
++  params.disposition = event.IsCommandDown()
++                           ? WindowOpenDisposition::NEW_FOREGROUND_TAB
++                           : WindowOpenDisposition::CURRENT_TAB;
++  params.user_gesture = true;
++  Navigate(&params);
++  FocusPage();
++  return true;
++}
++BEGIN_METADATA(CoveLocationView)
++END_METADATA

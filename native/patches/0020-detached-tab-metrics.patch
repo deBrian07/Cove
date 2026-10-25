@@ -1,0 +1,67 @@
+diff --git a/chrome/browser/ui/tabs/tab_creation_metrics_controller.cc b/chrome/browser/ui/tabs/tab_creation_metrics_controller.cc
+--- a/chrome/browser/ui/tabs/tab_creation_metrics_controller.cc
++++ b/chrome/browser/ui/tabs/tab_creation_metrics_controller.cc
+@@ -41,8 +41,10 @@
+ TabCreationMetricsController::~TabCreationMetricsController() = default;
+ 
+ void TabCreationMetricsController::ScheduleRecordTabGroupingTransition() {
++  BrowserWindowInterface* browser =
++      tab_ ? tab_->GetBrowserWindowInterface() : nullptr;
+   TabStripModel* tab_strip_model =
+-      tab_->GetBrowserWindowInterface()->GetTabStripModel();
++      browser ? browser->GetTabStripModel() : nullptr;
+   if (!tab_strip_model) {
+     return;
+   }
+@@ -70,16 +72,21 @@
+ 
+ void TabCreationMetricsController::RecordTabGroupingTransition(
+     std::optional<tab_groups::TabGroupId> last_active_group_id) {
+-  if (!tab_) {
++  // The tab can remain alive while parked in an inactive Cove Space. The
++  // delayed metric must not assume that a live tab still belongs to a window.
++  BrowserWindowInterface* browser =
++      tab_ ? tab_->GetBrowserWindowInterface() : nullptr;
++  TabStripModel* tab_strip_model =
++      browser ? browser->GetTabStripModel() : nullptr;
++  if (!tab_strip_model) {
+     return;
+   }
+-
+-  TabStripModel* tab_strip_model =
+-      tab_->GetBrowserWindowInterface()->GetTabStripModel();
+-  int tab_index = tab_strip_model->GetIndexOfTab(tab_);
++  const int tab_index = tab_strip_model->GetIndexOfTab(tab_);
++  if (tab_index == TabStripModel::kNoTab) {
++    return;
++  }
+   std::optional<tab_groups::TabGroupId> group_id =
+-      tab_->GetBrowserWindowInterface()->GetTabStripModel()->GetTabGroupForTab(
+-          tab_index);
++      tab_strip_model->GetTabGroupForTab(tab_index);
+ 
+   TabGroupingTransitionType type = TabGroupingTransitionType::kUninitialized;
+   if (!last_active_group_id.has_value() && !group_id.has_value()) {
+diff --git a/chrome/browser/ui/tabs/tab_creation_metrics_controller_browsertest.cc b/chrome/browser/ui/tabs/tab_creation_metrics_controller_browsertest.cc
+--- a/chrome/browser/ui/tabs/tab_creation_metrics_controller_browsertest.cc
++++ b/chrome/browser/ui/tabs/tab_creation_metrics_controller_browsertest.cc
+@@ -163,4 +163,19 @@
+   histogram_tester.ExpectTotalCount(kHistogramName, 1);
+ }
+ 
++IN_PROC_BROWSER_TEST_F(TabCreationMetricsTest, DetachedTabAtDelayedRecord) {
++  base::HistogramTester histogram_tester;
++  AppendTab();
++  auto parked = tab_strip_model()->DetachTabAtForInsertion(TabCount() - 1);
++  ASSERT_TRUE(parked);
++  EXPECT_EQ(nullptr, parked->GetBrowserWindowInterface());
++
++  // Reproduces parking a newly created tab in an inactive Space for longer
++  // than the grouping metric's ten-second delay.
++  FastForwardPastDelay();
++  histogram_tester.ExpectTotalCount(kHistogramName, 0);
++  tab_strip_model()->InsertDetachedTabAt(TabCount(), std::move(parked),
++                                         AddTabTypes::ADD_ACTIVE);
++}
++
+ }  // namespace tabs
