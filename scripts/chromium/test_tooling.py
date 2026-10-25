@@ -247,6 +247,64 @@ class ToolingTests(unittest.TestCase):
             with self.assertRaisesRegex(cove.BuildError, "configuration or patches changed"):
                 cove.build(self.root, self.manifest, jobs=None)
 
+    def test_gen_does_not_stamp_patch_mutated_during_gn(self):
+        patch = self.fixture_patch("one.patch", "after\n")
+        self.restore_fixture()
+        cove.write_state(self.root, hooks_complete=True, generated_config="old", built_config="old")
+
+        def mutate_patch_during_gn(*args, **kwargs):
+            patch.write_text(patch.read_text() + "changed during GN\n")
+            return subprocess.CompletedProcess(args[0], 0)
+
+        with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
+             mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state", return_value="applied"), \
+             mock.patch.object(cove, "run", side_effect=mutate_patch_during_gn):
+            with self.assertRaisesRegex(cove.BuildError, "changed while generation was running; rerun gen"):
+                cove.generate(self.root, self.manifest)
+
+        state = cove.read_state(self.root)
+        self.assertIsNone(state["generated_config"])
+        self.assertIsNone(state["built_config"])
+
+    def test_build_does_not_stamp_patch_mutated_during_ninja(self):
+        patch = self.fixture_patch("one.patch", "after\n")
+        self.restore_fixture()
+        out = self.src / "out/Cove"
+        out.mkdir(parents=True)
+        (out / "args.gn").write_text((self.repo / "args.gn").read_text())
+        (out / "build.ninja").touch()
+        digest = cove.config_digest(self.manifest)
+        cove.write_state(self.root, generated_config=digest, built_config=digest)
+
+        def mutate_patch_during_ninja(*args, **kwargs):
+            patch.write_text(patch.read_text() + "changed during Ninja\n")
+            return subprocess.CompletedProcess(args[0], 0)
+
+        with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
+             mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state", return_value="applied"), \
+             mock.patch.object(cove, "run", side_effect=mutate_patch_during_ninja):
+            with self.assertRaisesRegex(cove.BuildError, "changed while Ninja was building; rerun gen and build"):
+                cove.build(self.root, self.manifest, jobs=None)
+
+        state = cove.read_state(self.root)
+        self.assertIsNone(state["generated_config"])
+        self.assertIsNone(state["built_config"])
+
+    def test_launch_requires_current_generated_and_built_digests(self):
+        current_digest = cove.config_digest(self.manifest)
+        stale_records = (
+            ("stale", current_digest, "GN generation does not match"),
+            (current_digest, "stale", "No successful native build is recorded"),
+        )
+        for generated, built, error in stale_records:
+            with self.subTest(generated=generated, built=built):
+                cove.write_state(self.root, generated_config=generated, built_config=built)
+                with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
+                     mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state") as patch_check:
+                    with self.assertRaisesRegex(cove.BuildError, error):
+                        cove.launch(self.root, self.manifest, [])
+                patch_check.assert_not_called()
+
     def test_branded_launch_uses_isolated_profile_and_rejects_override(self):
         self.manifest["app_name"] = "Cove"
         executable = self.src / "out/Cove/Cove.app/Contents/MacOS/Cove"
@@ -255,7 +313,8 @@ class ToolingTests(unittest.TestCase):
         (executable.parents[1] / "Info.plist").write_bytes(plistlib.dumps({
             "CFBundleExecutable": "Cove", "CFBundleShortVersionString": self.manifest.get("version"),
         }) if self.manifest.get("version") else plistlib.dumps({"CFBundleExecutable": "Cove"}))
-        cove.write_state(self.root, built_config=cove.config_digest(self.manifest))
+        cove.write_state(self.root, generated_config=cove.config_digest(self.manifest),
+                         built_config=cove.config_digest(self.manifest))
         with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
              mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state", return_value="applied"), \
              mock.patch.object(cove, "run") as execute:

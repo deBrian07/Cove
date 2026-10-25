@@ -26,13 +26,36 @@ def safe_relative(value):
 
 def patch_inputs(text):
     """Get old files; new files are created by git apply and need no download."""
-    paths = set()
+    return patch_changes(text)[0]
+
+
+def patch_changes(text):
+    """Return old inputs and output paths from git-format patch file headers."""
+    inputs = set()
+    outputs = set()
+    in_file_header = False
+    allow_implicit_header = True
     for line in text.splitlines():
-        if line.startswith('--- a/'):
-            paths.add(safe_relative(line[len('--- a/'):].split('\t')[0]))
-        elif line.startswith('--- ') and line != '--- /dev/null':
+        if line.startswith('diff --git '):
+            in_file_header = True
+            allow_implicit_header = False
+            continue
+        if not in_file_header and allow_implicit_header and (
+                line.startswith('--- a/') or line == '--- /dev/null'):
+            in_file_header = True
+        if in_file_header and line.startswith('--- a/'):
+            inputs.add(safe_relative(line[len('--- a/'):].split('\t')[0]))
+        elif in_file_header and line.startswith('--- ') and line != '--- /dev/null':
             raise ValueError('Expected git-format patch headers: ' + line)
-    return paths
+        elif in_file_header and line.startswith('+++ b/'):
+            output = safe_relative(line[len('+++ b/'):].split('\t')[0])
+            outputs.add(output)
+        elif in_file_header and line.startswith('+++ ') and line != '+++ /dev/null':
+            raise ValueError('Expected git-format patch headers: ' + line)
+        elif in_file_header and line.startswith('@@'):
+            in_file_header = False
+            allow_implicit_header = False
+    return inputs, outputs
 
 
 def series_paths(repo, manifest):
@@ -59,8 +82,11 @@ def verify(repo, source=None, cache=None):
         raise ValueError('Chromium revision must be a full commit SHA')
     patches = series_paths(repo, manifest)
     paths = set()
+    materialized = set()
     for patch in patches:
-        paths.update(patch_inputs(patch.read_text()))
+        inputs, outputs = patch_changes(patch.read_text())
+        paths.update(inputs - materialized)
+        materialized.update(outputs)
     expected = {}
     if manifest.get('source_files'):
         expected = json.loads((repo / safe_relative(manifest['source_files'])).read_text())

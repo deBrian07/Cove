@@ -378,6 +378,13 @@ def config_digest(manifest: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
+def config_digest_matches(manifest: dict[str, Any], expected: str) -> bool:
+    try:
+        return config_digest(manifest) == expected
+    except BuildError:
+        return False
+
+
 def gclient_config(manifest: dict[str, Any]) -> str:
     return ("solutions = " + repr([{"name": "src", "url": manifest["source_url"],
             "managed": False, "custom_deps": {}, "custom_vars": {}}]) + "\n"
@@ -464,9 +471,13 @@ def generate(root: Path, manifest: dict[str, Any]) -> None:
         raise BuildError(f"{out / 'args.gn'} differs from Cove's config. Left unchanged; reconcile it explicitly.")
     out.mkdir(parents=True, exist_ok=True)
     (out / "args.gn").write_text(desired)
+    generation_digest = config_digest(manifest)
     write_state(root, generated_config=None, built_config=None)
     run([str(root / "depot_tools" / "gn"), "gen", "out/Cove"], cwd=source(root), env=environment(root))
-    write_state(root, generated_config=config_digest(manifest))
+    if not config_digest_matches(manifest, generation_digest):
+        write_state(root, generated_config=None, built_config=None)
+        raise BuildError("GN inputs changed while generation was running; rerun gen before building")
+    write_state(root, generated_config=generation_digest)
 
 
 def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
@@ -476,7 +487,8 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     require_revision(root, manifest)
     if patch_state(source(root), patches(manifest)) != "applied":
         raise BuildError("Apply Cove's patch series before building")
-    if read_state(root).get("generated_config") != config_digest(manifest):
+    build_digest = config_digest(manifest)
+    if read_state(root).get("generated_config") != build_digest:
         raise BuildError("GN configuration or patches changed; run gen before build")
     out = source(root) / "out" / "Cove"
     if (out / "args.gn").read_text() != repository_file(manifest["gn_args_file"]).read_text():
@@ -489,8 +501,17 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     command.append("chrome")
     print("Incremental compile: reusing out/Cove and rebuilding only invalidated objects.")
     write_state(root, built_config=None)
-    run(command, cwd=source(root), env=environment(root))
-    write_state(root, built_config=config_digest(manifest))
+    try:
+        run(command, cwd=source(root), env=environment(root))
+    except BuildError as error:
+        if not config_digest_matches(manifest, build_digest):
+            write_state(root, generated_config=None, built_config=None)
+            raise BuildError("GN inputs changed while Ninja was building; rerun gen and build") from error
+        raise
+    if not config_digest_matches(manifest, build_digest):
+        write_state(root, generated_config=None, built_config=None)
+        raise BuildError("GN inputs changed while Ninja was building; rerun gen and build")
+    write_state(root, built_config=build_digest)
 
 
 def native_application(root: Path, manifest: dict[str, Any]) -> Path:
@@ -546,7 +567,11 @@ def launch(root: Path, manifest: dict[str, Any], extra: list[str]) -> None:
     require_space(root, "run")
     require_host()
     require_revision(root, manifest)
-    if read_state(root).get("built_config") != config_digest(manifest):
+    current_digest = config_digest(manifest)
+    state = read_state(root)
+    if state.get("generated_config") != current_digest:
+        raise BuildError("GN generation does not match the current configuration or patches; run gen and build first")
+    if state.get("built_config") != current_digest:
         raise BuildError("No successful native build is recorded for the current patches/configuration; run build first")
     if patch_state(source(root), patches(manifest)) != "applied":
         raise BuildError("Cove patches changed after build; rebuild before running")
