@@ -1,0 +1,40 @@
+diff --git a/chrome/browser/ui/color/chrome_color_mixers.cc b/chrome/browser/ui/color/chrome_color_mixers.cc
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -23,6 +23,10 @@
+ #include "chrome/browser/ui/color/omnibox_color_mixer.h"
+ #include "chrome/browser/ui/color/product_specifications_color_mixer.h"
+ #include "chrome/browser/ui/color/tab_strip_color_mixer.h"
++#include "ui/color/color_mixer.h"
++#include "ui/color/color_provider.h"
++#include "ui/color/color_provider_key.h"
++#include "ui/color/color_recipe.h"
+ #include "ui/color/color_provider_utils.h"
+ 
+ namespace {
+@@ -95,4 +99,25 @@
+   if (key.app_controller) {
+     key.app_controller->AddColorMixers(provider, key);
+   }
++
++  // Cove's default violet palette uses the softer frame and address surfaces
++  // of its sidebar. User-selected themes and accessibility palettes retain
++  // their own colors.
++  if (key.color_mode == ui::ColorProviderKey::ColorMode::kDark &&
++      key.contrast_mode == ui::ColorProviderKey::ContrastMode::kNormal &&
++      key.forced_colors == ui::ColorProviderKey::ForcedColors::kNone &&
++      key.user_color == SkColorSetRGB(0x7e, 0x6c, 0xa8) &&
++      !key.app_controller &&
++      (!key.custom_theme || key.custom_theme->get_theme_type() !=
++                                ui::ColorProviderKey::ThemeInitializerSupplier::
++                                    ThemeType::kExtension)) {
++    auto& cove = provider->AddMixer();
++    cove[ui::kColorFrameActive] = {SkColorSetRGB(0x30, 0x2e, 0x41)};
++    cove[ui::kColorFrameInactive] = {SkColorSetRGB(0x2b, 0x29, 0x3a)};
++    cove[kColorLocationBarBackground] = {SkColorSetRGB(0x43, 0x40, 0x52)};
++    cove[kColorLocationBarBackgroundHovered] = {
++        SkColorSetRGB(0x4d, 0x49, 0x5e)};
++    cove[kColorOmniboxText] = {SkColorSetRGB(0xe7, 0xe4, 0xf4)};
++    cove[kColorOmniboxTextDimmed] = {SkColorSetRGB(0xb9, 0xb5, 0xcc)};
++  }
+ }

@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1524,6 +1524,17 @@
+       }
+     }
+     if (all_pins_retained) {
++      // A retained pin remains in the sidebar after its live page closes. Keep
++      // an empty canvas when this selection would otherwise close the window.
++      // Compute this before insertion; adding a tab can invalidate the selected
++      // tab reference above. Background insertion preserves the original pin
++      // selection, so the normal close helper cannot close the placeholder.
++      const bool closes_every_tab =
++          selected_tabs.size() ==
++          static_cast<size_t>(browser->GetTabStripModel()->count());
++      if (closes_every_tab) {
++        AddTabAt(browser, GURL("about:blank"), -1, /*foreground=*/false);
++      }
+       CloseSelectedTabAndRecordTabCountMetric(browser);
+       return;
+     }

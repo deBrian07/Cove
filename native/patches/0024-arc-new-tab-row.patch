@@ -1,0 +1,66 @@
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
+@@ -12,8 +12,13 @@
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/shared/new_tab_button.h"
+ #include "chrome/browser/ui/views/tabs/shared/tab_strip_flat_edge_button.h"
++#include "components/strings/grit/components_strings.h"
+ #include "ui/actions/actions.h"
++#include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_id.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/size.h"
+ #include "ui/views/view_class_properties.h"
+ 
+ VerticalTabStripBottomContainer::VerticalTabStripBottomContainer(
+@@ -41,6 +46,19 @@
+           record_new_tab_button_pressed);
+ 
+   new_tab_button_ = AddChildView(std::move(new_tab_button));
++  // A quiet sidebar row, retaining the existing action, context menu and
++  // keyboard focus behavior of Chromium's native New Tab button.
++  new_tab_button_->SetPaintTransparent(true);
++  new_tab_button_->SetCornerRadius(8);
++  new_tab_button_->SetIconSize(16);
++  new_tab_button_->SetIconOpacity(0.8f);
++  new_tab_button_->SetImageLabelSpacing(8);
++  new_tab_button_->SetPreferredSize(gfx::Size(32, 32));
++  new_tab_button_->SetMinSize(gfx::Size(32, 32));
++  new_tab_button_->SetEnabledTextColors(ui::kColorLabelForegroundSecondary);
++  new_tab_button_->SetAccessibleName(
++      l10n_util::GetStringUTF16(IDS_NEW_TAB_TITLE));
++  new_tab_button_->SetTextSubpixelRenderingEnabled(false);
+ 
+   OnCollapseStateChanged(state_controller->GetCollapseState());
+   collapsed_state_change_subscription_ =
+@@ -50,7 +68,6 @@
+ }
+ 
+ VerticalTabStripBottomContainer::~VerticalTabStripBottomContainer() = default;
+-
+ 
+ bool VerticalTabStripBottomContainer::IsPositionInWindowCaption(
+     const gfx::Point& point) {
+@@ -103,9 +120,17 @@
+                     : views::MaximumFlexSizeRule::kUnbounded,
+           false, views::MinimumFlexSizeRule::kPreferred));
+ 
+-  new_tab_button_->SetInsets(GetLayoutInsets(
+-      collapsed ? LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_COLLAPSED
+-                : LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_UNCOLLAPSED));
++  // Explicit text keeps the expanded row stable at every sidebar width. The
++  // shared button's optional auto-label mode is intended for compact toolbar
++  // controls and would otherwise clear/recenter the label as bounds change.
++  new_tab_button_->SetShouldShowLabel(false);
++  new_tab_button_->SetText(collapsed
++                               ? std::u16string()
++                               : l10n_util::GetStringUTF16(IDS_NEW_TAB_TITLE));
++  new_tab_button_->SetHorizontalAlignment(collapsed ? gfx::ALIGN_CENTER
++                                                    : gfx::ALIGN_LEFT);
++  new_tab_button_->SetInsets(collapsed ? gfx::Insets::VH(4, 6)
++                                       : gfx::Insets::VH(4, 10));
+ }
+ 
+ BEGIN_METADATA(VerticalTabStripBottomContainer)

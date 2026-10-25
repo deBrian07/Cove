@@ -20,3 +20,17 @@
 0020-detached-tab-metrics.patch
 0021-parked-navigation-safety.patch
 0022-compact-working-folders.patch
+0023-sidebar-location-surface.patch
+0024-arc-new-tab-row.patch
+0025-native-page-frame.patch
+0026-native-sidebar-hierarchy.patch
+0027-native-favorites.patch
+0028-default-violet-surfaces.patch
+0029-sidebar-favorites-actions.patch
+0030-arc-sidebar-caption-navigation.patch
+0031-native-name-editor.patch
+0032-native-library-editing.patch
+0033-pin-navigation-and-close.patch
+0034-native-archive-today.patch
+0035-sidebar-compile-cleanup.patch
+0036-retained-pin-keeps-window.patch

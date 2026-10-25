@@ -1,0 +1,167 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -1598,6 +1598,9 @@
+   ]
+ 
+   deps = [
++    "//components/favicon/core",
++    "//components/favicon_base",
++    "//components/favicon/content",
+     ":cove_space_close_handler",
+     "//chrome/browser/autocomplete",
+     "//components/omnibox/browser",
+@@ -3546,6 +3549,8 @@
+       "views/frame/browser_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.h",
++      "views/cove/cove_favorites_view.cc",
++      "views/cove/cove_favorites_view.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -10,6 +10,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+@@ -47,6 +48,8 @@
+ 
+   void SetCollapsed(bool collapsed);
+   std::unique_ptr<views::View> CreateSpaceFooter();
++  void SetFavoriteActions(base::RepeatingClosure toggle,
++                          base::RepeatingCallback<bool()> is_current);
+ 
+   // CoveSpaceCloseHandler:
+   bool HasPendingTabs() const override;
+@@ -101,6 +104,8 @@
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<const views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
++  base::RepeatingClosure toggle_favorite_;
++  base::RepeatingCallback<bool()> is_current_favorite_;
+   std::string context_pin_id_;
+   std::vector<std::string> menu_folder_ids_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -60,6 +60,7 @@
+ constexpr int kPinCurrentPageCommand = 2;
+ constexpr int kNewFolderCommand = 3;
+ constexpr int kNewSpaceCommand = 4;
++constexpr int kToggleFavoriteCommand = 5;
+ constexpr int kMovePinCommandBase = 100;
+ 
+ base::DictValue* FindSpace(base::DictValue& root, std::string_view id) {
+@@ -268,7 +269,7 @@
+   base::ListValue spaces;
+   spaces.Append(std::move(personal));
+   spaces.Append(std::move(work));
+-  base::DictValue root;
++  base::DictValue root = prefs->GetDict(kCoveSidebarPref).Clone();
+   root.Set("active", "personal");
+   root.Set("spaces", std::move(spaces));
+   prefs->SetDict(kCoveSidebarPref, std::move(root));
+@@ -420,12 +421,25 @@
+   footer->InvalidateLayout();
+ }
+ 
++void CoveSidebarLibraryView::SetFavoriteActions(
++    base::RepeatingClosure toggle,
++    base::RepeatingCallback<bool()> is_current) {
++  toggle_favorite_ = std::move(toggle);
++  is_current_favorite_ = std::move(is_current);
++}
++
+ void CoveSidebarLibraryView::ShowLibraryMenu() {
+   auto* footer = space_footer_.view();
+   if (!footer || !footer->GetWidget()) {
+     return;
+   }
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  if (toggle_favorite_) {
++    menu_model_->AddItem(kToggleFavoriteCommand,
++                         is_current_favorite_ && is_current_favorite_.Run()
++                             ? u"Remove from Favorites"
++                             : u"Add to Favorites");
++  }
+   menu_model_->AddItem(kPinCurrentPageCommand, u"Pin this page");
+   menu_model_->AddItem(kNewFolderCommand, u"New folder");
+   menu_model_->AddItem(kNewSpaceCommand, u"New Space");
+@@ -895,6 +909,10 @@
+ END_METADATA
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kToggleFavoriteCommand && toggle_favorite_) {
++    toggle_favorite_.Run();
++    return;
++  }
+   if (command_id == kPinCurrentPageCommand) {
+     PinActivePage();
+     return;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -37,6 +37,7 @@
+ class BrowserView;
+ class CoveSidebarLibraryView;
+ class CoveLocationView;
++class CoveFavoritesView;
+ class VerticalTabStripTopContainer;
+ class VerticalTabStripBottomContainer;
+ class VerticalTabStripFocusSwipeController;
+@@ -264,6 +265,7 @@
+   raw_ptr<views::View> content_area_view_ = nullptr;
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
+   raw_ptr<CoveLocationView> location_view_ = nullptr;
++  raw_ptr<CoveFavoritesView> favorites_view_ = nullptr;
+   raw_ptr<CoveSidebarLibraryView> library_view_ = nullptr;
+   raw_ptr<views::View> space_footer_ = nullptr;
+   raw_ptr<views::Separator> top_button_separator_ = nullptr;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -36,6 +36,7 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
++#include "chrome/browser/ui/views/cove/cove_favorites_view.h"
+ #include "chrome/browser/ui/views/cove/cove_location_view.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+@@ -146,8 +147,18 @@
+   content_area_view_->SetPaintToLayer();
+   content_area_view_->layer()->SetFillsBoundsOpaquely(false);
+ 
++  favorites_view_ = content_area_view_->AddChildView(
++      std::make_unique<CoveFavoritesView>(browser_view->browser()));
+   library_view_ = content_area_view_->AddChildView(
+       std::make_unique<CoveSidebarLibraryView>(browser_view->browser()));
++  library_view_->SetFavoriteActions(
++      base::BindRepeating(&CoveFavoritesView::ToggleCurrentPage,
++                          favorites_view_->GetWeakPtr()),
++      base::BindRepeating(
++          [](base::WeakPtr<CoveFavoritesView> favorites) {
++            return favorites && favorites->IsCurrentPageFavorite();
++          },
++          favorites_view_->GetWeakPtr()));
+   space_footer_ = AddChildView(library_view_->CreateSpaceFooter());
+ 
+   // --------------
+@@ -952,6 +963,9 @@
+   if (library_view_) {
+     library_view_->SetCollapsed(collapsed);
+   }
++  if (favorites_view_) {
++    favorites_view_->SetCollapsed(collapsed);
++  }
+ 
+   resize_area_->SetVisible(!collapsed ||
+                            !state_controller_->IsExpandOnHoverEnabled() ||

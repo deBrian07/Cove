@@ -1,0 +1,90 @@
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.cc b/chrome/browser/ui/views/cove/cove_location_view.cc
+--- a/chrome/browser/ui/views/cove/cove_location_view.cc
++++ b/chrome/browser/ui/views/cove/cove_location_view.cc
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ #include "chrome/browser/ui/views/cove/cove_location_view.h"
+ 
++#include <utility>
++
+ #include "base/functional/bind.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/strings/string_util.h"
+@@ -25,6 +27,7 @@
+ #include "content/public/browser/web_contents.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/base/window_open_disposition.h"
++#include "ui/color/color_id.h"
+ #include "ui/events/event.h"
+ #include "ui/events/keycodes/keyboard_codes.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+@@ -42,8 +45,12 @@
+   layout->set_cross_axis_alignment(
+       views::BoxLayout::CrossAxisAlignment::kStretch);
+   auto* navigation = AddChildView(std::make_unique<views::View>());
+-  navigation->SetLayoutManager(std::make_unique<views::BoxLayout>(
+-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
++  auto* navigation_layout = navigation->SetLayoutManager(
++      std::make_unique<views::BoxLayout>(
++          views::BoxLayout::Orientation::kHorizontal,
++          gfx::Insets::TLBR(0, 8, 0, 8), 6));
++  navigation_layout->set_main_axis_alignment(
++      views::BoxLayout::MainAxisAlignment::kEnd);
+   auto add_button = [this, navigation](const gfx::VectorIcon& icon, int command,
+                                        const std::u16string& name) {
+     auto button = views::CreateVectorImageButtonWithNativeTheme(
+@@ -73,7 +80,9 @@
+   address_->SetTextInputType(ui::TEXT_INPUT_TYPE_URL);
+   address_->SetPlaceholderText(u"Search or Enter URL");
+   address_->SetDefaultWidthInChars(1);
+-  address_->SetPreferredSize(gfx::Size(100, 32));
++  address_->SetPreferredSize(gfx::Size(100, 36));
++  address_->SetCornerRadius(14);
++  address_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
+   address_->SetTextColorId(kColorOmniboxText);
+   address_->SetBackgroundColor(kColorLocationBarBackground);
+   address_->GetViewAccessibility().SetName(u"Address and search bar");
+@@ -135,15 +144,32 @@
+ }
+ void CoveLocationView::OnDidChangeFocus(views::View* before, views::View* now) {
+   if (now == address_) {
++    UpdateAddressFocusStyle();
+     if (web_contents()) {
+       address_->SetText(
+           base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
+       address_->SelectAll(false);
+     }
+   } else if (before == address_) {
++    UpdateAddressFocusStyle();
+     Refresh();
+   }
+ }
++void CoveLocationView::UpdateAddressFocusStyle() {
++  if (!address_) {
++    return;
++  }
++  if (address_->HasFocus()) {
++    auto border = views::CreateRoundedRectBorder(
++        2, address_->GetCornerRadius(), ui::kColorSysStateFocusRing);
++    address_->SetBorder(views::CreatePaddedBorder(
++        std::move(border), gfx::Insets::VH(0, 11)));
++    address_->SetBackgroundColor(kColorLocationBarBackgroundHovered);
++  } else {
++    address_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
++    address_->SetBackgroundColor(kColorLocationBarBackground);
++  }
++}
+ void CoveLocationView::FocusPage() {
+   if (browser_) {
+     if (auto* page = browser_->GetTabStripModel()->GetActiveWebContents()) {
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.h b/chrome/browser/ui/views/cove/cove_location_view.h
+--- a/chrome/browser/ui/views/cove/cove_location_view.h
++++ b/chrome/browser/ui/views/cove/cove_location_view.h
+@@ -49,6 +49,7 @@
+   void ObserveActiveTab();
+   void RunNavigationCommand(int command);
+   void ShowSiteInformation();
++  void UpdateAddressFocusStyle();
+   void FocusPage();
+   base::WeakPtr<BrowserWindowInterface> browser_;
+   raw_ptr<views::Textfield> address_ = nullptr;

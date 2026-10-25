@@ -1,0 +1,119 @@
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+index 389c6f8c6e..49eabea585 100644
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -67,6 +67,10 @@ namespace {
+ // Minimum area next to caption buttons to use as a grab handle.
+ constexpr int kVerticalTabsGrabHandleSize = 40;
+ 
++// Cove keeps native page content inside a narrow frame in sidebar windows.
++constexpr int kCovePageFrameInset = 6;
++constexpr float kCovePageCornerRadius = 12;
++
+ // Maximum portion of the window a "size-restricted" contents-height side panel
+ // can take up. This is not the only limit on side panel size.
+ constexpr float kMaxContentsHeightSidePanelFraction = 2.f / 3.f;
+@@ -745,6 +749,13 @@ gfx::Size BrowserViewTabbedLayoutImpl::GetMinimumSize(
+     min_width += padding;
+   }
+ 
++  if (!vertical_tabstrip_size.IsEmpty() &&
++      !is_fullscreen(delegate().GetBrowserWindowState()) && !in_glass_mode()) {
++    // Keep the existing minimum page area available inside Cove's frame.
++    min_width += 2 * kCovePageFrameInset;
++    min_height += 2 * kCovePageFrameInset;
++  }
++
+   return gfx::Size(min_width, min_height);
+ }
+ 
+@@ -764,6 +775,9 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+   }
+ 
+   BrowserLayoutParams params = layout_data_->revised_params;
++  const bool cove_page_frame =
++      layout_data_->tab_strip_type == TabStripType::kVertical &&
++      !is_fullscreen(layout_data_->window_state) && !in_glass_mode();
+   bool needs_exclusion = true;
+   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
+ 
+@@ -877,8 +891,9 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+               ? layout_data_->organizer_panel_animation.reveal_amount
+               : 0.0);
+ 
+-      const int inset_amount = horizontal_layout.vertical_tab_strip_width -
+-                               GetVerticalTabStripContentOverlap();
++      const int inset_amount =
++          horizontal_layout.vertical_tab_strip_width -
++          (cove_page_frame ? 0 : GetVerticalTabStripContentOverlap());
+       params.InsetHorizontal(inset_amount, /*leading=*/true);
+ 
+       // Let the vertical tab strip animate out over the content.
+@@ -1003,7 +1018,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+     } else {
+       main_background_bounds = params.visual_client_area;
+     }
+-    const bool main_background_visibility = horizontal_layout.has_side_panel();
++    const bool main_background_visibility =
++        horizontal_layout.has_side_panel() || cove_page_frame;
+     main_background_layout =
+         &layout.AddChild(views().main_background_region, main_background_bounds,
+                          main_background_visibility);
+@@ -1133,6 +1149,14 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+     layout.AddChild(views().infobar_container, infobar_bounds, infobar_visible);
+   }
+ 
++  // Inset the native viewport after side panels and infobars have received
++  // their normal layout. This leaves their controls and hit regions intact.
++  if (cove_page_frame) {
++    const gfx::Insets page_frame(kCovePageFrameInset);
++    params.Inset(page_frame);
++    unclipped_contents_region.Inset(page_frame);
++  }
++
+   // Top separator is unnecessary when already in the shadow box; this is
+   // especially obvious in split view, where turning the separator off provides
+   // the required top padding.
+@@ -1242,9 +1266,12 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+     }
+   }
+ 
+-  // If the window goes out of glass mode, these changes won't hurt anything.
+-  if (in_glass_mode()) {
+-    gfx::RoundedCornersF content_corners;
++  // Reuse the native content clipping path, including capture borders and
++  // overlays. Reset it when leaving sidebar mode or entering fullscreen.
++  gfx::RoundedCornersF content_corners;
++  if (cove_page_frame) {
++    content_corners = gfx::RoundedCornersF(kCovePageCornerRadius);
++  } else if (in_glass_mode()) {
+     if (layout_data_->tab_strip_type == TabStripType::kVertical &&
+         !is_fullscreen(layout_data_->window_state)) {
+       // Note that this will set a lower leading corner on the multi contents
+@@ -1258,8 +1285,8 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
+         content_corners.set_lower_left(radius);
+       }
+     }
+-    views().multi_contents_view->SetBackgroundRadii(content_corners);
+   }
++  views().multi_contents_view->SetBackgroundRadii(content_corners);
+ 
+   // Make final visual adjustments required for child views to paint.
+   if (layout_data_->tab_strip_type == TabStripType::kVertical) {
+@@ -1846,6 +1873,16 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
+     CHECK(main_background)
+         << "Expected main background region to have a CustomCornersBackground.";
+ 
++    // The existing non-interactive background paints the exposed page frame.
++    // Use the live frame theme so activation, custom themes and contrast modes
++    // keep their native colors rather than a hard-coded purple.
++    if (layout_data_->tab_strip_type == TabStripType::kVertical &&
++        !is_fullscreen(layout_data_->window_state) && !in_glass_mode()) {
++      main_background->SetPrimaryColor(CustomCornersBackground::FrameTheme());
++    } else {
++      main_background->SetPrimaryColor(CustomCornersBackground::ToolbarTheme());
++    }
++
+     // Do the main area cutouts. These adjustments need to be made regardless of
+     // whether the current window is in glass mode.
+     if (features::IsGlassFrameEnabled()) {

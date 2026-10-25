@@ -1,0 +1,157 @@
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.h b/chrome/browser/ui/views/cove/cove_name_dialog.h
+new file mode 100644
+index 0000000000..ab5029b32d
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.h
+@@ -0,0 +1,26 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
++
++#include <string>
++
++#include "base/functional/callback_forward.h"
++
++namespace views {
++class View;
++}  // namespace views
++
++// Shows a browser-window-modal native editor. The initial name is focused and
++// selected. Acceptance supplies a trimmed, nonempty name; cancellation never
++// runs `accept`. Callers should bind a weak callback if its owner may disappear.
++// `anchor` is used only to find the browser parent and is not retained.
++void ShowCoveNameDialog(
++    views::View* anchor,
++    std::u16string title,
++    std::u16string initial_name,
++    base::OnceCallback<void(std::u16string)> accept);
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.cc b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+new file mode 100644
+index 0000000000..fd3da4cf54
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+@@ -0,0 +1,119 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_name_dialog.h"
++
++#include <memory>
++#include <string>
++#include <utility>
++
++#include "base/callback_list.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback.h"
++#include "base/functional/callback_helpers.h"
++#include "base/strings/string_util.h"
++#include "chrome/grit/generated_resources.h"
++#include "components/constrained_window/constrained_window_views.h"
++#include "components/strings/grit/components_strings.h"
++#include "ui/base/interaction/element_identifier.h"
++#include "ui/base/l10n/l10n_util.h"
++#include "ui/base/models/dialog_model.h"
++#include "ui/views/view.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveNameField);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveNameSaveButton);
++
++class CoveNameDialogDelegate final : public ui::DialogModelDelegate {
++ public:
++  explicit CoveNameDialogDelegate(
++      base::OnceCallback<void(std::u16string)> accept)
++      : accept_(std::move(accept)) {}
++  ~CoveNameDialogDelegate() override = default;
++
++  void Initialize() {
++    text_changed_subscription_ =
++        dialog_model()->GetTextfieldByUniqueId(kCoveNameField)
++            ->AddOnFieldChangedCallback(base::BindRepeating(
++                &CoveNameDialogDelegate::UpdateSaveEnabled,
++                base::Unretained(this)));
++    UpdateSaveEnabled();
++  }
++
++  bool Accept() {
++    if (!accept_) {
++      return true;
++    }
++    std::u16string name = TrimmedName();
++    if (name.empty()) {
++      return false;
++    }
++    // The caller may destroy its UI while handling this callback. Do not touch
++    // any delegate or model state after invoking it.
++    auto accept = std::move(accept_);
++    std::move(accept).Run(std::move(name));
++    return true;
++  }
++
++ private:
++  std::u16string TrimmedName() {
++    std::u16string name;
++    base::TrimWhitespace(
++        dialog_model()->GetTextfieldByUniqueId(kCoveNameField)->text(),
++        base::TRIM_ALL, &name);
++    return name;
++  }
++
++  void UpdateSaveEnabled() {
++    dialog_model()->SetButtonEnabled(
++        dialog_model()->GetButtonByUniqueId(kCoveNameSaveButton),
++        !TrimmedName().empty());
++  }
++
++  base::OnceCallback<void(std::u16string)> accept_;
++  base::CallbackListSubscription text_changed_subscription_;
++};
++
++}  // namespace
++
++void ShowCoveNameDialog(
++    views::View* anchor,
++    std::u16string title,
++    std::u16string initial_name,
++    base::OnceCallback<void(std::u16string)> accept) {
++  if (!anchor || !anchor->GetWidget() || !accept) {
++    return;
++  }
++  views::Widget* parent = anchor->GetWidget()->GetPrimaryWindowWidget();
++  if (!parent || !parent->GetNativeWindow()) {
++    return;
++  }
++
++  auto delegate = std::make_unique<CoveNameDialogDelegate>(std::move(accept));
++  auto* const delegate_ptr = delegate.get();
++  const std::u16string name_label =
++      l10n_util::GetStringUTF16(IDS_BOOKMARK_BUBBLE_NAME_LABEL);
++  auto model =
++      ui::DialogModel::Builder(std::move(delegate))
++          .SetInternalName("CoveNameDialog")
++          .SetTitle(title)
++          .SetAccessibleTitle(std::move(title))
++          .AddTextfield(kCoveNameField, name_label, std::move(initial_name),
++                        ui::DialogModelTextfield::Params().SetAccessibleName(
++                            name_label))
++          .SetInitiallyFocusedField(kCoveNameField)
++          .AddOkButton(
++              base::BindRepeating(&CoveNameDialogDelegate::Accept,
++                                  base::Unretained(delegate_ptr)),
++              ui::DialogModel::Button::Params()
++                  .SetId(kCoveNameSaveButton)
++                  .SetLabel(l10n_util::GetStringUTF16(IDS_SAVE)))
++          .AddCancelButton(base::DoNothing())
++          .Build();
++  delegate_ptr->Initialize();
++  constrained_window::ShowBrowserModal(std::move(model),
++                                      parent->GetNativeWindow());
++}

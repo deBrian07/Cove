@@ -1,0 +1,283 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -1598,6 +1598,7 @@
+   ]
+ 
+   deps = [
++    "//components/constrained_window",
+     "//components/favicon/core",
+     "//components/favicon_base",
+     "//components/favicon/content",
+@@ -3551,6 +3552,8 @@
+       "views/frame/horizontal_tab_strip_region_view.h",
+       "views/cove/cove_favorites_view.cc",
+       "views/cove/cove_favorites_view.h",
++      "views/cove/cove_name_dialog.cc",
++      "views/cove/cove_name_dialog.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -83,6 +83,15 @@
+   void Rebuild();
+   void RebuildSpaceFooter();
+   void ShowLibraryMenu();
++  void BeginRename(int kind, std::string id);
++  void RenameItem(int kind,
++                  std::string space_id,
++                  std::string id,
++                  std::u16string name);
++  void RemoveFolder(std::string id);
++  void RunContextMenu(views::View* source,
++                      const gfx::Point& point,
++                      ui::mojom::MenuSourceType source_type);
+   void PinActivePage();
+   void AddFolder();
+   void ToggleFolder(std::string folder_id);
+@@ -106,6 +115,10 @@
+   views::ViewTracker space_footer_;
+   base::RepeatingClosure toggle_favorite_;
+   base::RepeatingCallback<bool()> is_current_favorite_;
++  std::map<const views::View*, std::string> row_folder_ids_;
++  std::map<const views::View*, std::string> row_space_ids_;
++  std::string context_folder_id_;
++  std::string context_space_id_;
+   std::string context_pin_id_;
+   std::vector<std::string> menu_folder_ids_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -12,6 +12,7 @@
+ #include "base/auto_reset.h"
+ #include "base/functional/bind.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
+@@ -21,6 +22,7 @@
+ #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/cove/cove_name_dialog.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/prefs/scoped_user_pref_update.h"
+ #include "components/tabs/public/split_tab_collection.h"
+@@ -61,6 +63,10 @@
+ constexpr int kNewFolderCommand = 3;
+ constexpr int kNewSpaceCommand = 4;
+ constexpr int kToggleFavoriteCommand = 5;
++constexpr int kRenamePinCommand = 6;
++constexpr int kRenameFolderCommand = 7;
++constexpr int kRemoveFolderCommand = 8;
++constexpr int kRenameSpaceCommand = 9;
+ constexpr int kMovePinCommandBase = 100;
+ 
+ base::DictValue* FindSpace(base::DictValue& root, std::string_view id) {
+@@ -277,6 +283,7 @@
+ 
+ void CoveSidebarLibraryView::Rebuild() {
+   row_pin_ids_.clear();
++  row_folder_ids_.clear();
+   RemoveAllChildViews();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+@@ -330,6 +337,8 @@
+                       base::UTF8ToUTF16(*folder->FindString("name")),
+                   base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
+                                       weak_factory_.GetWeakPtr(), folder_id));
++      folder_row->set_context_menu_controller(this);
++      row_folder_ids_[folder_row] = folder_id;
+       folder_row->SetTooltipText(collapsed ? u"Expand folder"
+                                            : u"Collapse folder");
+       if (collapsed || !pins) {
+@@ -380,6 +389,7 @@
+   if (!footer) {
+     return;
+   }
++  row_space_ids_.clear();
+   footer->RemoveAllChildViews();
+   auto* menu =
+       MakeRow(footer, u"⋯",
+@@ -409,6 +419,8 @@
+                                        : ui::kColorLabelForegroundSecondary);
+       dot->GetViewAccessibility().SetName(name);
+       dot->SetTooltipText(name);
++      dot->set_context_menu_controller(this);
++      row_space_ids_[dot] = id;
+     }
+   }
+   auto* add = MakeRow(footer, u"+",
+@@ -867,10 +879,125 @@
+   Rebuild();
+ }
+ 
++void CoveSidebarLibraryView::BeginRename(int kind, std::string id) {
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const base::ListValue* items = root.FindList("spaces");
++  if (kind != kRenameSpaceCommand) {
++    const auto* space = FindSpace(root, active_space_id_);
++    items =
++        space ? space->FindList(kind == kRenamePinCommand ? "pins" : "folders")
++              : nullptr;
++  }
++  if (!items) {
++    return;
++  }
++  for (const auto& value : *items) {
++    const auto* item = value.GetIfDict();
++    if (!item || !item->FindString("id") || *item->FindString("id") != id) {
++      continue;
++    }
++    const auto* current =
++        item->FindString(kind == kRenamePinCommand ? "title" : "name");
++    ShowCoveNameDialog(this,
++                       kind == kRenameSpaceCommand    ? u"Rename Space"
++                       : kind == kRenameFolderCommand ? u"Rename Folder"
++                                                      : u"Rename Pin",
++                       current ? base::UTF8ToUTF16(*current) : std::u16string(),
++                       base::BindOnce(&CoveSidebarLibraryView::RenameItem,
++                                      weak_factory_.GetWeakPtr(), kind,
++                                      active_space_id_, std::move(id)));
++    return;
++  }
++}
++
++void CoveSidebarLibraryView::RenameItem(int kind,
++                                        std::string space_id,
++                                        std::string id,
++                                        std::u16string name) {
++  std::u16string trimmed;
++  base::TrimWhitespace(name, base::TRIM_ALL, &trimmed);
++  if (trimmed.empty()) {
++    return;
++  }
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  base::ListValue* items = update->FindList("spaces");
++  if (kind != kRenameSpaceCommand) {
++    auto* space = FindSpace(*update, space_id);
++    items =
++        space ? space->FindList(kind == kRenamePinCommand ? "pins" : "folders")
++              : nullptr;
++  }
++  if (!items) {
++    return;
++  }
++  for (auto& value : *items) {
++    auto* item = value.GetIfDict();
++    if (item && item->FindString("id") && *item->FindString("id") == id) {
++      item->Set(kind == kRenamePinCommand ? "title" : "name",
++                base::UTF16ToUTF8(trimmed));
++      return;
++    }
++  }
++}
++
++void CoveSidebarLibraryView::RemoveFolder(std::string id) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  auto* space = FindSpace(*update, active_space_id_);
++  auto* folders = space ? space->FindList("folders") : nullptr;
++  if (!folders) {
++    return;
++  }
++  if (auto* pins = space->FindList("pins")) {
++    for (auto& value : *pins) {
++      auto* pin = value.GetIfDict();
++      if (pin && pin->FindString("folder") &&
++          *pin->FindString("folder") == id) {
++        pin->Set("folder", "");
++      }
++    }
++  }
++  folders->EraseIf([&id](const base::Value& value) {
++    const auto* folder = value.GetIfDict();
++    return folder && folder->FindString("id") &&
++           *folder->FindString("id") == id;
++  });
++}
++
++void CoveSidebarLibraryView::RunContextMenu(
++    views::View* source,
++    const gfx::Point& point,
++    ui::mojom::MenuSourceType source_type) {
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++  menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
++                          gfx::Rect(point, gfx::Size()),
++                          views::MenuAnchorPosition::kTopLeft, source_type);
++}
++
+ void CoveSidebarLibraryView::ShowContextMenuForViewImpl(
+     views::View* source,
+     const gfx::Point& point,
+     ui::mojom::MenuSourceType source_type) {
++  if (const auto folder = row_folder_ids_.find(source);
++      folder != row_folder_ids_.end()) {
++    context_folder_id_ = folder->second;
++    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kRenameFolderCommand, u"Rename Folder");
++    menu_model_->AddItem(kRemoveFolderCommand, u"Remove Folder");
++    RunContextMenu(source, point, source_type);
++    return;
++  }
++  if (const auto space = row_space_ids_.find(source);
++      space != row_space_ids_.end()) {
++    context_space_id_ = space->second;
++    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space");
++    RunContextMenu(source, point, source_type);
++    return;
++  }
+   const auto found = row_pin_ids_.find(source);
+   if (found == row_pin_ids_.end()) {
+     return;
+@@ -881,6 +1008,7 @@
+   }
+   menu_folder_ids_.clear();
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kRenamePinCommand, u"Rename Pin");
+   menu_model_->AddItem(kRemovePinCommand, u"Remove pin");
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+@@ -909,6 +1037,22 @@
+ END_METADATA
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kRenamePinCommand) {
++    BeginRename(command_id, context_pin_id_);
++    return;
++  }
++  if (command_id == kRenameFolderCommand) {
++    BeginRename(command_id, context_folder_id_);
++    return;
++  }
++  if (command_id == kRenameSpaceCommand) {
++    BeginRename(command_id, context_space_id_);
++    return;
++  }
++  if (command_id == kRemoveFolderCommand) {
++    RemoveFolder(context_folder_id_);
++    return;
++  }
+   if (command_id == kToggleFavoriteCommand && toggle_favorite_) {
+     toggle_favorite_.Run();
+     return;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -438,7 +438,7 @@
+   const gfx::Size button_size =
+       top_button_container_->GetPreferredSize(button_available_size);
+   const bool show_search = location_view_ && !state_controller_->IsCollapsed();
+-  constexpr int kSearchFieldHeight = 68;
++  constexpr int kSearchFieldHeight = 36;
+   const int search_block =
+       show_search ? kSearchFieldHeight + vertical_padding : 0;
+   const gfx::Size tab_strip_size =

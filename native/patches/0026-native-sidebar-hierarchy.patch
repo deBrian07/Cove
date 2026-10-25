@@ -1,0 +1,354 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -19,6 +19,7 @@
+ #include "ui/menus/simple_menu_model.h"
+ #include "ui/views/context_menu_controller.h"
+ #include "ui/views/view.h"
++#include "ui/views/view_tracker.h"
+ 
+ class BrowserWindowInterface;
+ class GURL;
+@@ -45,6 +46,7 @@
+   ~CoveSidebarLibraryView() override;
+ 
+   void SetCollapsed(bool collapsed);
++  std::unique_ptr<views::View> CreateSpaceFooter();
+ 
+   // CoveSpaceCloseHandler:
+   bool HasPendingTabs() const override;
+@@ -76,6 +78,8 @@
+   void SaveActiveSnapshot();
+   void EnsureDefaultLibrary();
+   void Rebuild();
++  void RebuildSpaceFooter();
++  void ShowLibraryMenu();
+   void PinActivePage();
+   void AddFolder();
+   void ToggleFolder(std::string folder_id);
+@@ -96,6 +100,7 @@
+   bool syncing_pins_ = false;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<const views::View*, std::string> row_pin_ids_;
++  views::ViewTracker space_footer_;
+   std::string context_pin_id_;
+   std::vector<std::string> menu_folder_ids_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -41,6 +41,7 @@
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/text_constants.h"
+ #include "ui/menus/simple_menu_model.h"
++#include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/background.h"
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
+@@ -56,6 +57,9 @@
+ constexpr char kCoveSidebarPref[] = "cove.sidebar";
+ 
+ constexpr int kRemovePinCommand = 1;
++constexpr int kPinCurrentPageCommand = 2;
++constexpr int kNewFolderCommand = 3;
++constexpr int kNewSpaceCommand = 4;
+ constexpr int kMovePinCommandBase = 100;
+ 
+ base::DictValue* FindSpace(base::DictValue& root, std::string_view id) {
+@@ -125,7 +129,7 @@
+       views::BoxLayout::CrossAxisAlignment::kStretch);
+   // The sidebar paints on a non-opaque layer. An opaque background keeps text
+   // rendering checks from failing in that layer.
+-  SetBackground(views::CreateSolidBackground(SkColorSetRGB(0x3a, 0x36, 0x4a)));
++  SetBackground(views::CreateSolidBackground(ui::kColorFrameActive));
+   EnsureDefaultLibrary();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+@@ -356,41 +360,80 @@
+     }
+   }
+ 
+-  auto* actions = AddChildView(std::make_unique<views::View>());
+-  actions->SetLayoutManager(std::make_unique<views::BoxLayout>(
+-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 0), 4));
+-  MakeRow(actions, u"Pin this page",
+-          base::BindRepeating(&CoveSidebarLibraryView::PinActivePage,
+-                              weak_factory_.GetWeakPtr()));
+-  MakeRow(actions, u"New folder",
+-          base::BindRepeating(&CoveSidebarLibraryView::AddFolder,
+-                              weak_factory_.GetWeakPtr()));
+-  auto* chips = AddChildView(std::make_unique<views::View>());
+-  chips->SetLayoutManager(std::make_unique<views::BoxLayout>(
+-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
+-  const base::ListValue* spaces = root.FindList("spaces");
+-  if (spaces) {
+-    for (const base::Value& space_value : *spaces) {
+-      const base::DictValue* item = space_value.GetIfDict();
+-      if (!item || !item->FindString("id") || !item->FindString("name")) {
++  RebuildSpaceFooter();
++  InvalidateLayout();
++}
++
++std::unique_ptr<views::View> CoveSidebarLibraryView::CreateSpaceFooter() {
++  auto footer = std::make_unique<views::View>();
++  auto* layout = footer->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(2, 0), 4));
++  layout->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kCenter);
++  space_footer_.SetView(footer.get());
++  RebuildSpaceFooter();
++  return footer;
++}
++
++void CoveSidebarLibraryView::RebuildSpaceFooter() {
++  auto* footer = space_footer_.view();
++  if (!footer) {
++    return;
++  }
++  footer->RemoveAllChildViews();
++  auto* menu =
++      MakeRow(footer, u"⋯",
++              base::BindRepeating(&CoveSidebarLibraryView::ShowLibraryMenu,
++                                  weak_factory_.GetWeakPtr()));
++  menu->SetPreferredSize(gfx::Size(28, 28));
++  menu->GetViewAccessibility().SetName(u"Sidebar options");
++  menu->SetTooltipText(u"Sidebar options");
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  if (const auto* spaces = root.FindList("spaces")) {
++    for (const auto& value : *spaces) {
++      const auto* space = value.GetIfDict();
++      if (!space || !space->FindString("id") || !space->FindString("name")) {
+         continue;
+       }
+-      const std::string id = *item->FindString("id");
+-      auto* chip =
+-          MakeRow(chips, base::UTF8ToUTF16(*item->FindString("name")),
++      const std::string id = *space->FindString("id");
++      const auto name = base::UTF8ToUTF16(*space->FindString("name"));
++      const bool active = id == active_space_id_;
++      auto* dot =
++          MakeRow(footer, active ? u"●" : u"•",
+                   base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+                                       weak_factory_.GetWeakPtr(), id));
+-      if (active_id && id == *active_id) {
+-        chip->SetEnabledTextColors(ui::kColorLabelForeground);
+-        chip->SetBackground(views::CreateRoundedRectBackground(
+-            SkColorSetARGB(0x38, 0xff, 0xff, 0xff), 6));
+-      }
+-    }
+-  }
+-  MakeRow(chips, u"+",
+-          base::BindRepeating(&CoveSidebarLibraryView::AddSpace,
+-                              weak_factory_.GetWeakPtr()));
+-  InvalidateLayout();
++      dot->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++      dot->SetPreferredSize(gfx::Size(24, 28));
++      dot->SetEnabledTextColors(active ? ui::kColorLabelForeground
++                                       : ui::kColorLabelForegroundSecondary);
++      dot->GetViewAccessibility().SetName(name);
++      dot->SetTooltipText(name);
++    }
++  }
++  auto* add = MakeRow(footer, u"+",
++                      base::BindRepeating(&CoveSidebarLibraryView::AddSpace,
++                                          weak_factory_.GetWeakPtr()));
++  add->SetPreferredSize(gfx::Size(28, 28));
++  add->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  add->GetViewAccessibility().SetName(u"New Space");
++  add->SetTooltipText(u"New Space");
++  footer->InvalidateLayout();
++}
++
++void CoveSidebarLibraryView::ShowLibraryMenu() {
++  auto* footer = space_footer_.view();
++  if (!footer || !footer->GetWidget()) {
++    return;
++  }
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kPinCurrentPageCommand, u"Pin this page");
++  menu_model_->AddItem(kNewFolderCommand, u"New folder");
++  menu_model_->AddItem(kNewSpaceCommand, u"New Space");
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++  menu_runner_->RunMenuAt(
++      footer->GetWidget(), nullptr, footer->GetBoundsInScreen(),
++      views::MenuAnchorPosition::kTopLeft, ui::mojom::MenuSourceType::kNone);
+ }
+ 
+ void CoveSidebarLibraryView::PinActivePage() {
+@@ -852,6 +895,18 @@
+ END_METADATA
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kPinCurrentPageCommand) {
++    PinActivePage();
++    return;
++  }
++  if (command_id == kNewFolderCommand) {
++    AddFolder();
++    return;
++  }
++  if (command_id == kNewSpaceCommand) {
++    AddSpace();
++    return;
++  }
+   if (command_id == kRemovePinCommand) {
+     RemovePin(context_pin_id_);
+     return;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+@@ -10,6 +10,7 @@
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/unload_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/sessions/core/tab_restore_service.h"
+@@ -19,6 +20,7 @@
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "ui/base/window_open_disposition.h"
++#include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/test/button_test_api.h"
+ #include "ui/views/view_utils.h"
+@@ -27,7 +29,8 @@
+ 
+ views::LabelButton* FindButton(views::View* view, std::u16string_view text) {
+   if (auto* button = views::AsViewClass<views::LabelButton>(view);
+-      button && button->GetText() == text) {
++      button && (button->GetText() == text ||
++                 button->GetViewAccessibility().GetCachedName() == text)) {
+     return button;
+   }
+   for (auto* child : view->children()) {
+@@ -48,7 +51,8 @@
+   void Switch(BrowserWindowInterface* window, std::u16string_view name) {
+     auto* library = Library(window);
+     ASSERT_TRUE(library);
+-    auto* button = FindButton(library, name);
++    auto* button =
++        FindButton(BrowserView::GetBrowserViewForBrowser(window), name);
+     ASSERT_TRUE(button);
+     views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
+   }
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -265,6 +265,7 @@
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
+   raw_ptr<CoveLocationView> location_view_ = nullptr;
+   raw_ptr<CoveSidebarLibraryView> library_view_ = nullptr;
++  raw_ptr<views::View> space_footer_ = nullptr;
+   raw_ptr<views::Separator> top_button_separator_ = nullptr;
+   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
+   raw_ptr<views::View> gemini_button_ = nullptr;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -3,9 +3,6 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+-
+-#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+-#include "chrome/browser/ui/views/cove/cove_location_view.h"
+ 
+ #include <algorithm>
+ #include <optional>
+@@ -39,6 +36,8 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
++#include "chrome/browser/ui/views/cove/cove_location_view.h"
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/custom_corners_background.h"
+@@ -129,8 +128,8 @@
+       AddChildView(std::make_unique<VerticalTabStripTopContainer>(
+           state_controller_, root_action_item, browser_view->browser()));
+ 
+-  location_view_ = AddChildView(
+-      std::make_unique<CoveLocationView>(browser_view->browser()));
++  location_view_ =
++      AddChildView(std::make_unique<CoveLocationView>(browser_view->browser()));
+ 
+   auto content_area_view = std::make_unique<views::FlexLayoutView>();
+   content_area_view->SetOrientation(views::LayoutOrientation::kVertical);
+@@ -149,6 +148,7 @@
+ 
+   library_view_ = content_area_view_->AddChildView(
+       std::make_unique<CoveSidebarLibraryView>(browser_view->browser()));
++  space_footer_ = AddChildView(library_view_->CreateSpaceFooter());
+ 
+   // --------------
+   // Views that go into the content area below
+@@ -175,7 +175,7 @@
+   bottom_button_container_->SetProperty(
+       views::kFlexBehaviorKey,
+       views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+-                               views::MaximumFlexSizeRule::kUnbounded));
++                               views::MaximumFlexSizeRule::kPreferred));
+   bottom_button_container_->SetProperty(
+       views::kMarginsKey,
+       gfx::Insets::TLBR(
+@@ -237,10 +237,14 @@
+ }
+ 
+ void VerticalTabStripRegionView::FocusLocation() {
+-  if (state_controller_->IsCollapsed()) RequestCollapse(false);
++  if (state_controller_->IsCollapsed()) {
++    RequestCollapse(false);
++  }
+   location_view_->SetVisible(true);
+   InvalidateLayout();
+-  if (GetWidget()) GetWidget()->LayoutRootViewIfNecessary();
++  if (GetWidget()) {
++    GetWidget()->LayoutRootViewIfNecessary();
++  }
+   location_view_->FocusLocation();
+ }
+ 
+@@ -422,9 +426,8 @@
+   }
+   const gfx::Size button_size =
+       top_button_container_->GetPreferredSize(button_available_size);
+-  const bool show_search =
+-      location_view_ && !state_controller_->IsCollapsed();
+-  constexpr int kSearchFieldHeight = 64;
++  const bool show_search = location_view_ && !state_controller_->IsCollapsed();
++  constexpr int kSearchFieldHeight = 68;
+   const int search_block =
+       show_search ? kSearchFieldHeight + vertical_padding : 0;
+   const gfx::Size tab_strip_size =
+@@ -447,6 +450,19 @@
+ 
+   // There's a bit of padding at the bottom of the tabstrip.
+   available.Inset(gfx::Insets::TLBR(0, 0, vertical_padding, 0));
++
++  const bool show_footer = space_footer_ && !state_controller_->IsCollapsed();
++  constexpr int kFooterHeight = 36;
++  layout.child_layouts.push_back(
++      {.child_view = space_footer_.get(),
++       .visible = show_footer,
++       .bounds = gfx::Rect(
++           horizontal_padding, std::max(0, available.bottom() - kFooterHeight),
++           std::max(0, available.width() - 2 * horizontal_padding),
++           show_footer ? kFooterHeight : 0)});
++  if (show_footer) {
++    available.Inset(gfx::Insets::TLBR(0, 0, kFooterHeight + 4, 0));
++  }
+ 
+   // Lay out the top button container.
+   layout.child_layouts.push_back(
+@@ -891,6 +907,6 @@
+   views::View* const content_parent =
+       content_area_view_ ? content_area_view_.get() : this;
+   std::optional<size_t> separator_index =
+-      content_parent->GetIndexOf(top_button_separator_);
++      content_parent->GetIndexOf(bottom_button_container_);
+   CHECK(separator_index.has_value());
+   content_parent->AddChildViewAt(std::move(view), separator_index.value() + 1);

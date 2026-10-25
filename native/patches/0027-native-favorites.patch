@@ -1,0 +1,438 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.h b/chrome/browser/ui/views/cove/cove_favorites_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.h
+@@ -0,0 +1,76 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_FAVORITES_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_FAVORITES_VIEW_H_
++
++#include <map>
++#include <memory>
++#include <string>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/task/cancelable_task_tracker.h"
++#include "components/prefs/pref_change_registrar.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/menus/simple_menu_model.h"
++#include "ui/views/context_menu_controller.h"
++#include "ui/views/view.h"
++
++class BrowserWindowInterface;
++class GURL;
++
++namespace favicon_base {
++struct FaviconImageResult;
++}  // namespace favicon_base
++
++namespace views {
++class MenuRunner;
++}  // namespace views
++
++// Profile-wide favorite pages shown in the Cove sidebar.
++class CoveFavoritesView : public views::View,
++                          public views::ContextMenuController,
++                          public ui::SimpleMenuModel::Delegate {
++  METADATA_HEADER(CoveFavoritesView, views::View)
++
++ public:
++  explicit CoveFavoritesView(BrowserWindowInterface* browser);
++  CoveFavoritesView(const CoveFavoritesView&) = delete;
++  CoveFavoritesView& operator=(const CoveFavoritesView&) = delete;
++  ~CoveFavoritesView() override;
++
++  void SetCollapsed(bool collapsed);
++  void ToggleCurrentPage();
++  bool IsCurrentPageFavorite() const;
++  base::WeakPtr<CoveFavoritesView> GetWeakPtr();
++
++  // views::ContextMenuController:
++  void ShowContextMenuForViewImpl(
++      views::View* source,
++      const gfx::Point& point,
++      ui::mojom::MenuSourceType source_type) override;
++
++  // ui::SimpleMenuModel::Delegate:
++  void ExecuteCommand(int command_id, int event_flags) override;
++
++ private:
++  void Rebuild();
++  void OpenFavorite(const GURL& url);
++  void RemoveFavorite(const std::string& url);
++  void OnFaviconLoaded(const GURL& url,
++                       const favicon_base::FaviconImageResult& result);
++
++  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
++  PrefChangeRegistrar pref_change_registrar_;
++  base::CancelableTaskTracker favicon_task_tracker_;
++  bool collapsed_ = false;
++  std::map<views::View*, std::string> row_urls_;
++  std::string context_favorite_url_;
++  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<views::MenuRunner> menu_runner_;
++  base::WeakPtrFactory<CoveFavoritesView> weak_factory_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_FAVORITES_VIEW_H_
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -0,0 +1,352 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_favorites_view.h"
++
++#include <algorithm>
++#include <memory>
++#include <string>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/values.h"
++#include "chrome/browser/favicon/favicon_service_factory.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "components/favicon/content/content_favicon_driver.h"
++#include "components/favicon/core/favicon_service.h"
++#include "components/favicon_base/favicon_types.h"
++#include "components/keyed_service/core/service_access_type.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "components/vector_icons/vector_icons.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/mojom/menu_source_type.mojom.h"
++#include "ui/base/page_transition_types.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/color/color_id.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/size.h"
++#include "ui/gfx/image/image.h"
++#include "ui/menus/simple_menu_model.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/layout/table_layout.h"
++#include "url/gurl.h"
++
++namespace {
++
++constexpr char kCoveSidebarPref[] = "cove.sidebar";
++constexpr int kRemoveFavoriteCommand = 1;
++constexpr int kColumns = 3;
++constexpr int kTileWidth = 72;
++constexpr int kTileHeight = 48;
++constexpr int kColumnGap = 4;
++constexpr int kRowGap = 4;
++constexpr int kIconSize = 20;
++
++bool IsFavoriteUrl(const GURL& url) {
++  return url.is_valid() && (url.SchemeIsHTTPOrHTTPS());
++}
++
++std::u16string FavoriteTitle(const base::DictValue& favorite) {
++  const std::string* title = favorite.FindString("title");
++  const std::string* url = favorite.FindString("url");
++  if (title && !title->empty()) {
++    return base::UTF8ToUTF16(*title);
++  }
++  return url ? base::UTF8ToUTF16(GURL(*url).host()) : std::u16string();
++}
++
++class FavoriteTile : public views::LabelButton {
++  METADATA_HEADER(FavoriteTile, views::LabelButton)
++
++ public:
++  explicit FavoriteTile(PressedCallback callback)
++      : views::LabelButton(std::move(callback)) {
++    SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    SetImageLabelSpacing(4);
++    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 5)));
++    SetFocusRingCornerRadius(12);
++    SetPreferredSize(gfx::Size(kTileWidth, kTileHeight));
++    SetImageModel(STATE_NORMAL,
++                  ui::ImageModel::FromVectorIcon(vector_icons::kGlobeIcon,
++                                                 ui::kColorIcon, kIconSize));
++    SetBackground(views::CreateRoundedRectBackground(
++        kColorLocationBarBackground, 12));
++  }
++
++ protected:
++  void StateChanged(ButtonState old_state) override {
++    views::LabelButton::StateChanged(old_state);
++    if (GetState() == STATE_HOVERED || GetState() == STATE_PRESSED) {
++      SetBackground(views::CreateRoundedRectBackground(
++          kColorLocationBarBackgroundHovered, 12));
++    } else {
++      SetBackground(views::CreateRoundedRectBackground(
++          kColorLocationBarBackground, 12));
++    }
++  }
++};
++
++BEGIN_METADATA(FavoriteTile)
++END_METADATA
++
++}  // namespace
++
++CoveFavoritesView::CoveFavoritesView(BrowserWindowInterface* browser)
++    : browser_(browser) {
++  auto layout = std::make_unique<views::TableLayout>();
++  layout->AddColumn(views::LayoutAlignment::kStretch,
++                    views::LayoutAlignment::kStretch,
++                    views::TableLayout::kFixedSize,
++                    views::TableLayout::ColumnSize::kFixed, kTileWidth,
++                    kTileWidth)
++      .AddPaddingColumn(views::TableLayout::kFixedSize, kColumnGap)
++      .AddColumn(views::LayoutAlignment::kStretch,
++                 views::LayoutAlignment::kStretch,
++                 views::TableLayout::kFixedSize,
++                 views::TableLayout::ColumnSize::kFixed, kTileWidth,
++                 kTileWidth)
++      .AddPaddingColumn(views::TableLayout::kFixedSize, kColumnGap)
++      .AddColumn(views::LayoutAlignment::kStretch,
++                 views::LayoutAlignment::kStretch,
++                 views::TableLayout::kFixedSize,
++                 views::TableLayout::ColumnSize::kFixed, kTileWidth,
++                 kTileWidth);
++  SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(2, 4)));
++  SetLayoutManager(std::move(layout));
++  Rebuild();
++  pref_change_registrar_.Init(browser_->GetProfile()->GetPrefs());
++  pref_change_registrar_.Add(
++      kCoveSidebarPref,
++      base::BindRepeating(&CoveFavoritesView::Rebuild,
++                          weak_factory_.GetWeakPtr()));
++}
++
++CoveFavoritesView::~CoveFavoritesView() = default;
++
++base::WeakPtr<CoveFavoritesView> CoveFavoritesView::GetWeakPtr() {
++  return weak_factory_.GetWeakPtr();
++}
++
++void CoveFavoritesView::SetCollapsed(bool collapsed) {
++  collapsed_ = collapsed;
++  Rebuild();
++}
++
++bool CoveFavoritesView::IsCurrentPageFavorite() const {
++  auto* tab = browser_->GetTabStripModel()->GetActiveTab();
++  if (!tab || !tab->GetContents()) {
++    return false;
++  }
++  const std::string current_url = tab->GetContents()->GetVisibleURL().spec();
++  const base::ListValue* favorites =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref)
++          .FindList("favorites");
++  if (!favorites) {
++    return false;
++  }
++  for (const base::Value& value : *favorites) {
++    const base::DictValue* favorite = value.GetIfDict();
++    const std::string* url = favorite ? favorite->FindString("url") : nullptr;
++    if (url && *url == current_url) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void CoveFavoritesView::ToggleCurrentPage() {
++  auto* tab = browser_->GetTabStripModel()->GetActiveTab();
++  if (!tab || !tab->GetContents()) {
++    return;
++  }
++  content::WebContents* contents = tab->GetContents();
++  const GURL url = contents->GetVisibleURL();
++  if (!IsFavoriteUrl(url)) {
++    return;
++  }
++  const std::string spec = url.spec();
++  if (IsCurrentPageFavorite()) {
++    RemoveFavorite(spec);
++    return;
++  }
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  base::ListValue* favorites = update->EnsureList("favorites");
++  base::DictValue favorite;
++  favorite.Set("url", spec);
++  favorite.Set("title", base::UTF16ToUTF8(contents->GetTitle()));
++  favorites->Append(std::move(favorite));
++}
++
++void CoveFavoritesView::Rebuild() {
++  favicon_task_tracker_.TryCancelAll();
++  row_urls_.clear();
++  RemoveAllChildViews();
++  const base::ListValue* favorites =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref)
++          .FindList("favorites");
++  if (collapsed_ || !favorites || favorites->empty()) {
++    SetVisible(false);
++    return;
++  }
++  SetVisible(true);
++
++  auto* layout = static_cast<views::TableLayout*>(GetLayoutManager());
++  layout->RemoveRows(layout->NumRows());
++  const size_t count = std::count_if(
++      favorites->begin(), favorites->end(), [](const base::Value& value) {
++        const base::DictValue* favorite = value.GetIfDict();
++        const std::string* url = favorite ? favorite->FindString("url") : nullptr;
++        return url && IsFavoriteUrl(GURL(*url));
++      });
++  if (count == 0) {
++    SetVisible(false);
++    return;
++  }
++  const size_t rows = (count + kColumns - 1) / kColumns;
++  for (size_t row = 0; row < rows; ++row) {
++    layout->AddRows(1, views::TableLayout::kFixedSize, kTileHeight);
++    if (row + 1 < rows) {
++      layout->AddPaddingRow(views::TableLayout::kFixedSize, kRowGap);
++    }
++  }
++
++  for (const base::Value& value : *favorites) {
++    const base::DictValue* favorite = value.GetIfDict();
++    const std::string* url_string =
++        favorite ? favorite->FindString("url") : nullptr;
++    if (!url_string || !IsFavoriteUrl(GURL(*url_string))) {
++      continue;
++    }
++    const GURL url(*url_string);
++    auto* tile = AddChildView(std::make_unique<FavoriteTile>(
++        base::BindRepeating(&CoveFavoritesView::OpenFavorite,
++                            weak_factory_.GetWeakPtr(), url)));
++    tile->SetTooltipText(FavoriteTitle(*favorite) + u" — " +
++                         base::UTF8ToUTF16(*url_string));
++    tile->GetViewAccessibility().SetName(
++        FavoriteTitle(*favorite) + u", " + base::UTF8ToUTF16(*url_string));
++    tile->set_context_menu_controller(this);
++    row_urls_[tile] = *url_string;
++
++    bool has_open_favicon = false;
++    TabStripModel* model = browser_->GetTabStripModel();
++    for (int tab_index = 0; tab_index < model->count(); ++tab_index) {
++      content::WebContents* contents = model->GetWebContentsAt(tab_index);
++      if (!contents || contents->GetVisibleURL() != url) {
++        continue;
++      }
++      auto* driver = favicon::ContentFaviconDriver::FromWebContents(contents);
++      if (driver && driver->FaviconIsValid()) {
++        const gfx::Image image = driver->GetFavicon();
++        if (!image.IsEmpty()) {
++          tile->SetImageModel(
++              views::Button::STATE_NORMAL,
++              ui::ImageModel::FromImage(image));
++          has_open_favicon = true;
++        }
++      }
++      break;
++    }
++    if (!has_open_favicon) {
++      favicon::FaviconService* favicon_service =
++          FaviconServiceFactory::GetForProfile(
++              browser_->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
++      if (favicon_service) {
++        favicon_service->GetFaviconImageForPageURL(
++            url,
++            base::BindOnce(&CoveFavoritesView::OnFaviconLoaded,
++                           weak_factory_.GetWeakPtr(), url),
++            &favicon_task_tracker_);
++      }
++    }
++  }
++  InvalidateLayout();
++}
++
++
++void CoveFavoritesView::OnFaviconLoaded(
++    const GURL& url,
++    const favicon_base::FaviconImageResult& result) {
++  if (result.image.IsEmpty()) {
++    return;
++  }
++  for (const auto& [view, favorite_url] : row_urls_) {
++    if (favorite_url == url.spec()) {
++      static_cast<views::LabelButton*>(view)->SetImageModel(
++          views::Button::STATE_NORMAL, ui::ImageModel::FromImage(result.image));
++      return;
++    }
++  }
++}
++
++void CoveFavoritesView::OpenFavorite(const GURL& url) {
++  TabStripModel* model = browser_->GetTabStripModel();
++  for (int i = 0; i < model->count(); ++i) {
++    content::WebContents* contents = model->GetWebContentsAt(i);
++    if (contents && contents->GetVisibleURL() == url) {
++      model->ActivateTabAt(i);
++      return;
++    }
++  }
++  NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  Navigate(&params);
++}
++
++void CoveFavoritesView::RemoveFavorite(const std::string& url) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  base::ListValue* favorites = update->FindList("favorites");
++  if (!favorites) {
++    return;
++  }
++  favorites->EraseIf([&url](const base::Value& value) {
++    const base::DictValue* favorite = value.GetIfDict();
++    const std::string* existing =
++        favorite ? favorite->FindString("url") : nullptr;
++    return existing && *existing == url;
++  });
++}
++
++void CoveFavoritesView::ShowContextMenuForViewImpl(
++    views::View* source,
++    const gfx::Point& point,
++    ui::mojom::MenuSourceType source_type) {
++  const auto it = row_urls_.find(source);
++  if (it == row_urls_.end() || !source->GetWidget()) {
++    return;
++  }
++  context_favorite_url_ = it->second;
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kRemoveFavoriteCommand, u"Remove favorite");
++  menu_runner_ = std::make_unique<views::MenuRunner>(
++      menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
++  menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
++                          gfx::Rect(point, gfx::Size()),
++                          views::MenuAnchorPosition::kTopLeft, source_type);
++}
++
++void CoveFavoritesView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kRemoveFavoriteCommand && !context_favorite_url_.empty()) {
++    RemoveFavorite(context_favorite_url_);
++  }
++}
++
++BEGIN_METADATA(CoveFavoritesView)
++END_METADATA

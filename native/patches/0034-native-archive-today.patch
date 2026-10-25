@@ -1,0 +1,279 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -63,6 +63,10 @@
+ 
+   // TabStripModelObserver:
+   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
++  void OnTabStripModelChanged(
++      TabStripModel* tab_strip_model,
++      const TabStripModelChange& change,
++      const TabStripSelectionChange& selection) override;
+ 
+   // views::ContextMenuController:
+   void ShowContextMenuForViewImpl(
+@@ -85,6 +89,9 @@
+   void Rebuild();
+   void RebuildSpaceFooter();
+   void ShowLibraryMenu();
++  bool HasArchivableTabs() const;
++  void ArchiveToday();
++  void UpdateArchiveButtonState();
+   void BeginRename(int kind, std::string id);
+   void RenameItem(int kind,
+                   std::string space_id,
+@@ -115,6 +122,7 @@
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<const views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
++  views::ViewTracker archive_button_;
+   base::RepeatingClosure toggle_favorite_;
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -31,6 +31,7 @@
+ #include "content/public/browser/web_contents.h"
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/models/image_model.h"
+ #include "ui/base/models/list_selection_model.h"
+ #include "ui/base/mojom/menu_source_type.mojom.h"
+ #include "ui/base/page_transition_types.h"
+@@ -42,6 +43,7 @@
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size.h"
+ #include "ui/gfx/text_constants.h"
++#include "ui/gfx/vector_icon_types.h"
+ #include "ui/menus/simple_menu_model.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/background.h"
+@@ -67,7 +69,77 @@
+ constexpr int kRenameFolderCommand = 7;
+ constexpr int kRemoveFolderCommand = 8;
+ constexpr int kRenameSpaceCommand = 9;
++constexpr int kArchiveTodayCommand = 10;
+ constexpr int kMovePinCommandBase = 100;
++
++// A native archive box, rendered at the same stroke weight as caption icons.
++constexpr gfx::PathElement kCoveArchivePath[] = {gfx::CANVAS_DIMENSIONS,
++                                                 20,
++                                                 gfx::STROKE,
++                                                 1.5f,
++                                                 gfx::ROUND_RECT,
++                                                 3,
++                                                 4,
++                                                 14,
++                                                 4,
++                                                 1,
++                                                 gfx::NEW_PATH,
++                                                 gfx::STROKE,
++                                                 1.5f,
++                                                 gfx::MOVE_TO,
++                                                 4.5f,
++                                                 8,
++                                                 gfx::LINE_TO,
++                                                 4.5f,
++                                                 16.5f,
++                                                 gfx::QUADRATIC_TO,
++                                                 4.5f,
++                                                 17.5f,
++                                                 5.5f,
++                                                 17.5f,
++                                                 gfx::LINE_TO,
++                                                 14.5f,
++                                                 17.5f,
++                                                 gfx::QUADRATIC_TO,
++                                                 15.5f,
++                                                 17.5f,
++                                                 15.5f,
++                                                 16.5f,
++                                                 gfx::LINE_TO,
++                                                 15.5f,
++                                                 8,
++                                                 gfx::NEW_PATH,
++                                                 gfx::STROKE,
++                                                 1.5f,
++                                                 gfx::MOVE_TO,
++                                                 8,
++                                                 11,
++                                                 gfx::LINE_TO,
++                                                 12,
++                                                 11};
++constexpr gfx::VectorIconRep kCoveArchiveReps[] = {{kCoveArchivePath}};
++constexpr gfx::VectorIcon kCoveArchiveIcon(kCoveArchiveReps, 1, "CoveArchive");
++
++std::vector<tabs::TabHandle> GetArchivableTabHandles(TabStripModel* model) {
++  std::vector<tabs::TabHandle> handles;
++  for (int index = 0; index < model->count(); ++index) {
++    tabs::TabInterface* tab = model->GetTabAtIndex(index);
++    if (!tab || tab->IsPinned() || !model->IsTabClosable(tab) ||
++        !tab->GetContents()) {
++      continue;
++    }
++    handles.push_back(tab->GetHandle());
++  }
++  // Spaces use one about:blank tab as their empty-canvas placeholder.
++  if (handles.size() == 1) {
++    tabs::TabInterface* only_tab = handles.front().Get();
++    if (only_tab && only_tab->GetContents() &&
++        only_tab->GetContents()->GetVisibleURL() == GURL("about:blank")) {
++      handles.clear();
++    }
++  }
++  return handles;
++}
+ 
+ base::DictValue* FindSpace(base::DictValue& root, std::string_view id) {
+   base::ListValue* spaces = root.FindList("spaces");
+@@ -250,6 +322,16 @@
+   Rebuild();
+ }
+ 
++void CoveSidebarLibraryView::OnTabStripModelChanged(
++    TabStripModel*,
++    const TabStripModelChange&,
++    const TabStripSelectionChange&) {
++  if (switching_space_ || closing_active_space_) {
++    return;
++  }
++  UpdateArchiveButtonState();
++}
++
+ void CoveSidebarLibraryView::EnsureDefaultLibrary() {
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   if (const auto* spaces = prefs->GetDict(kCoveSidebarPref).FindList("spaces");
+@@ -389,14 +471,23 @@
+     return;
+   }
+   row_space_ids_.clear();
++  archive_button_.SetView(nullptr);
+   footer->RemoveAllChildViews();
+-  auto* menu =
+-      MakeRow(footer, u"⋯",
+-              base::BindRepeating(&CoveSidebarLibraryView::ShowLibraryMenu,
++
++  auto* archive =
++      MakeRow(footer, u"",
++              base::BindRepeating(&CoveSidebarLibraryView::ArchiveToday,
+                                   weak_factory_.GetWeakPtr()));
+-  menu->SetPreferredSize(gfx::Size(28, 28));
+-  menu->GetViewAccessibility().SetName(u"Sidebar options");
+-  menu->SetTooltipText(u"Sidebar options");
++  archive->SetImageModel(
++      views::Button::STATE_NORMAL,
++      ui::ImageModel::FromVectorIcon(kCoveArchiveIcon, ui::kColorIcon, 16));
++  archive->SetPreferredSize(gfx::Size(28, 28));
++  archive->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  archive->GetViewAccessibility().SetName(u"Archive Today");
++  archive->SetTooltipText(u"Archive Today");
++  archive_button_.SetView(archive);
++  UpdateArchiveButtonState();
++
+   const auto& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+   if (const auto* spaces = root.FindList("spaces")) {
+@@ -422,13 +513,19 @@
+       row_space_ids_[dot] = id;
+     }
+   }
+-  auto* add = MakeRow(footer, u"+",
+-                      base::BindRepeating(&CoveSidebarLibraryView::AddSpace,
+-                                          weak_factory_.GetWeakPtr()));
++
++  auto* spacer = footer->AddChildView(std::make_unique<views::View>());
++  static_cast<views::BoxLayout*>(footer->GetLayoutManager())
++      ->SetFlexForView(spacer, 1);
++
++  auto* add =
++      MakeRow(footer, u"+",
++              base::BindRepeating(&CoveSidebarLibraryView::ShowLibraryMenu,
++                                  weak_factory_.GetWeakPtr()));
+   add->SetPreferredSize(gfx::Size(28, 28));
+   add->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+-  add->GetViewAccessibility().SetName(u"New Space");
+-  add->SetTooltipText(u"New Space");
++  add->GetViewAccessibility().SetName(u"New and sidebar options");
++  add->SetTooltipText(u"New and sidebar options");
+   footer->InvalidateLayout();
+ }
+ 
+@@ -439,12 +536,56 @@
+   is_current_favorite_ = std::move(is_current);
+ }
+ 
++bool CoveSidebarLibraryView::HasArchivableTabs() const {
++  return !GetArchivableTabHandles(browser_->GetTabStripModel()).empty();
++}
++
++void CoveSidebarLibraryView::UpdateArchiveButtonState() {
++  auto* button = archive_button_.view();
++  if (button) {
++    button->SetEnabled(HasArchivableTabs());
++  }
++}
++
++void CoveSidebarLibraryView::ArchiveToday() {
++  TabStripModel* model = browser_->GetTabStripModel();
++  const std::vector<tabs::TabHandle> handles = GetArchivableTabHandles(model);
++  if (handles.empty()) {
++    return;
++  }
++
++  // Insert a native blank tab before closing the final page so the browser
++  // window remains open. Normal close handling still runs for every archived
++  // tab, including beforeunload and recently-closed history.
++  if (handles.size() == static_cast<size_t>(model->count())) {
++    NavigateParams params(browser_, GURL("about:blank"),
++                          ui::PAGE_TRANSITION_TYPED);
++    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++    Navigate(&params);
++  }
++
++  for (const tabs::TabHandle& handle : handles) {
++    tabs::TabInterface* tab = handle.Get();
++    if (!tab || tab->IsPinned() || !model->IsTabClosable(tab)) {
++      continue;
++    }
++    const int index = model->GetIndexOfTab(tab);
++    if (index == TabStripModel::kNoTab) {
++      continue;
++    }
++    model->CloseWebContentsAt(index,
++                              TabCloseTypes::CLOSE_USER_GESTURE |
++                                  TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++  }
++}
++
+ void CoveSidebarLibraryView::ShowLibraryMenu() {
+   auto* footer = space_footer_.view();
+   if (!footer || !footer->GetWidget()) {
+     return;
+   }
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kArchiveTodayCommand, u"Archive Today");
+   if (toggle_favorite_) {
+     menu_model_->AddItem(kToggleFavoriteCommand,
+                          is_current_favorite_ && is_current_favorite_.Run()
+@@ -1122,6 +1263,9 @@
+ END_METADATA
+ 
+ bool CoveSidebarLibraryView::IsCommandIdEnabled(int command_id) const {
++  if (command_id == kArchiveTodayCommand) {
++    return HasArchivableTabs();
++  }
+   if (command_id != kToggleFavoriteCommand &&
+       command_id != kPinCurrentPageCommand) {
+     return true;
+@@ -1138,6 +1282,10 @@
+ }
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (command_id == kArchiveTodayCommand) {
++    ArchiveToday();
++    return;
++  }
+   if (command_id == kRenamePinCommand) {
+     BeginRename(command_id, context_pin_id_);
+     return;

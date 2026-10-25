@@ -1,0 +1,267 @@
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -7,6 +7,10 @@
+ 
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+ 
++namespace tabs {
++class TabInterface;
++}
++
+ // Window-scoped bridge between Spaces and the native browser unload pipeline.
+ // Inactive pages must rejoin the tab strip before beforeunload/session
+ // shutdown.
+@@ -14,6 +18,8 @@
+  public:
+   DECLARE_USER_DATA(CoveSpaceCloseHandler);
+   virtual ~CoveSpaceCloseHandler() = default;
++  // True only when closing this native tab leaves a valid persistent pin.
++  virtual bool RetainsPinForTab(const tabs::TabInterface* tab) const = 0;
+   virtual bool HasPendingTabs() const = 0;
+   virtual void PrepareForClose() = 0;
+   virtual void CancelClose() = 0;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -52,6 +52,7 @@
+                           base::RepeatingCallback<bool()> is_current);
+ 
+   // CoveSpaceCloseHandler:
++  bool RetainsPinForTab(const tabs::TabInterface* tab) const override;
+   bool HasPendingTabs() const override;
+   void PrepareForClose() override;
+   void CancelClose() override;
+@@ -70,6 +71,7 @@
+       ui::mojom::MenuSourceType source_type) override;
+ 
+   // ui::SimpleMenuModel::Delegate:
++  bool IsCommandIdEnabled(int command_id) const override;
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
+@@ -97,7 +99,7 @@
+   void ToggleFolder(std::string folder_id);
+   void AddSpace();
+   void SwitchSpace(std::string space_id);
+-  void OpenPin(const GURL& url);
++  void OpenPin(std::string pin_id, GURL url);
+   void RemovePin(const std::string& pin_id);
+   void MovePinToFolder(const std::string& pin_id, const std::string& folder_id);
+ 
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -316,7 +316,7 @@
+       auto* row = MakeRow(
+           this, base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+           base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+-                              weak_factory_.GetWeakPtr(), GURL(*url)));
++                              weak_factory_.GetWeakPtr(), *id, GURL(*url)));
+       row->set_context_menu_controller(this);
+       row->SetTooltipText(base::UTF8ToUTF16(*url));
+       row_pin_ids_[row] = *id;
+@@ -362,7 +362,7 @@
+             u"    " +
+                 base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+             base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+-                                weak_factory_.GetWeakPtr(), GURL(*url)));
++                                weak_factory_.GetWeakPtr(), *id, GURL(*url)));
+         row->set_context_menu_controller(this);
+         row_pin_ids_[row] = *id;
+         row->SetTooltipText(base::UTF8ToUTF16(*url));
+@@ -465,7 +465,11 @@
+ void CoveSidebarLibraryView::PinActivePage() {
+   TabStripModel* model = browser_->GetTabStripModel();
+   tabs::TabInterface* tab = model->GetActiveTab();
+-  if (!tab) {
++  if (!tab || !tab->GetContents()) {
++    return;
++  }
++  const GURL& url = tab->GetContents()->GetVisibleURL();
++  if (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIsFile()) {
+     return;
+   }
+   if (tab->IsPinned()) {
+@@ -780,14 +784,85 @@
+   closing_active_space_.reset();
+ }
+ 
+-void CoveSidebarLibraryView::OpenPin(const GURL& url) {
+-  if (!url.is_valid()) {
+-    return;
+-  }
++bool CoveSidebarLibraryView::RetainsPinForTab(
++    const tabs::TabInterface* tab) const {
++  if (!browser_ || browser_->GetProfile()->IsOffTheRecord() || !tab ||
++      !tab->IsPinned() || !tab->GetContents() ||
++      tab->GetBrowserWindowInterface() != browser_.get()) {
++    return false;
++  }
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const auto binding = tab_pin_ids_.find(tab->GetHandle().raw_value());
++  const std::string& space_id =
++      binding != tab_pin_ids_.end() ? binding->second.first : active_space_id_;
++  const auto* space = FindSpace(root, space_id);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins) {
++    return false;
++  }
++  for (const base::Value& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    const auto* text = pin ? pin->FindString("url") : nullptr;
++    const GURL home(text ? *text : "");
++    if (!id || id->empty() || !home.is_valid() || home.SchemeIs("javascript")) {
++      continue;
++    }
++    if (binding != tab_pin_ids_.end() && binding->second.second == *id) {
++      return true;
++    }
++    // Existing native pins may predate live handle bindings. Restrict the URL
++    // fallback to this window's current Space and actual persisted records.
++    if (space_id == active_space_id_ &&
++        home == tab->GetContents()->GetVisibleURL()) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void CoveSidebarLibraryView::OpenPin(std::string pin_id, GURL url) {
++  if (!url.is_valid() || url.SchemeIs("javascript")) {
++    return;
++  }
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const auto* space = FindSpace(root, active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  bool retained = false;
++  if (pins) {
++    for (const base::Value& value : *pins) {
++      const auto* pin = value.GetIfDict();
++      const auto* id = pin ? pin->FindString("id") : nullptr;
++      if (id && *id == pin_id) {
++        retained = true;
++        break;
++      }
++    }
++  }
++  if (!retained) {
++    return;
++  }
++
+   TabStripModel* model = browser_->GetTabStripModel();
++  // A pinned page can navigate away from its home URL. Reuse that exact tab
++  // first, retaining its current navigation, draft and history.
++  for (int i = 0; i < model->count(); ++i) {
++    const auto binding =
++        tab_pin_ids_.find(model->GetTabAtIndex(i)->GetHandle().raw_value());
++    if (binding != tab_pin_ids_.end() &&
++        binding->second.first == active_space_id_ &&
++        binding->second.second == pin_id) {
++      model->ActivateTabAt(i);
++      return;
++    }
++  }
+   for (int i = 0; i < model->count(); ++i) {
+     content::WebContents* contents = model->GetWebContentsAt(i);
+     if (contents && contents->GetVisibleURL() == url) {
++      tab_pin_ids_[model->GetTabAtIndex(i)->GetHandle().raw_value()] = {
++          active_space_id_, pin_id};
+       model->ActivateTabAt(i);
+       if (!model->IsTabPinned(i)) {
+         model->ExecuteContextMenuCommand(i, TabStripModel::CommandTogglePinned);
+@@ -798,7 +873,18 @@
+   NavigateParams params(browser_, url, ui::PAGE_TRANSITION_TYPED);
+   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+   params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
++  const std::string space_id = active_space_id_;
++  auto weak_this = weak_factory_.GetWeakPtr();
+   Navigate(&params);
++  if (!weak_this || weak_this->active_space_id_ != space_id) {
++    return;
++  }
++  if (auto* contents = params.navigated_or_inserted_contents.get()) {
++    if (auto* tab = tabs::TabInterface::GetFromContents(contents)) {
++      weak_this->tab_pin_ids_[tab->GetHandle().raw_value()] = {space_id,
++                                                               pin_id};
++    }
++  }
+ }
+ 
+ void CoveSidebarLibraryView::RemovePin(const std::string& pin_id) {
+@@ -1036,6 +1122,22 @@
+ BEGIN_METADATA(CoveSidebarLibraryView)
+ END_METADATA
+ 
++bool CoveSidebarLibraryView::IsCommandIdEnabled(int command_id) const {
++  if (command_id != kToggleFavoriteCommand &&
++      command_id != kPinCurrentPageCommand) {
++    return true;
++  }
++  auto* contents =
++      browser_ ? browser_->GetTabStripModel()->GetActiveWebContents() : nullptr;
++  if (!contents) {
++    return false;
++  }
++  const GURL& url = contents->GetVisibleURL();
++  return command_id == kToggleFavoriteCommand
++             ? url.SchemeIsHTTPOrHTTPS()
++             : url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile();
++}
++
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
+   if (command_id == kRenamePinCommand) {
+     BeginRename(command_id, context_pin_id_);
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -79,6 +79,7 @@
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+@@ -1508,6 +1509,27 @@
+     }
+   }
+ 
++  // Cove pins remain in the sidebar after their live tab closes. Only those
++  // retained pins can close on the first command; keep upstream confirmation
++  // for uncovered native pins and mixed selections. The native close helper
++  // still runs the normal beforeunload handling.
++  if (all_selected_tabs_pinned) {
++    auto* pins = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost());
++    bool all_pins_retained = pins != nullptr;
++    if (pins) {
++      for (const tabs::TabInterface* tab : selected_tabs) {
++        if (!pins->RetainsPinForTab(tab)) {
++          all_pins_retained = false;
++          break;
++        }
++      }
++    }
++    if (all_pins_retained) {
++      CloseSelectedTabAndRecordTabCountMetric(browser);
++      return;
++    }
++  }
++
+   // If all selected tabs are pinned, show a confirmation toast if one isn't
+   // already shown.
+   if (all_selected_tabs_pinned &&
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -815,6 +815,7 @@
+     deps = [
+       ":accelerator_utils_headers",
+       ":browser_command_controller",
++      ":cove_space_close_handler",
+       ":browser_init_state",
+       ":browser_live_tab_context",
+       ":browser_window_header",

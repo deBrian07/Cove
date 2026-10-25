@@ -1,0 +1,11 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -287,7 +287,6 @@
+   RemoveAllChildViews();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+-  const std::string* active_id = &active_space_id_;
+   const base::DictValue* space = FindSpace(root, active_space_id_);
+   if (!space) {
+     return;

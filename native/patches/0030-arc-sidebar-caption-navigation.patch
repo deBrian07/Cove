@@ -1,0 +1,310 @@
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.cc b/chrome/browser/ui/views/cove/cove_location_view.cc
+--- a/chrome/browser/ui/views/cove/cove_location_view.cc
++++ b/chrome/browser/ui/views/cove/cove_location_view.cc
+@@ -41,14 +41,18 @@
+ CoveLocationView::CoveLocationView(BrowserWindowInterface* browser)
+     : browser_(browser->GetWeakPtr()) {
+   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+-      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 4));
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
+   layout->set_cross_axis_alignment(
+       views::BoxLayout::CrossAxisAlignment::kStretch);
+   auto* navigation = AddChildView(std::make_unique<views::View>());
+-  auto* navigation_layout = navigation->SetLayoutManager(
+-      std::make_unique<views::BoxLayout>(
+-          views::BoxLayout::Orientation::kHorizontal,
+-          gfx::Insets::TLBR(0, 8, 0, 8), 6));
++  navigation_controls_.SetTrackEntireViewHierarchy(true);
++  navigation_controls_.SetView(navigation);
++  navigation_controls_.SetIsDeletingCallback(
++      base::BindOnce(&CoveLocationView::OnNavigationControlsDestroyed,
++                     weak_factory_.GetWeakPtr()));
++  auto* navigation_layout =
++      navigation->SetLayoutManager(std::make_unique<views::BoxLayout>(
++          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 2));
+   navigation_layout->set_main_axis_alignment(
+       views::BoxLayout::MainAxisAlignment::kEnd);
+   auto add_button = [this, navigation](const gfx::VectorIcon& icon, int command,
+@@ -57,7 +61,7 @@
+         base::BindRepeating(&CoveLocationView::RunNavigationCommand,
+                             weak_factory_.GetWeakPtr(), command),
+         icon, 16);
+-    button->SetPreferredSize(gfx::Size(28, 28));
++    button->SetPreferredSize(gfx::Size(24, 24));
+     button->SetTooltipText(name);
+     button->GetViewAccessibility().SetName(name);
+     return navigation->AddChildView(std::move(button));
+@@ -70,7 +74,7 @@
+       base::BindRepeating(&CoveLocationView::ShowSiteInformation,
+                           weak_factory_.GetWeakPtr()),
+       vector_icons::kInfoIcon, 16);
+-  info->SetPreferredSize(gfx::Size(28, 28));
++  info->SetPreferredSize(gfx::Size(24, 24));
+   info->SetTooltipText(u"Site information and permissions");
+   info->GetViewAccessibility().SetName(u"Site information and permissions");
+   navigation->AddChildView(std::move(info));
+@@ -81,7 +85,7 @@
+   address_->SetPlaceholderText(u"Search or Enter URL");
+   address_->SetDefaultWidthInChars(1);
+   address_->SetPreferredSize(gfx::Size(100, 36));
+-  address_->SetCornerRadius(14);
++  address_->SetCornerRadius(8);
+   address_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
+   address_->SetTextColorId(kColorOmniboxText);
+   address_->SetBackgroundColor(kColorLocationBarBackground);
+@@ -90,7 +94,26 @@
+   ObserveActiveTab();
+ }
+ 
+-CoveLocationView::~CoveLocationView() = default;
++CoveLocationView::~CoveLocationView() {
++  // The caption row can outlive this view. Its callbacks are weak, and these
++  // pointers must not outlive the separately owned buttons either.
++  navigation_controls_.SetView(nullptr);
++  back_ = nullptr;
++  forward_ = nullptr;
++}
++std::unique_ptr<views::View> CoveLocationView::TakeNavigationControls() {
++  auto* navigation = navigation_controls_.view();
++  if (!navigation || navigation->parent() != this) {
++    return nullptr;
++  }
++  auto controls = RemoveChildViewT(navigation);
++  PreferredSizeChanged();
++  return controls;
++}
++void CoveLocationView::OnNavigationControlsDestroyed() {
++  back_ = nullptr;
++  forward_ = nullptr;
++}
+ void CoveLocationView::AddedToWidget() {
+   views::View::AddedToWidget();
+   if (GetFocusManager()) {
+@@ -122,8 +145,12 @@
+ }
+ void CoveLocationView::Refresh() {
+   content::WebContents* contents = web_contents();
+-  back_->SetEnabled(contents && contents->GetController().CanGoBack());
+-  forward_->SetEnabled(contents && contents->GetController().CanGoForward());
++  if (back_) {
++    back_->SetEnabled(contents && contents->GetController().CanGoBack());
++  }
++  if (forward_) {
++    forward_->SetEnabled(contents && contents->GetController().CanGoForward());
++  }
+   if (!contents || address_->HasFocus()) {
+     return;
+   }
+@@ -160,10 +187,10 @@
+     return;
+   }
+   if (address_->HasFocus()) {
+-    auto border = views::CreateRoundedRectBorder(
+-        2, address_->GetCornerRadius(), ui::kColorSysStateFocusRing);
+-    address_->SetBorder(views::CreatePaddedBorder(
+-        std::move(border), gfx::Insets::VH(0, 11)));
++    auto border = views::CreateRoundedRectBorder(2, address_->GetCornerRadius(),
++                                                 ui::kColorSysStateFocusRing);
++    address_->SetBorder(
++        views::CreatePaddedBorder(std::move(border), gfx::Insets::VH(0, 11)));
+     address_->SetBackgroundColor(kColorLocationBarBackgroundHovered);
+   } else {
+     address_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.h b/chrome/browser/ui/views/cove/cove_location_view.h
+--- a/chrome/browser/ui/views/cove/cove_location_view.h
++++ b/chrome/browser/ui/views/cove/cove_location_view.h
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ #ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_LOCATION_VIEW_H_
+ #define CHROME_BROWSER_UI_VIEWS_COVE_COVE_LOCATION_VIEW_H_
++
++#include <memory>
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+@@ -14,6 +16,7 @@
+ #include "ui/views/controls/textfield/textfield_controller.h"
+ #include "ui/views/focus/focus_manager.h"
+ #include "ui/views/view.h"
++#include "ui/views/view_tracker.h"
+ 
+ class BrowserWindowInterface;
+ namespace views {
+@@ -31,6 +34,9 @@
+  public:
+   explicit CoveLocationView(BrowserWindowInterface* browser);
+   ~CoveLocationView() override;
++  // Transfer the native navigation buttons into the sidebar caption row. The
++  // callbacks remain weakly bound to this location view after reparenting.
++  std::unique_ptr<views::View> TakeNavigationControls();
+   void FocusLocation();
+   void Refresh();
+   void AddedToWidget() override;
+@@ -46,6 +52,7 @@
+   void DidStopLoading() override;
+ 
+  private:
++  void OnNavigationControlsDestroyed();
+   void ObserveActiveTab();
+   void RunNavigationCommand(int command);
+   void ShowSiteInformation();
+@@ -55,6 +62,7 @@
+   raw_ptr<views::Textfield> address_ = nullptr;
+   raw_ptr<views::ImageButton> back_ = nullptr;
+   raw_ptr<views::ImageButton> forward_ = nullptr;
++  views::ViewTracker navigation_controls_;
+   base::ScopedObservation<views::FocusManager, views::FocusChangeListener>
+       focus_{this};
+   base::WeakPtrFactory<CoveLocationView> weak_factory_{this};
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc
+@@ -92,6 +92,72 @@
+ 
+   const bool is_collapsed = state_controller_->IsCollapsed();
+ 
++  if (cove_navigation_controls_) {
++    constexpr int kCaptionRowHeight = 36;
++    constexpr int kPadding = 8;
++    constexpr int kButtonGap = 4;
++    const bool expanded = state_controller_->GetCollapseState() ==
++                          tabs::VerticalTabStripCollapseState::kExpanded;
++    if (expanded) {
++      // Native traffic lights occupy the leading exclusion. Keep collapse next
++      // to them and right-align the navigation buttons on the same baseline.
++      const int row_height = std::max(kCaptionRowHeight, toolbar_height_);
++      const gfx::Size navigation_size =
++          cove_navigation_controls_->GetPreferredSize();
++      const int leading = caption_button_width_ > 0
++                              ? caption_button_width_ + kButtonGap
++                              : kPadding;
++      const int collapse_width =
++          collapse_button_ && collapse_button_->GetVisible()
++              ? collapse_button_->GetPreferredSize().width()
++              : 0;
++      const int navigation_x = std::max(
++          kPadding, available_width - kPadding - navigation_size.width());
++      const bool show_navigation =
++          navigation_x >= leading + collapse_width + kButtonGap;
++      const int navigation_y =
++          std::max(0, (row_height - navigation_size.height()) / 2);
++      layout.child_layouts.emplace_back(
++          cove_navigation_controls_.get(), show_navigation,
++          gfx::Rect(navigation_x, navigation_y, navigation_size.width(),
++                    navigation_size.height()));
++      int next_x = leading;
++      int total_height = row_height;
++      if (collapse_button_) {
++        const gfx::Size size = collapse_button_->GetPreferredSize();
++        layout.child_layouts.emplace_back(
++            collapse_button_.get(), collapse_button_->GetVisible(),
++            gfx::Rect(next_x, std::max(0, (row_height - size.height()) / 2),
++                      size.width(), size.height()));
++        if (collapse_button_->GetVisible()) {
++          next_x += size.width() + kButtonGap;
++        }
++      }
++      if (unfocus_button_) {
++        const gfx::Size size = unfocus_button_->GetPreferredSize();
++        const bool wrap = show_navigation &&
++                          next_x + size.width() + kButtonGap > navigation_x;
++        const int y = wrap ? row_height + kButtonGap
++                           : std::max(0, (row_height - size.height()) / 2);
++        layout.child_layouts.emplace_back(
++            unfocus_button_.get(), unfocus_button_->GetVisible(),
++            gfx::Rect(wrap ? kPadding : next_x, y, size.width(),
++                      size.height()));
++        if (unfocus_button_->GetVisible()) {
++          total_height = std::max(total_height, y + size.height());
++        }
++      }
++      layout.child_layouts.emplace_back(combo_button_.get(), false,
++                                        gfx::Rect());
++      layout.host_size = gfx::Size(host_size.width(), total_height);
++      return layout;
++    }
++    // During collapse/expand animation the original caption layout handles the
++    // collapse button, while the moved navigation row stays out of the rail.
++    layout.child_layouts.emplace_back(cove_navigation_controls_.get(), false,
++                                      gfx::Rect());
++  }
++
+   // Once the available width is below the collapse snap width, we update the
+   // orientation in order to have smooth transition during animation.
+   if (combo_button_
+@@ -295,6 +361,19 @@
+   return container_button_ptr;
+ }
+ 
++void VerticalTabStripTopContainer::SetCoveNavigationControls(
++    std::unique_ptr<views::View> controls) {
++  if (cove_navigation_controls_) {
++    auto old = RemoveChildViewT(cove_navigation_controls_.get());
++    cove_navigation_controls_ = nullptr;
++  }
++  if (controls) {
++    cove_navigation_controls_ = AddChildView(std::move(controls));
++  }
++  PreferredSizeChanged();
++  InvalidateLayout();
++}
++
+ TabStripComboButton* VerticalTabStripTopContainer::GetComboButton() {
+   return combo_button_.get();
+ }
+@@ -315,6 +394,15 @@
+ 
+   if (unfocus_button_ && IsHitInView(unfocus_button_, point)) {
+     return false;
++  }
++  if (cove_navigation_controls_ && cove_navigation_controls_->GetVisible()) {
++    for (views::View* control : cove_navigation_controls_->children()) {
++      gfx::Point local = point;
++      views::View::ConvertPointToTarget(this, control, &local);
++      if (control->GetVisible() && control->HitTestPoint(local)) {
++        return false;
++      }
++    }
+   }
+ 
+   return true;
+@@ -440,6 +528,10 @@
+                        .width();
+   }
+ 
++  if (cove_navigation_controls_ && !state_controller_->IsCollapsed()) {
++    total_width += cove_navigation_controls_->GetPreferredSize().width() + 8;
++  }
++
+   // Collapse Button
+   if (collapse_button_ && collapse_button_->GetVisible()) {
+     total_width += collapse_button_->GetPreferredSize().width() + padding;
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h
+@@ -4,6 +4,8 @@
+ 
+ #ifndef CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
+ #define CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
++
++#include <memory>
+ 
+ #include "ui/menus/simple_menu_model.h"
+ #include "ui/views/context_menu_controller.h"
+@@ -57,6 +59,9 @@
+   // Creates a TopContainerButton (Collapse Button).
+   views::LabelButton* AddChildButtonFor(actions::ActionId action_id);
+ 
++  // Own the existing native Back/Forward/Reload/Site Information row.
++  void SetCoveNavigationControls(std::unique_ptr<views::View> controls);
++
+   TabStripComboButton* GetComboButton();
+   TabStripFlatEdgeButton* GetTabSearchButton();
+   views::LabelButton* GetCollapseButton() { return collapse_button_; }
+@@ -102,5 +107,6 @@
+   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
+   raw_ptr<views::LabelButton> collapse_button_ = nullptr;
+   raw_ptr<views::LabelButton> unfocus_button_ = nullptr;
++  raw_ptr<views::View> cove_navigation_controls_ = nullptr;
+ 
+   std::unique_ptr<views::ActionViewController> action_view_controller_;
