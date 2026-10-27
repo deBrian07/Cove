@@ -1,0 +1,27 @@
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -205,10 +205,19 @@
+       },
+       *bubble_created_time_));
+ 
+-  // Retain the native button anchor for focus/activation ownership. The
+-  // palette's anchor rect is centered by WebUIBubbleDialogView.
+-  webui_bubble_manager_->ShowBubble(
+-      button_, views::BubbleBorder::FLOAT, kTabSearchBubbleElementId);
++  // Cove can completely hide the sidebar, including this button. A bubble
++  // anchored to that hidden view can remain invisible or close on a reveal
++  // transition. Use the always-visible browser view so native activation and
++  // focus ownership stay with its window while the dialog centers the palette.
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(
++      browser_window_interface_);
++  if (browser_view && browser_view->GetWidget()) {
++    webui_bubble_manager_->ShowBubble(
++        browser_view, views::BubbleBorder::FLOAT, kTabSearchBubbleElementId);
++  } else {
++    webui_bubble_manager_->ShowBubble(
++        button_, views::BubbleBorder::FLOAT, kTabSearchBubbleElementId);
++  }
+ 
+   auto* tracker =
+       feature_engagement::TrackerFactory::GetForBrowserContext(profile_);

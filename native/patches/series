@@ -58,3 +58,4 @@
 0058-hide-sidebar-to-edge.patch
 0059-retain-command-bar-between-invocations.patch
 0060-focus-address-after-sidebar-reveal.patch
+0061-anchor-command-bar-to-browser-window.patch
