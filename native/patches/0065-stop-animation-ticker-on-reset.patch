@@ -1,0 +1,39 @@
+diff --git a/chrome/browser/ui/animation/browser_animation_controller.cc b/chrome/browser/ui/animation/browser_animation_controller.cc
+--- a/chrome/browser/ui/animation/browser_animation_controller.cc
++++ b/chrome/browser/ui/animation/browser_animation_controller.cc
+@@ -510,6 +510,12 @@
+       current_motion_ = motion;
+       current_motion_info_ = std::move(motion_info);
+     }
++    // Reset may finish the motion that is already playing. Stop its ticker
++    // before clearing current_motion_, otherwise the next compositor frame
++    // calls UpdateCurrentValues() without a motion and crashes.
++    if (animator_) {
++      animator_->Stop();
++    }
+     OnAnimationEnded(params);
+   }
+ 
+diff --git a/chrome/browser/ui/animation/browser_animation_controller_unittest.cc b/chrome/browser/ui/animation/browser_animation_controller_unittest.cc
+--- a/chrome/browser/ui/animation/browser_animation_controller_unittest.cc
++++ b/chrome/browser/ui/animation/browser_animation_controller_unittest.cc
+@@ -1624,3 +1624,19 @@
+   EXPECT_EQ(0.4, controller()->GetCurrentValue(kTestAnimationGroup,
+                                                kTestAnimationSequence1));
+ }
++
++TEST_F(BrowserAnimationControllerTest, ResetRunningMotionStopsItsTicker) {
++  controller()->Start(kTestAnimationGroup, kTestAnimationMotion1);
++  FastForwardMs(100);
++  controller()->Reset(kTestAnimationGroup, kTestAnimationMotion1);
++  EXPECT_FALSE(controller()->IsAnimating(kTestAnimationGroup));
++  // Previously the still-running ticker crashed on this later frame.
++  FastForwardMs(1200);
++  EXPECT_FALSE(controller()->IsAnimating(kTestAnimationGroup));
++
++  controller()->Start(kTestAnimationGroup, kTestAnimationMotion2);
++  FastForwardMs(100);
++  controller()->Reset(kTestAnimationGroup, kTestAnimationMotion2);
++  FastForwardMs(1200);
++  EXPECT_FALSE(controller()->IsAnimating(kTestAnimationGroup));
++}

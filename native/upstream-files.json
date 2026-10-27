@@ -16,6 +16,8 @@
   "chrome/browser/resources/tab_search/tab_search_split_item.css": "fefa79eb34992e9c7574dcc6ac8ecceaf3280c9fdd079b5962d043c1e5e89015",
   "chrome/browser/themes/theme_service.cc": "8e71adc6136429bf68042107a6a38948fb54bdc8f274b15005760d1d4b1e36f9",
   "chrome/browser/ui/BUILD.gn": "035033312cf59d29452cc0f80b8b0575034742ad0d3c6625856e8441aad243aa",
+  "chrome/browser/ui/animation/browser_animation_controller.cc": "839e4dd5858dfefe5d4341e3ba1aa845b28f451db2af8a573c2272d3814b7edd",
+  "chrome/browser/ui/animation/browser_animation_controller_unittest.cc": "b4fa991e4cfc0968e2079256294c340ca7c85729f436a2c0c2f71291db1fa991",
   "chrome/browser/ui/browser.cc": "5cbe9caf9acd876d90dba893c73cac921400cf8156fe651d7cd4b33be7e984e5",
   "chrome/browser/ui/browser_actions.cc": "597653c4ecd1805050afb6bb3efc8a2f9ec86423d01529952f0b54878c6039d0",
   "chrome/browser/ui/browser_command_controller.cc": "3d8cec94dc857a7603eb052d23d618ebb84039bfe82c2b3d815819c555ce40da",
