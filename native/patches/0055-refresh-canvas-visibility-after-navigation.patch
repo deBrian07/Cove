@@ -1,0 +1,18 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -296,6 +296,14 @@
+ 
+ void CoveSidebarLibraryView::OnTabChangedAt(tabs::TabInterface*,
+                                             TabChangeType) {
++  // An existing placeholder can become a real page without a model insertion.
++  // Refresh its presentation coverage as navigation/title state changes.
++  if (pinned_coverage_changed_) {
++    pinned_coverage_changed_.Run();
++  }
++  if (!switching_space_ && !closing_active_space_) {
++    UpdateArchiveButtonState();
++  }
+   // Favicon/title/navigation changes must not recreate buttons while a menu
+   // or mouse interaction owns them.
+   UpdatePinRowAppearance();

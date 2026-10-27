@@ -51,3 +51,5 @@
 0051-preserve-organized-empty-canvases.patch
 0052-sidebar-selection-and-footer-insets.patch
 0053-accessibility-target-lifetime.patch
+0054-restore-sidebar-rows-after-empty-canvas.patch
+0055-refresh-canvas-visibility-after-navigation.patch
