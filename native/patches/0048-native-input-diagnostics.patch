@@ -1,0 +1,85 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/logging.h"
+ #include "chrome/browser/ui/browser_command_controller.h"
+ 
+ #include <stddef.h>
+@@ -655,6 +656,11 @@
+     WindowOpenDisposition disposition,
+     std::optional<actions::ActionInvocationContext> context,
+     base::TimeTicks time_stamp) {
++  if (id == IDC_FOCUS_LOCATION || id == IDC_FOCUS_SEARCH) {
++    VLOG(1) << "Cove focus command " << id
++            << " supported=" << SupportsCommand(id)
++            << " enabled=" << IsCommandEnabled(id);
++  }
+   if (!SupportsCommand(id) || !IsCommandEnabled(id)) {
+     return false;
+   }
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/logging.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ 
+ #include <stdint.h>
+@@ -2350,6 +2351,9 @@
+ }
+ 
+ void BrowserView::SetFocusToLocationBar(bool is_user_initiated) {
++  VLOG(1) << "Cove focus window sidebar="
++          << !!vertical_tab_strip_region_view_
++          << " location_visible=" << IsLocationBarVisible();
+   // On Windows, changing focus to the location bar causes the browser window to
+   // become active. This can steal focus if the user has another window open
+   // already. On Chrome OS, changing focus makes a view believe it has a focus
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.cc b/chrome/browser/ui/views/cove/cove_location_view.cc
+--- a/chrome/browser/ui/views/cove/cove_location_view.cc
++++ b/chrome/browser/ui/views/cove/cove_location_view.cc
+@@ -1,6 +1,7 @@
+ // Copyright 2026 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
++#include "base/logging.h"
+ #include "chrome/browser/ui/views/cove/cove_location_view.h"
+ 
+ #include <utility>
+@@ -163,6 +164,9 @@
+ }
+ void CoveLocationView::FocusLocation() {
+   address_->RequestFocus();
++  VLOG(1) << "Cove focus field drawn=" << address_->IsDrawn()
++          << " enabled=" << address_->GetEnabled()
++          << " focused=" << address_->HasFocus();
+   if (web_contents()) {
+     address_->SetText(
+         base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/logging.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
+ #include <algorithm>
+@@ -708,6 +709,8 @@
+ 
+ void CoveSidebarLibraryView::ShowLibraryMenu() {
+   auto* footer = space_footer_.view();
++  VLOG(1) << "Cove footer menu footer=" << !!footer
++          << " widget=" << (footer && footer->GetWidget());
+   if (!footer || !footer->GetWidget()) {
+     return;
+   }

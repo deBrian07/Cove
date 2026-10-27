@@ -1,0 +1,53 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -532,6 +532,15 @@
+   }
+ #endif
+ 
++  // Cove's sidebar address host is browser chrome even though the stock
++  // toolbar is hidden. Reserve its focus shortcuts before the first responder
++  // can consume them. Keep the fullscreen/app policy gates above intact.
++  if ((command_id == IDC_FOCUS_LOCATION || command_id == IDC_FOCUS_SEARCH) &&
++      browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++      !window()->IsLocationBarVisible()) {
++    return true;
++  }
++
+   return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
+          command_id == IDC_NEW_INCOGNITO_WINDOW ||
+          command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -59,6 +59,7 @@
+ #include "ui/views/layout/flex_layout.h"
+ #include "ui/views/view_class_properties.h"
+ #include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
+ #include "url/gurl.h"
+ 
+ namespace {
+@@ -727,15 +728,21 @@
+   menu_model_->AddItem(kNewFolderCommand, u"New folder");
+   menu_model_->AddItem(kNewSpaceCommand, u"New Space");
+   auto* anchor = views::AsViewClass<views::MenuButton>(menu_button_.view());
++  VLOG(1) << "Cove footer anchor=" << !!anchor;
+   if (!anchor || !anchor->GetWidget()) {
+     return;
+   }
++  anchor->GetWidget()->Activate();
+   menu_runner_ = std::make_unique<views::MenuRunner>(
+       menu_model_.get(), views::MenuRunner::HAS_MNEMONICS);
++  auto weak_this = weak_factory_.GetWeakPtr();
+   menu_runner_->RunMenuAt(anchor->GetWidget(), anchor->button_controller(),
+                           anchor->GetBoundsInScreen(),
+-                          views::MenuAnchorPosition::kTopRight,
++                          views::MenuAnchorPosition::kBubbleTopLeft,
+                           ui::mojom::MenuSourceType::kNone);
++  if (weak_this && menu_runner_) {
++    VLOG(1) << "Cove footer menu running=" << menu_runner_->IsRunning();
++  }
+ }
+ 
+ void CoveSidebarLibraryView::PinActivePage() {

@@ -1,0 +1,220 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -70,6 +70,9 @@
+       const TabStripModelChange& change,
+       const TabStripSelectionChange& selection) override;
+ 
++  void OnTabChangedAt(tabs::TabInterface* tab,
++                      TabChangeType change_type) override;
++
+   // views::ContextMenuController:
+   void ShowContextMenuForViewImpl(
+       views::View* source,
+@@ -90,6 +93,7 @@
+   void EnsureDefaultLibrary();
+   void Rebuild();
+   void RebuildSpaceFooter();
++  void UpdatePinRowAppearance();
+   void ShowLibraryMenu();
+   bool HasArchivableTabs() const;
+   void ArchiveToday();
+@@ -131,7 +135,7 @@
+   int empty_canvas_cleanup_generation_ = 0;
+   base::RepeatingClosure pinned_coverage_changed_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+-  std::map<const views::View*, std::string> row_pin_ids_;
++  std::map<views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
+   views::ViewTracker menu_button_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -22,16 +22,19 @@
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
+ #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/cove/cove_name_dialog.h"
++#include "components/favicon/content/content_favicon_driver.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/prefs/scoped_user_pref_update.h"
+ #include "components/tabs/public/split_tab_collection.h"
+ #include "components/tabs/public/tab_group_tab_collection.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/web_contents.h"
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -46,6 +49,7 @@
+ #include "ui/gfx/geometry/point.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/gfx/geometry/size.h"
++#include "ui/gfx/image/image.h"
+ #include "ui/gfx/text_constants.h"
+ #include "ui/gfx/vector_icon_types.h"
+ #include "ui/menus/simple_menu_model.h"
+@@ -264,6 +268,7 @@
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
+   }
++  UpdatePinRowAppearance();
+   if (!switching_space_ && !closing_active_space_) {
+     UpdateArchiveButtonState();
+   }
+@@ -286,6 +291,13 @@
+                        weak_factory_.GetWeakPtr(), std::move(handles),
+                        empty_canvas_cleanup_generation_));
+   }
++}
++
++void CoveSidebarLibraryView::OnTabChangedAt(tabs::TabInterface*,
++                                            TabChangeType) {
++  // Favicon/title/navigation changes must not recreate buttons while a menu
++  // or mouse interaction owns them.
++  UpdatePinRowAppearance();
+ }
+ 
+ void CoveSidebarLibraryView::OnEmptyCanvasMarked() {
+@@ -354,6 +366,7 @@
+     const auto* id = pin ? pin->FindString("id") : nullptr;
+     if (existing && id && *existing == url.spec()) {
+       tab_pin_ids_[handle] = {active_space_id_, *id};
++      UpdatePinRowAppearance();
+       return;
+     }
+   }
+@@ -457,6 +470,18 @@
+                       base::UTF8ToUTF16(*folder->FindString("name")),
+                   base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
+                                       weak_factory_.GetWeakPtr(), folder_id));
++      folder_row->SetImageModel(
++          views::Button::STATE_NORMAL,
++          ui::ImageModel::FromVectorIcon(
++              collapsed ? vector_icons::kFolderFlippableIcon
++                        : vector_icons::kFolderOpenIcon,
++              ui::kColorIcon, 16));
++      folder_row->SetImageLabelSpacing(8);
++      if (collapsed) {
++        folder_row->GetViewAccessibility().SetIsCollapsed();
++      } else {
++        folder_row->GetViewAccessibility().SetIsExpanded();
++      }
+       folder_row->set_context_menu_controller(this);
+       row_folder_ids_[folder_row] = folder_id;
+       folder_row->SetTooltipText(collapsed ? u"Expand folder"
+@@ -490,10 +515,68 @@
+     }
+   }
+ 
++  UpdatePinRowAppearance();
+   RebuildSpaceFooter();
+   InvalidateLayout();
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
++  }
++}
++
++void CoveSidebarLibraryView::UpdatePinRowAppearance() {
++  TabStripModel* model = browser_->GetTabStripModel();
++  std::map<std::string, content::WebContents*> bound_contents;
++  std::string active_pin_id;
++  for (int index = 0; index < model->count(); ++index) {
++    const auto* tab = model->GetTabAtIndex(index);
++    if (!tab) {
++      continue;
++    }
++    const auto binding = tab_pin_ids_.find(tab->GetHandle().raw_value());
++    if (binding == tab_pin_ids_.end() ||
++        binding->second.first != active_space_id_) {
++      continue;
++    }
++    bound_contents[binding->second.second] = tab->GetContents();
++    if (index == model->active_index()) {
++      active_pin_id = binding->second.second;
++    }
++  }
++
++  // Mutate existing rows only: their callbacks, focus and native menu ownership
++  // remain intact while selection changes or a bound tab navigates away.
++  for (const auto& [view, pin_id] : row_pin_ids_) {
++    auto* row = views::AsViewClass<views::LabelButton>(view);
++    if (!row) {
++      continue;
++    }
++    const bool selected = !active_pin_id.empty() && pin_id == active_pin_id;
++    row->SetBackground(
++        selected ? views::CreateRoundedRectBackground(
++                       kColorTabBackgroundActiveFrameActive, 8)
++                 : nullptr);
++    if (selected) {
++      row->SetEnabledTextColors(kColorTabForegroundActiveFrameActive);
++    } else {
++      row->SetEnabledTextColors(ui::kColorLabelForeground);
++    }
++    row->GetViewAccessibility().SetIsSelected(selected);
++    row->SetFocusRingCornerRadius(8);
++    row->SetImageLabelSpacing(8);
++    ui::ImageModel icon = ui::ImageModel::FromVectorIcon(
++        vector_icons::kGlobeIcon, ui::kColorIcon, 16);
++    const auto contents = bound_contents.find(pin_id);
++    if (contents != bound_contents.end() && contents->second) {
++      auto* driver =
++          favicon::ContentFaviconDriver::FromWebContents(contents->second);
++      if (driver && driver->FaviconIsValid()) {
++        const gfx::Image favicon = driver->GetFavicon();
++        if (!favicon.IsEmpty()) {
++          icon = ui::ImageModel::FromImage(favicon);
++        }
++      }
++    }
++    row->SetImageModel(views::Button::STATE_NORMAL, icon);
+   }
+ }
+ 
+@@ -524,6 +607,7 @@
+   archive->SetImageModel(
+       views::Button::STATE_NORMAL,
+       ui::ImageModel::FromVectorIcon(kCoveArchiveIcon, ui::kColorIcon, 16));
++  archive->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 4)));
+   archive->SetPreferredSize(gfx::Size(28, 28));
+   archive->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+   archive->GetViewAccessibility().SetName(u"Archive Today");
+@@ -546,6 +630,7 @@
+           MakeRow(footer, active ? u"●" : u"•",
+                   base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+                                       weak_factory_.GetWeakPtr(), id));
++      dot->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 2)));
+       dot->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+       dot->SetPreferredSize(gfx::Size(24, 28));
+       dot->SetEnabledTextColors(active ? ui::kColorLabelForeground
+@@ -568,7 +653,7 @@
+                           weak_factory_.GetWeakPtr()),
+       u"+");
+   menu_button->SetTextSubpixelRenderingEnabled(false);
+-  menu_button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++  menu_button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 4)));
+   auto* add = footer->AddChildView(std::move(menu_button));
+   add->SetPreferredSize(gfx::Size(28, 28));
+   add->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+@@ -1174,6 +1259,7 @@
+       tab_pin_ids_[model->GetTabAtIndex(i)->GetHandle().raw_value()] = {
+           active_space_id_, pin_id};
+       model->ActivateTabAt(i);
++      UpdatePinRowAppearance();
+       if (!model->IsTabPinned(i)) {
+         model->ExecuteContextMenuCommand(i, TabStripModel::CommandTogglePinned);
+       }
+@@ -1193,6 +1279,7 @@
+     if (auto* tab = tabs::TabInterface::GetFromContents(contents)) {
+       weak_this->tab_pin_ids_[tab->GetHandle().raw_value()] = {space_id,
+                                                                pin_id};
++      weak_this->UpdatePinRowAppearance();
+     }
+   }
+ }

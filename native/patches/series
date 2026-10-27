@@ -45,3 +45,9 @@
 0045-sidebar-address-action-adapter.patch
 0046-native-sidebar-menu-lifetime.patch
 0047-direct-sidebar-focus-dispatch.patch
+0048-native-input-diagnostics.patch
+0049-reserve-sidebar-focus-and-anchor-menu.patch
+0050-native-macos-footer-popup.patch
+0051-preserve-organized-empty-canvases.patch
+0052-sidebar-selection-and-footer-insets.patch
+0053-accessibility-target-lifetime.patch

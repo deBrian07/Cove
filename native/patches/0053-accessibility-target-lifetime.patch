@@ -1,0 +1,162 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+index 84e8211..d7f3a1e 100644
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -58,6 +58,7 @@
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/controls/button/menu_button.h"
++#include "ui/views/controls/button/menu_button_controller.h"
+ #include "ui/views/controls/label.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/layout/box_layout.h"
+@@ -832,6 +833,7 @@ void CoveSidebarLibraryView::ShowLibraryMenu() {
+   menu_runner_ =
+       std::make_unique<views::MenuRunner>(menu_model_.get(), kMenuRunTypes);
+   auto weak_this = weak_factory_.GetWeakPtr();
++  auto pressed_lock = anchor->button_controller()->TakeLock();
+   menu_runner_->RunMenuAt(anchor->GetWidget(), anchor->button_controller(),
+                           anchor->GetBoundsInScreen(),
+                           views::MenuAnchorPosition::kBubbleTopLeft,
+diff --git a/ui/views/BUILD.gn b/ui/views/BUILD.gn
+--- a/ui/views/BUILD.gn
++++ b/ui/views/BUILD.gn
+@@ -1814,3 +1814,17 @@
+     ]
+   }
+ }
++
++# Small native regression runner; reuses Views instead of building the full UI
++# test suite to check accessibility event target destruction.
++executable("cove_accessibility_lifetime_smoke") {
++  testonly = true
++  sources = [ "cove_accessibility_lifetime_smoke.cc" ]
++  deps = [
++    "//base",
++    "//ui/accessibility",
++    "//ui/base/metadata",
++    "//ui/events",
++    "//ui/views",
++  ]
++}
+diff --git a/ui/views/cove_accessibility_lifetime_smoke.cc b/ui/views/cove_accessibility_lifetime_smoke.cc
+new file mode 100644
+--- /dev/null
++++ b/ui/views/cove_accessibility_lifetime_smoke.cc
+@@ -0,0 +1,98 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <cstdio>
++#include <memory>
++
++#include "base/at_exit.h"
++#include "base/check.h"
++#include "base/check_op.h"
++#include "base/command_line.h"
++#include "base/memory/raw_ref.h"
++#include "ui/accessibility/ax_action_data.h"
++#include "ui/accessibility/platform/ax_platform.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/events/event.h"
++#include "ui/views/view.h"
++
++namespace {
++class SmokeAXDelegate : public ui::AXPlatform::Delegate {
++ public:
++  ui::AXMode GetAccessibilityMode() override { return ui::AXMode(); }
++#if BUILDFLAG(IS_WIN)
++  ui::AXPlatform::ProductStrings GetProductStrings() override {
++    return {"Cove", "test", "test"};
++  }
++#endif
++};
++
++struct EventCounts {
++  int pressed = 0;
++  int released = 0;
++  int destroyed = 0;
++};
++
++class LifetimeView : public views::View {
++  METADATA_HEADER(LifetimeView, views::View)
++
++ public:
++  LifetimeView(EventCounts& counts, bool delete_on_press)
++      : counts_(counts), delete_on_press_(delete_on_press) {}
++  ~LifetimeView() override { ++counts_->destroyed; }
++
++  // Exercise View's real accessibility default-action dispatcher directly,
++  // without requiring AppKit/Widget setup for this lifetime-only regression.
++  void OnEvent(ui::Event* event) override {
++    if (event->type() == ui::EventType::kMousePressed) {
++      ++counts_->pressed;
++      if (delete_on_press_) {
++        auto removed = parent()->RemoveChildViewT(this);
++      }
++      return;
++    }
++    if (event->type() == ui::EventType::kMouseReleased) {
++      ++counts_->released;
++      return;
++    }
++    views::View::OnEvent(event);
++  }
++
++ private:
++  const raw_ref<EventCounts> counts_;
++  const bool delete_on_press_;
++};
++BEGIN_METADATA(LifetimeView)
++END_METADATA
++}  // namespace
++
++int main(int argc, char** argv) {
++  base::AtExitManager at_exit;
++  base::CommandLine::Init(argc, argv);
++  SmokeAXDelegate ax_delegate;
++  ui::AXPlatform ax_platform(ax_delegate);
++  EventCounts normal_counts;
++  EventCounts removed_counts;
++  views::View parent;
++  parent.SetBounds(0, 0, 100, 100);
++  auto* normal = parent.AddChildView(
++      std::make_unique<LifetimeView>(normal_counts, false));
++  auto* removed = parent.AddChildView(
++      std::make_unique<LifetimeView>(removed_counts, true));
++  normal->SetBounds(0, 0, 40, 40);
++  removed->SetBounds(50, 0, 40, 40);
++  ui::AXActionData action;
++  action.action = ax::mojom::Action::kDoDefault;
++  CHECK(normal->HandleAccessibleAction(action));
++  CHECK_EQ(normal_counts.pressed, 1);
++  CHECK_EQ(normal_counts.released, 1);
++  CHECK_EQ(normal_counts.destroyed, 0);
++  CHECK(removed->HandleAccessibleAction(action));
++  CHECK_EQ(removed_counts.pressed, 1);
++  CHECK_EQ(removed_counts.released, 0);
++  CHECK_EQ(removed_counts.destroyed, 1);
++  CHECK_EQ(parent.children().size(), 1u);
++  std::puts("PASS: accessible default action preserves release and survives target deletion on press");
++  return 0;
++}
+diff --git a/ui/views/view.cc b/ui/views/view.cc
+index b0fb45e..ef5c813 100644
+--- a/ui/views/view.cc
++++ b/ui/views/view.cc
+@@ -2319,7 +2319,13 @@ bool View::HandleAccessibleAction(const ui::AXActionData& action_data) {
+       ui::MouseEvent press(ui::EventType::kMousePressed, center, center,
+                            ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                            ui::EF_LEFT_MOUSE_BUTTON);
++      // A press can open a native menu whose action removes this view. Do not
++      // deliver the synthetic release to a target destroyed during that loop.
++      ViewTracker target_tracker(this);
+       OnEvent(&press);
++      if (!target_tracker.view()) {
++        return true;
++      }
+       ui::MouseEvent release(ui::EventType::kMouseReleased, center, center,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON);

@@ -54,5 +54,7 @@
   "chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc": "a80839354d5d520abf500879e3c63f9291924646a463c28298f2f765bc535f65",
   "chrome/browser/ui/webui/tab_search/tab_search_page_handler.h": "ad53a8af3551f83069fdd5f2e6972f3c45d2d7e855bcd869061f8854d3bee02d",
   "chrome/test/data/webui/tab_search/tab_search_page_test.ts": "c2260f7697a45f1fbe1537de5f6ff9d37e824d426d6cbc4fe906875e8f25b2ba",
-  "chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts": "ad724dc88b96126f5fd13ae03fa2dd1d67343474a1b50a84fbad30b6a56d2e63"
+  "chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts": "ad724dc88b96126f5fd13ae03fa2dd1d67343474a1b50a84fbad30b6a56d2e63",
+  "ui/views/BUILD.gn": "fb0c603ac10a7c42492453ad4953351add8925bd5b135849bee689475f302397",
+  "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433"
 }
