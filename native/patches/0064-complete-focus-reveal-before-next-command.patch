@@ -1,0 +1,45 @@
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -92,7 +92,6 @@
+ 
+ namespace {
+ // Keep a native edge target for hover reveal without a persistent icon rail.
+-DEFINE_UI_CLASS_PROPERTY_KEY(bool, kCoveFocusLocationAfterReveal, false)
+ constexpr int kCoveHiddenSidebarWidth = 6;
+ constexpr int kResizeAreaWidth = 5;
+ constexpr int kCollapsedResizeAreaWidth = 2;
+@@ -258,8 +257,12 @@
+ 
+ void VerticalTabStripRegionView::FocusLocation() {
+   if (state_controller_->IsCollapsed() || IsAnimatingSize()) {
+-    SetProperty(kCoveFocusLocationAfterReveal, true);
+     RequestCollapse(false);
++    // A focus command must be ready for the very next keystroke. Finish the
++    // reveal now rather than scheduling a focus change after a newer command.
++    BrowserAnimationController::From(browser_view()->browser())
++        ->Reset(TabStripAnimations::kVerticalTabStrip,
++                TabStripAnimations::kExpand);
+   }
+   location_view_->SetVisible(true);
+   InvalidateLayout();
+@@ -576,19 +579,6 @@
+                                         0, resize_area_width_,
+                                         bounds().height()));
+   shadow_frame_->SetBoundsRect(GetLocalBounds());
+-
+-  // Expanding from the edge initially lays out a zero-width address field.
+-  // Restore the requested focus only once that field is actually displayed.
+-  if (GetProperty(kCoveFocusLocationAfterReveal) &&
+-      !state_controller_->IsCollapsed() && width() >= kUncollapsedMinWidth &&
+-      location_view_->GetVisible()) {
+-    SetProperty(kCoveFocusLocationAfterReveal, false);
+-    // A later command may have activated the palette while we expanded.
+-    // Do not steal focus back from that newer input surface.
+-    if (GetWidget() && GetWidget()->IsActive()) {
+-      location_view_->FocusLocation();
+-    }
+-  }
+ 
+   // Ensure that we update the drop arrow position so that it does not render in
+   // the collapsed state when expand on hover is active.

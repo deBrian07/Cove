@@ -61,3 +61,4 @@
 0061-anchor-command-bar-to-browser-window.patch
 0062-shortcut-routing-diagnostics.patch
 0063-preserve-newer-command-bar-focus.patch
+0064-complete-focus-reveal-before-next-command.patch
