@@ -1,0 +1,39 @@
+diff --git a/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc b/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
+--- a/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
++++ b/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
+@@ -11,6 +11,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/feature_list.h"
++#include "base/metrics/field_trial_params.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/memory_coordinator/traits.h"
+ #include "base/memory_coordinator/utils.h"
+@@ -96,8 +97,11 @@
+ }
+ 
+ bool IsSmartPreloadEnabled() {
+-  return IsFeatureEnabled() &&
+-         features::kPreloadTopChromeWebUISmartPreload.Get();
++  // Cove's primary command bar must not depend on historical engagement.
++  // Keep explicit feature parameters and the existing memory-pressure guards.
++  return IsFeatureEnabled() && base::GetFieldTrialParamByFeatureAsBool(
++      features::kPreloadTopChromeWebUI,
++      features::kPreloadTopChromeWebUISmartPreloadName, false);
+ }
+ 
+ content::WebContents::CreateParams GetWebContentsCreateParams(
+@@ -628,8 +632,11 @@
+     return false;
+   }
+ 
+-  return IsFeatureEnabled() &&
+-         features::kPreloadTopChromeWebUIDelayPreload.Get();
++  // about:blank may never produce a first non-empty paint. Warm the command
++  // bar on browser initialization rather than waiting for that unrelated page.
++  return IsFeatureEnabled() && base::GetFieldTrialParamByFeatureAsBool(
++      features::kPreloadTopChromeWebUI,
++      features::kPreloadTopChromeWebUIDelayPreloadName, false);
+ }
+ 
+ void WebUIContentsPreloadManager::OnProfileWillBeDestroyed(Profile* profile) {

@@ -53,3 +53,7 @@
 0053-accessibility-target-lifetime.patch
 0054-restore-sidebar-rows-after-empty-canvas.patch
 0055-refresh-canvas-visibility-after-navigation.patch
+0056-contextual-sidebar-shortcut.patch
+0057-eager-command-bar-preload.patch
+0058-hide-sidebar-to-edge.patch
+0059-retain-command-bar-between-invocations.patch

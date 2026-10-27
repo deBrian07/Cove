@@ -1,0 +1,129 @@
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -91,6 +91,8 @@
+ #include "ui/views/view_utils.h"
+ 
+ namespace {
++// Keep a native edge target for hover reveal without a persistent icon rail.
++constexpr int kCoveHiddenSidebarWidth = 6;
+ constexpr int kResizeAreaWidth = 5;
+ constexpr int kCollapsedResizeAreaWidth = 2;
+ constexpr int kKeyboardResizeWidth = 50;
+@@ -430,6 +432,25 @@
+     const views::SizeBounds& size_bounds) const {
+   views::ProposedLayout layout;
+ 
++  if (size_bounds.width().is_bounded() &&
++      size_bounds.width().value() <= kCoveHiddenSidebarWidth) {
++    layout.host_size = gfx::Size(kCoveHiddenSidebarWidth,
++                                size_bounds.height().value_or(0));
++    for (auto* child : {static_cast<views::View*>(top_button_container_.get()),
++                        static_cast<views::View*>(location_view_.get()),
++                        static_cast<views::View*>(space_footer_.get()),
++                        static_cast<views::View*>(content_area_view_.get()),
++                        static_cast<views::View*>(organizer_panel_view_.get())}) {
++      if (child) {
++        layout.child_layouts.push_back(
++            {.child_view = child, .visible = false, .bounds = gfx::Rect()});
++      }
++    }
++    return layout;
++  }
++  const bool show_cove_controls = !state_controller_->IsCollapsed() ||
++      size_bounds.width().value_or(0) >= kUncollapsedMinWidth;
++
+   // Get some constants that will be used for calculations.
+   const auto horizontal_padding =
+       GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
+@@ -443,7 +464,7 @@
+   }
+   const gfx::Size button_size =
+       top_button_container_->GetPreferredSize(button_available_size);
+-  const bool show_search = location_view_ && !state_controller_->IsCollapsed();
++  const bool show_search = location_view_ && show_cove_controls;
+   constexpr int kSearchFieldHeight = 36;
+   const int search_block =
+       show_search ? kSearchFieldHeight + vertical_padding : 0;
+@@ -468,7 +489,7 @@
+   // There's a bit of padding at the bottom of the tabstrip.
+   available.Inset(gfx::Insets::TLBR(0, 0, vertical_padding, 0));
+ 
+-  const bool show_footer = space_footer_ && !state_controller_->IsCollapsed();
++  const bool show_footer = space_footer_ && show_cove_controls;
+   constexpr int kFooterHeight = 36;
+   layout.child_layouts.push_back(
+       {.child_view = space_footer_.get(),
+@@ -528,6 +549,14 @@
+ }
+ 
+ void VerticalTabStripRegionView::Layout(PassKey) {
++  const bool compact = state_controller_->IsCollapsed() &&
++                       width() < kUncollapsedMinWidth;
++  if (library_view_) {
++    library_view_->SetCollapsed(compact);
++  }
++  if (favorites_view_) {
++    favorites_view_->SetCollapsed(compact);
++  }
+   LayoutSuperclass<BaseTabStripRegionView>(this);
+ 
+   // When animating the organizer panel in, as soon as it is visible, focus it.
+@@ -565,7 +594,7 @@
+ gfx::Size VerticalTabStripRegionView::GetMinimumSize() const {
+   auto min_size = BaseTabStripRegionView::GetMinimumSize();
+   min_size.set_width((state_controller_->IsCollapsed() || IsAnimatingSize())
+-                         ? kCollapsedWidth
++                         ? kCoveHiddenSidebarWidth
+                          : kUncollapsedMinWidth);
+   return min_size;
+ }
+@@ -578,11 +607,11 @@
+   const auto motion =
+       controller->GetCurrentMotion(TabStripAnimations::kVerticalTabStrip);
+   const int expand_amount =
+-      std::max(0, target_collapse_state_.uncollapsed_width - kCollapsedWidth);
++      std::max(0, target_collapse_state_.uncollapsed_width - kCoveHiddenSidebarWidth);
+   const double expand_percent =
+       *controller->GetCurrentValue(TabStripAnimations::kVerticalTabStrip,
+                                    TabStripAnimations::kTabStripWidth);
+-  size.set_width(kCollapsedWidth +
++  size.set_width(kCoveHiddenSidebarWidth +
+                  (motion == TabStripAnimations::kExpand
+                       ? std::floor<double>
+                       : std::ceil<double>)(expand_amount * expand_percent));
+@@ -818,7 +847,7 @@
+                             : "VerticalTabs_TabStrip_ResizeToUncollapsed"));
+     base::UmaHistogramCounts1000(
+         "Tabs.VerticalTabs.TabStripSize",
+-        new_state.collapsed ? kCollapsedWidth : new_state.uncollapsed_width);
++        new_state.collapsed ? kCoveHiddenSidebarWidth : new_state.uncollapsed_width);
+   }
+ 
+   target_collapse_state_ = new_state;
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -904,7 +904,8 @@
+             vertical_tab_strip_animation.current_motion ==
+                 TabStripAnimations::kCollapse;
+         unclipped_contents_region.Inset(gfx::Insets::TLBR(
+-            0, VerticalTabStripRegionView::kCollapsedWidth, 0, 0));
++            0, views().vertical_tab_strip_region_view->GetMinimumSize().width(),
++            0, 0));
+       } else {
+         unclipped_contents_region.Inset(gfx::Insets::TLBR(
+             0, horizontal_layout.vertical_tab_strip_width, 0, 0));
+@@ -1152,6 +1153,12 @@
+   // Inset the native viewport after side panels and infobars have received
+   // their normal layout. This leaves their controls and hit regions intact.
+   if (cove_page_frame) {
++    // With the sidebar hidden, keep native caption controls above the page.
++    // The expanded sidebar normally supplies their reserved space.
++    if (horizontal_layout.vertical_tab_strip_width <= 6) {
++      params.Inset(gfx::Insets::TLBR(36, 0, 0, 0));
++      unclipped_contents_region.Inset(gfx::Insets::TLBR(36, 0, 0, 0));
++    }
+     const gfx::Insets page_frame(kCovePageFrameInset);
+     params.Inset(page_frame);
+     unclipped_contents_region.Inset(page_frame);

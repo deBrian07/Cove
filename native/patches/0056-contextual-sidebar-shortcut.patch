@@ -1,0 +1,153 @@
+diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
+--- a/chrome/browser/ui/browser_actions.cc
++++ b/chrome/browser/ui/browser_actions.cc
+@@ -1155,7 +1155,11 @@
+                 }
+                 bool collapse = controller->GetCollapseState() ==
+                                 tabs::VerticalTabStripCollapseState::kExpanded;
+-                controller->RequestCollapse(collapse);
++                const auto previous_state = controller->GetCollapseState();
++                chrome::ToggleCollapseVerticalTabs(bwi);
++                if (controller->GetCollapseState() == previous_state) {
++                  return;
++                }
+                 if (context.GetProperty(chrome::kActionInvocationSourceKey) ==
+                     chrome::ActionInvocationSource::kKeyboardShortcut) {
+                   base::RecordAction(base::UserMetricsAction(
+@@ -1172,8 +1176,8 @@
+               },
+               bwi))
+           .SetActionId(kActionToggleCollapseVertical)
+-          .SetAccelerator(ui::Accelerator(
+-              ui::VKEY_L, ui::EF_SHIFT_DOWN | ui::EF_PLATFORM_ACCELERATOR))
++          .SetAccelerator(
++              ui::Accelerator(ui::VKEY_S, ui::EF_PLATFORM_ACCELERATOR))
+           .SetEnabled(false)
+           .Build());
+ 
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -79,10 +79,10 @@
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+-#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/dialogs/browser_dialogs.h"
+ #include "chrome/browser/ui/dialogs/outdated_upgrade_bubble.h"
+ #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+@@ -126,6 +126,7 @@
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/tab_search_bubble_host.h"
+ #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
+ #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -2646,6 +2647,12 @@
+ }
+ 
+ void ToggleCollapseVerticalTabs(BrowserWindowInterface* browser) {
++  if (auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser)) {
++    if (auto* host = browser_view->GetTabSearchBubbleHost();
++        host && host->DismissIfOpen()) {
++      return;
++    }
++  }
+   tabs::VerticalTabStripStateController* controller =
+       tabs::VerticalTabStripStateController::From(browser);
+   if (!controller) {
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/functional/bind.h"
+ #include "base/i18n/rtl.h"
++#include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/strings/strcat.h"
+ #include "base/trace_event/named_trigger.h"
+@@ -108,6 +109,9 @@
+                   frame_timing_details.presentation_feedback.timestamp;
+               base::TimeDelta time_to_show =
+                   presentation_timestamp - bubble_created_time;
++              VLOG(1) << "Cove command palette presentation_ms="
++                      << time_to_show.InMillisecondsF()
++                      << " cached=" << bubble_using_cached_web_contents;
+               base::UmaHistogramMediumTimes(
+                   bubble_using_cached_web_contents
+                       ? "Tabs.TabSearch.WindowTimeToShowCachedWebView2"
+@@ -226,6 +230,14 @@
+   return true;
+ }
+ 
++bool TabSearchBubbleHost::DismissIfOpen() {
++  if (!webui_bubble_manager_->GetBubbleWidget()) {
++    return false;
++  }
++  CloseTabSearchBubble();
++  return true;
++}
++
+ void TabSearchBubbleHost::CloseTabSearchBubble() {
+   webui_bubble_manager_->CloseBubble();
+ }
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.h b/chrome/browser/ui/views/tab_search_bubble_host.h
+--- a/chrome/browser/ui/views/tab_search_bubble_host.h
++++ b/chrome/browser/ui/views/tab_search_bubble_host.h
+@@ -53,6 +53,10 @@
+   bool ShowTabSearchBubble(bool triggered_by_keyboard_shortcut = false);
+   void CloseTabSearchBubble();
+ 
++  // Dismisses an existing palette, including one still loading.
++  // Returns false only when there is no palette widget.
++  bool DismissIfOpen();
++
+   BrowserWindowInterface* GetBrowser();
+ 
+   views::View* button() { return button_; }
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+@@ -10,8 +10,10 @@
+ #include "chrome/browser/themes/test/theme_service_changed_waiter.h"
+ #include "chrome/browser/themes/theme_service.h"
+ #include "chrome/browser/themes/theme_service_factory.h"
++#include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/test/test_browser_dialog.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/bubble/webui_bubble_manager.h"
+@@ -57,6 +59,25 @@
+     ASSERT_EQ(nullptr, bubble_manager()->GetBubbleWidget());
+   }
+ };
++
++IN_PROC_BROWSER_TEST_F(TabSearchBubbleHostBrowserTest,
++                       SidebarShortcutDismissesLoadingAndVisiblePalette) {
++  auto* controller =
++      tabs::VerticalTabStripStateController::From(browser_view()->browser());
++  ASSERT_TRUE(controller);
++  const auto initial_state = controller->GetCollapseState();
++  EXPECT_FALSE(tab_search_bubble_host()->DismissIfOpen());
++
++  for (bool visible : {false, true}) {
++    ASSERT_TRUE(tab_search_bubble_host()->ShowTabSearchBubble());
++    if (visible) {
++      bubble_manager()->bubble_view_for_testing()->ShowUI();
++    }
++    chrome::ToggleCollapseVerticalTabs(browser_view()->browser());
++    EXPECT_EQ(initial_state, controller->GetCollapseState());
++    RunUntilBubbleWidgetDestroyed();
++  }
++}
+ 
+ IN_PROC_BROWSER_TEST_F(TabSearchBubbleHostBrowserTest,
+                        BubbleShowTimerTriggersCorrectly) {
