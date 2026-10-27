@@ -1,0 +1,43 @@
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -27,6 +27,7 @@
+ #include "base/strings/escape.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/time/time.h"
++#include "base/logging.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+@@ -2647,9 +2648,11 @@
+ }
+ 
+ void ToggleCollapseVerticalTabs(BrowserWindowInterface* browser) {
++  VLOG(1) << "Cove sidebar command browser=" << browser;
+   if (auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser)) {
+     if (auto* host = browser_view->GetTabSearchBubbleHost();
+         host && host->DismissIfOpen()) {
++      VLOG(1) << "Cove sidebar command dismissed palette";
+       return;
+     }
+   }
+@@ -2660,6 +2663,7 @@
+   }
+   bool collapse = controller->GetCollapseState() ==
+                   tabs::VerticalTabStripCollapseState::kExpanded;
++  VLOG(1) << "Cove sidebar command collapse=" << collapse;
+   controller->RequestCollapse(collapse);
+ }
+ 
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -240,6 +240,8 @@
+ }
+ 
+ bool TabSearchBubbleHost::DismissIfOpen() {
++  VLOG(1) << "Cove palette dismiss widget="
++          << webui_bubble_manager_->GetBubbleWidget();
+   if (!webui_bubble_manager_->GetBubbleWidget()) {
+     return false;
+   }

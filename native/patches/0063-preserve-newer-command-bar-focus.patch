@@ -1,0 +1,16 @@
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -583,7 +583,11 @@
+       !state_controller_->IsCollapsed() && width() >= kUncollapsedMinWidth &&
+       location_view_->GetVisible()) {
+     SetProperty(kCoveFocusLocationAfterReveal, false);
+-    location_view_->FocusLocation();
++    // A later command may have activated the palette while we expanded.
++    // Do not steal focus back from that newer input surface.
++    if (GetWidget() && GetWidget()->IsActive()) {
++      location_view_->FocusLocation();
++    }
+   }
+ 
+   // Ensure that we update the drop arrow position so that it does not render in
