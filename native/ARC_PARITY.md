@@ -1,17 +1,27 @@
 # Arc reference and native parity
 
-The user's supplied screenshot is the visual target. All implementation belongs in Chromium's native UI and services; the retired Electron archive is reference only.
+The supplied Arc screenshots are the target: a roughly 250px violet sidebar, traffic lights and navigation on one row, a filled compact address field, icon-only Favorites cards, folder/pin hierarchy, a quiet New Tab row, bottom Space indicators and a narrow rounded frame around the page. Split views have independent headers and a joined sidebar row. All implementation belongs to the native Chromium fork; Electron is reference only.
 
-The target window has a roughly 250px purple sidebar, navigation beside the window controls, a compact address field inside the sidebar, favorite tiles, folder/tab hierarchy and space controls at the bottom. The page begins near the window's top edge with a thin rounded frame. Chromium's current full-width toolbar is still a visible gap: moving it safely requires a native compact location-bar host and vertical-mode layout changes, while preserving security indicators, menus, fullscreen and side panels.
+The native series through patch 0055 implements:
 
-The target command bar is roughly 760px wide with a 64px query field and five compact rows. Each row has a small favicon, a single-line title and a right-aligned action. It uses a dark surface, a thin border, a strong blue selection and a restrained shadow.
+- Caption-row Back/Forward/Reload/site information and a 36px filled address field, preserving current-tab editing, search-engine classification, Escape and Command+Return behavior.
+- Profile-global Favorites as real persisted URLs, with 48px-high icon-only cards that share available row width and local Chromium favicon-cache lookup. No default websites or dummy app tiles are inserted.
+- A compact Space title/folder/pin library, native rename dialogs and saved folder expansion. Folder removal retains pins.
+- A flat left-aligned New Tab row above tabs, with the native command palette callback retained.
+- Bottom Archive Today, Space dots and a plus/options menu. Archive uses native close/history and beforeunload, retaining pins/Favorites and the window.
+- Softer violet default surfaces plus a 6 DIP native frame and 12 DIP single-page corners, while preserving custom themes, high contrast, fullscreen, side panels and native split corner handling.
+- Live Space switching, stable pin activation after navigation, first-press close for retained pins and a placeholder when the last retained pin closes.
+- Native Cocoa footer menus on macOS. Repeated New Folder use, Favorite creation, pin close and command/address navigation were exercised in the running app.
+- Cleanup guards that keep intentionally blank split canvases, plus safe accessibility event dispatch when a native menu action deletes its target view.
 
-Implemented in this pass:
+The latest live pass also exercised split creation, focus and separation, command-bar URL submission, and the retained-pin lifecycle. Patches 0054–0055 passed the final native empty-to-real tab, Archive Today and reopen checks. Other build and runtime observations are in [VALIDATION.md](VALIDATION.md). Cove remains an incomplete Arc replica; source changes and renderer smoke do not establish full interaction parity.
 
-- Native Cmd+T and sidebar New Tab open the same centered command palette.
-- Native omnibox classification opens URLs or searches through the selected search engine.
-- Submitting a new navigation or switching a tab closes the native bubble.
-- Command+Return forces new navigation; IME composition does not submit.
-- Dark purple default chrome, compact vertical-tab spacing and one-line palette rows.
+## Remaining gaps
 
-Remaining native work includes the compact sidebar address/navigation host, Favorites, folders, Spaces, pinned/temporary-tab organization, current-tab URL editing with Cmd+L, history suggestions, the reference's flat result list and complete motion/focus parity. The current implementation still inherits Chromium's Open Tabs / Recently Closed sections. Visual resemblance is not a claim of exact Arc behavior or measured latency.
+1. Full per-Space session ownership after restart. Inactive pages rejoin Chromium's session service for shutdown, so restored tabs can be merged. URL snapshots are a compatibility fallback, not full native state restoration.
+2. Complete pin-model unification, pinned-home/reset rules, nested folders and drag/reorder between folders and Spaces. Covered native pin tiles are hidden in the expanded sidebar; collapsed and uncovered pins retain native rendering. Split-pin removal currently preserves native split membership rather than fully synchronizing every flag.
+3. Exact split-pane address/navigation headers, joined split sidebar rows, drag-to-split and more than two panes. Native creation/focus/separation commands exist, but reference layout parity is not established.
+4. Arc's recent-tabs chooser, Space keybindings, configurable shortcuts, Peek, Little Arc and import.
+5. Measured focus/motion latency, accessibility, reduced-motion and performance parity. Production signing, updater, complete icons/metadata and Chromium security maintenance remain.
+
+The command bar targets approximately 760px width, a 64px query field and five 48px single-line result rows, with a dark surface, blue selection, thin border and restrained shadow. URL/search/tab-switch submission dismisses the native bubble. Remaining layout differences must be assessed from the rendered app rather than a mockup.

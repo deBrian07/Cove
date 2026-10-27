@@ -1,6 +1,8 @@
 # Copied Chromium workspace
 
-The active build image is `CoveChromium/CoveBuild.sparsebundle` inside this repository. It is the user's copy of the completed native build, not a fresh checkout. The folder is ignored by Git because it contains build artifacts, caches and private browser profiles.
+Current selection (2026-10-25): the user reconnected SanDisk and selected its existing CoveChromium directory. The project image path is a symbolic link to `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle`. The original internal copy is preserved as `CoveBuild.local-backup.sparsebundle`. See [EXTERNAL_BUILD.md](EXTERNAL_BUILD.md). Do not mount both copies at once or merge their profiles.
+
+The project path `CoveChromium/CoveBuild.sparsebundle` links to the user's existing native build image on SanDisk. It reuses the completed checkout and output. The folder is ignored by Git because it contains build artifacts, caches and private browser profiles.
 
 The native launcher mounts this exact image at `/Volumes/CoveBuild`. Keeping that mount path preserves the source paths recorded in the existing Ninja build files.
 
@@ -31,11 +33,11 @@ Keep native source changes represented in `native/patches/`. Generate a changed 
 
 ```sh
 npm run chromium:gen
-npm run build -- --jobs 4
+npm run build -- --jobs 2
 npm start
 ```
 
-Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48`, bundle ID `dev.cove.browser`. The current sidebar is Chromium's native vertical tab strip with Cove defaults; The native command palette now supports new URL/search navigation and tab switching; Spaces and Arc-style Favorites still need native implementations.
+Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48` at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`, bundle ID `dev.cove.browser`. The native patch series currently has 55 ordered patches. It adds live Spaces, global Favorites, folders, pin handling and sidebar navigation; per-Space session restoration and other Arc workflows remain incomplete. See [ARC_PARITY.md](ARC_PARITY.md) and [VALIDATION.md](VALIDATION.md).
 
 The APFS image has a growable virtual capacity. Its backing drive must also have real free space. Default storage checks use the smaller of the image's free space and the backing drive's free space, so a large virtual capacity cannot hide a full host disk.
 
@@ -45,4 +47,4 @@ Quit native Cove and finish all build commands before detaching the image:
 hdiutil detach /Volumes/CoveBuild
 ```
 
-The original SSD image is no longer the default. Its creation and handling are recorded in [the historical external setup](EXTERNAL_BUILD.md).
+The active image is on the external SanDisk SSD. See [EXTERNAL_BUILD.md](EXTERNAL_BUILD.md) for its location and safe reattach procedure.

@@ -1,30 +1,57 @@
-# Native UI validation - 2026-10-24
+# Native validation — 2026-10-26
 
-The copied local APFS image was used; the external SSD was not needed or modified. All eight patches apply in order to pinned Chromium `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c` (`156.0.8078.48`).
+## Current build and storage
 
-The native `chrome` target compiled and linked successfully in the existing `out/Cove`. Native WebUI TypeScript, template and CSS lint passed as part of that build. The application is `Cove.app`, bundle ID `dev.cove.browser`, with the native Cove framework rather than Electron.
+Cove is native Chromium `156.0.8078.48`, pinned to `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`. The current ordered series contains 55 patches. GN generation and the complete native build succeeded; the last incremental build completed 3 steps in 1m00.47s.
 
-`npm run test:ui` passed using the actual native renderer and a separate temporary profile. The final Tab Search WebUI regression TypeScript target also compiled successfully.
+Both `generated_config` and `built_config` equal:
 
-`npm test` passed: 29 build-tool tests and 3 patch-verifier tests. The verifier also applied the complete series against original source files with pinned SHA256 checks.
+```text
+d623603353096572a62dd1ea4be06bb221d3a7b0e412855bdce177e3fac77ab3
+```
 
-In the actual native UI, an isolated `CoveUIValidation-*` profile was used for testing, with a mock Keychain confined to that test profile. Normal `npm start` does not enable a mock Keychain. Verified observations:
+The user reconnected the external disk. Doctor mounted the existing `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle` at `/Volumes/CoveBuild` and passed. The SSD is still mounted as ExFAT; its last checked free space was 871531282432 bytes. Source/output remain inside the APFS image. Existing SSD files, the internal backup and browser profiles were preserved. No checkout reset, disk formatting or build-output deletion was used.
 
-- Cmd+T opened the centered native command bar.
-- Native URL submission opened `chrome://version/` and closed the bar, with focus returned to the page.
-- Typing immediately after Cmd+T filtered the query `zzcove`. Return opened the default-engine Google results in a new tab and dismissed the bar.
-- Reopening the cached palette accepted the query `ab`; Escape dismissed it and returned focus to the Google page.
-- Sidebar New Tab opened the same palette.
-- The dark purple frame and compact palette were inspected in a native screenshot.
+## Automated checks
 
-Runtime checking caught an action-dispatch recursion in the initial New Tab wiring. The final callback calls the native palette directly, preserving the regular new-tab fallback for incognito and other window types. Native widget activation and WebView focus are explicit on show; DOM input focus is restored on cached reopens.
+- All 32 Python build-tool tests and 4 patch-verifier tests passed.
+- The full ordered 55-patch series applies in a disposable fixture against original upstream files and pinned SHA256 checks.
+- The native application built successfully with matching configuration records.
+- Native Chromium renderer smoke passed on the final patch set with an isolated temporary profile.
+- `cove_accessibility_lifetime_smoke` built and ran successfully against Cove's actual Views component. It checks a normal default action receives press/release and that a view deleted during press receives no subsequent release. Output: `PASS: accessible default action preserves release and survives target deletion on press`.
 
-Limits: the three new WebUI regression cases were type-checked, not executed in `browser_tests`. Mouse submission and extended tab-switch/IME/Command+Return interaction checks remain incomplete because the UI automation lost popup handles and the user interacted with the app during validation. There is no measured latency, frame-time, reduced-motion, accessibility or complete Arc-parity claim. Remaining visible layout gaps are recorded in [ARC_PARITY.md](ARC_PARITY.md).
+The lifetime executable uses a custom event fixture around the real View::HandleAccessibleAction dispatcher. It initializes AXPlatform but does not create a Widget/AppKit window. It is a focused lifetime regression, not proof of all Cocoa/screen-reader behavior. Its target is independent of the full browser test suite and does not access a browser profile.
 
-## Controls pass wrap-up
+## Actual native UI observations
 
-Patches 0009–0012 add visible native Split View controls, Mac shortcut mappings, pane focus/separation commands, explicit pin/unpin command-bar actions and regression cases. The full 12-patch series verifies against pinned upstream source. The native application rebuilt successfully, including the final 14-step incremental rebuild after the last edits, and the native renderer smoke test passed. The recorded generated and built digests match the final patch configuration. All 32 tooling/verifier tests passed again.
+CUA used isolated CoveUIValidation-* profiles. The final production-bundle profile is `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Final-d6236033`. CoveDevelopment, Arc and the retired Electron profile were not used for test data. Mock Keychain is limited to these QA/smoke profiles; ordinary npm start does not use it.
 
-The new native C++ browser/menu/interactive tests were added but not built or executed. The new controls have not had an end-to-end GUI walkthrough; do not treat compilation as proof that every binding and model behavior works interactively. The user explicitly requested wrapping up before their usage limit. `HANDOFF.md` and `CONTROLS.md` record the continuation steps and implemented mappings.
+Observed in the running native app:
 
-The final `chrome/test/data/webui/tab_search:build_ts` target passed as well, including the newly added action regressions. This establishes test compilation, not execution.
+- The filled sidebar address field, caption navigation, narrow rounded page frame, quiet New Tab row and footer controls render. Active pins expose selected state and avoid a duplicate expanded native pin grid. Folder icons and active Space dots have corrected insets.
+- The native Cocoa footer menu created three folders through repeated open/action/reopen. Cmd+L remained responsive afterward and the fixture's page-instance UUID stayed identical. Favorite addition worked and its saved URL appeared across Spaces.
+- Cmd+D produced one selected persistent pin row. One Cmd+W closed its page while preserving the saved row and window. The empty canvas had no visible placeholder tab row.
+- The command bar accepted the controlled local URL `http://127.0.0.1:8765/second.html?command-check`; Return opened it, dismissed the bar and returned focus to the page. Its selected row has symmetric insets and an unclipped action arrow; hidden section headers no longer reserve phantom rows.
+- Creating a native split from a marked blank Space retained the left blank pane while the right pane navigated to the local second page. Ctrl+Shift+1 and Ctrl+Shift+2 focused the correct panes. Ctrl+Shift+Minus separated them. Cmd+Alt+Up/Down reached both retained tabs afterward.
+- Final patches 0054–0055 passed the specific empty-to-real transition: a fresh Work Space initially hid its canvas row, navigation of that same tab revealed the real page row and enabled Archive Today.
+- Archive Today then closed that ordinary page while keeping the window on an empty canvas. Cmd+Shift+T restored the page and its visible tab row; after queued cleanup settled, the temporary blank placeholder was gone.
+
+Earlier foundation/runtime passes also preserved the exact page UUID, unsent draft, history fragment, pin and split state across Space round trips. Inactive guarded pages participated in the native beforeunload pipeline, and canceling close preserved the original page. Those tests preceded the final presentation changes; they were not all rerun in this final pass. The native rename dialog previously selected the existing name, rejected whitespace and saved the replacement on Return. Folder move activation remains incompletely verified.
+
+## Reproduced crash and fix
+
+A real QA crash produced `/Users/brianchen/Library/Logs/DiagnosticReports/Cove-2026-10-26-205025.ips`. It was a null virtual dispatch from `views::View::HandleAccessibleAction` during native accessibility activation. A menu action could rebuild and delete its originating button during the synthetic press, after which the handler sent release to the destroyed view.
+
+Patch 0053 tracks the target across press and suppresses release if it was destroyed. The native regression passed, and repeated menu actions plus subsequent keyboard navigation completed in the real app. This is stronger evidence than treating every stale AX handle or closed popup as a crash. It is not a general crash-free guarantee.
+
+The earlier parked-tab delayed-metrics crash is separately guarded by 0020, and the split-navigation null-window path by 0021. Do not drop those patches while retaining live detached Spaces.
+
+## Limits and next checks
+
+Full browser_tests, unit_tests and interactive_ui_tests binaries have not been built/run. Five CoveSidebarLibraryBrowserTest cases, split/pin command source regressions and the detached-metrics regression remain unexecuted. An earlier optional single test-object build pulled thousands of prerequisites and was stopped; that does not count as test execution.
+
+No exact Arc-parity, measured latency/frame-time, reduced-motion, complete accessibility or memory/performance claim is made. Full per-Space session ownership after restart, pinned-home/model unification, drag/nested folders, exact pane headers/joined split rows, more than two panes, recent-tabs/Space shortcuts, Peek/Little Arc/import, standalone packaging, signing and updater remain unfinished. See HANDOFF.md and ARC_PARITY.md.
+
+## Completion note
+
+The final renderer smoke passed, the configuration records match the 55-patch digest above, and Git whitespace checks passed. Native fixes are committed in `46628f7`, `bdc093f` and `9ecabbc`, without co-author trailers. Documentation records the remaining gaps instead of presenting this as full Arc parity.

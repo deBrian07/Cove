@@ -1,120 +1,108 @@
-# Cove handoff — 2026-10-24
+# Cove continuation — 2026-10-26
 
-## Start here
+## Objective and boundaries
 
-Cove's active application is the native Chromium fork. Electron is retired under `legacy/electron/`; it is reference material, not a launch target. Read the root `AGENTS.md`, this file, `CONTROLS.md` and `ARC_PARITY.md` before continuing.
+Cove is an unfinished native Chromium fork targeting the supplied Arc screenshots and workflows. Use native source and the ordered patch series. Electron stays retired in `legacy/electron/`. Do not call the result exact Arc parity or fully validated. Make focused commits without co-author trailers.
 
-The user wants Arc's actual workflows as well as its appearance. Their latest reference includes a purple vertical sidebar, favorite tiles, folders, a joined split-tab row, two independently navigable panes and pane-specific controls. They specifically asked to fix keybindings, splits and pins. They requested wrapping up before their usage limit, with an honest account of unfinished work. Make commits without co-author trailers.
+The user authorized closing all Cove instances and reopening the isolated QA profile. Preserve Arc, other apps and all saved browser data. Normal `npm start` uses CoveDevelopment; QA must use a separate CoveUIValidation-* profile. Never reset a profile to fix UI behavior.
 
-## Exact workspace
+## Active storage
 
 - Repository: `/Users/brianchen/Documents/Cove`
-- User-copied image: `/Users/brianchen/Documents/Cove/CoveChromium/CoveBuild.sparsebundle`
-- Image mount: `/Volumes/CoveBuild`
-- Managed checkout: `/Volumes/CoveBuild/checkout`
-- Chromium source: `/Volumes/CoveBuild/checkout/chromium/src`
+- External backing image: `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle`
+- Ignored project link: `CoveChromium/CoveBuild.sparsebundle` points to that image.
+- Retained internal backup: `CoveChromium/CoveBuild.local-backup.sparsebundle`
+- APFS mount: `/Volumes/CoveBuild`
+- Checkout: `/Volumes/CoveBuild/checkout`
+- Source: `/Volumes/CoveBuild/checkout/chromium/src`
 - Output: `/Volumes/CoveBuild/checkout/chromium/src/out/Cove`
-- App: `out/Cove/Cove.app`, executable `Contents/MacOS/Cove`
-- Runtime: Chromium `156.0.8078.48`; source `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`
-- Bundle ID: `dev.cove.browser`
-- Normal development profile: `/Volumes/CoveBuild/checkout/profiles/CoveDevelopment`
+- App: `out/Cove/Cove.app`; executable `Contents/MacOS/Cove`; bundle `dev.cove.browser`
+- Normal profile: `/Volumes/CoveBuild/checkout/profiles/CoveDevelopment`
+- Chromium: `156.0.8078.48`, revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`
 
-The external SSD is not required for this copied workspace. Do not reformat it, delete its original image, replace an occupied mount point, reset the native checkout or delete `out/Cove`. The build image and profiles are ignored by Git. Disk checks account for the backing drive, not just the image's virtual capacity. Incremental builds retain a 20 GiB reserve when a compiled native output exists.
+The SSD remains ExFAT, with source/builds inside its dedicated APFS image. No disk was reformatted. Do not mount the internal backup and external copy simultaneously: they share an APFS identity and mount point. Do not let a missing external mount silently create an internal `/Volumes/...` directory. Keep the 20 GiB build reserve. Quit Cove and stop builds before detaching/ejecting normally; never force-detach a busy image.
 
-## Run/build/check commands
+On reconnection, `python3 scripts/chromium/cove_chromium.py doctor --stage run` mounted the existing image and passed. It reported 655.4 GiB inside the image and 811.68 GiB on the backing SSD at that check. Reuse the checkout and out/Cove; do not reset or delete them.
+
+## Build and launch
 
 ```sh
-npm start
 npm run doctor
+npm start
 npm test
 npm run test:ui
 npm run chromium:gen
-npm run build -- --jobs 4
+npm run build -- --jobs 2
 ```
 
-Default commands mount the copied local image when necessary. `npm start` launches the existing binary; it does not compile. New patches require `gen` before `build`. Reuse the cached output. A shared Mojo interface change recompiles several minutes of native UI dependencies; a leaf UI change is much smaller.
+`npm run build` already maps to the native build command. The build and launch guards compare the ordered patch/configuration digest with `generated_config` and `built_config` in `/Volumes/CoveBuild/checkout/.cove-chromium-state.json`. Do not edit patch inputs during GN/Ninja. Root repository commits do not change the pinned Chromium checkout revision.
 
-The patch series and upstream checksums are in `native/patches/series` and `native/upstream-files.json`. Patches 0009–0012 are deltas over the earlier applied series. Do not regenerate these with an unrestricted `git diff HEAD` against already-patched files: that duplicates previous patches. Save pre-edit contents, generate the new delta, and verify the entire ordered series.
+This is a component development build. Keep the complete out/Cove and image available; copying only Cove.app is not a standalone distribution. Signing, packaging and updating remain unfinished.
 
-`verify_patches.py --source` expects ORIGINAL pinned source files, not the modified checkout. This session kept an original-source fixture at `/tmp/cove-original-source`; this is temporary and may disappear. The verifier can also download its bounded set of pinned public files normally.
+## Saved work
 
-## Completed earlier and committed
+- `b9d6df1`: build identity and ordered patch verification.
+- `76e3020`: patches 0013–0022, navigation and live Space ownership.
+- `37da263`: patches 0023–0036, native sidebar layout and persistent workflows.
+- `46628f7`: patches 0037–0047, rendered layout, command-bar geometry, pin/canvas presentation and control lifetime fixes.
+- `bdc093f`: patches 0048–0053, reserved focus shortcuts, Cocoa menus, organized canvas protection, active pin appearance and the accessibility lifetime regression.
+- `9ecabbc`: patches 0054–0055, tab-list visibility and navigation-driven canvas/Archive Today state.
 
-- `279b3f2`: retired Electron, made the copied native build the default, preserved the archive and separate profiles, added local image/build safety checks.
-- `d67a64f`: native centered command bar, URL/default-engine search, explicit dismissal, compact one-line results, dark purple chrome and sidebar spacing.
-- That pass compiled and its native renderer smoke test passed. `npm test` passed 29 tooling plus 3 patch-verifier tests.
-- Actual native UI observations from that pass: Cmd+T, URL submission, default-engine search, command-bar dismissal, cached reopening and Escape. See `VALIDATION.md` for limits.
+The complete 55-patch series is committed and built. Both generated_config and built_config equal `d623603353096572a62dd1ea4be06bb221d3a7b0e412855bdce177e3fac77ab3`. Final GUI checks confirmed tab rows and Archive Today become available after in-place canvas navigation, Archive closes the ordinary page while preserving the window, and Cmd+Shift+T restores the page with its visible row. Queued cleanup then removes the temporary placeholder. Final native renderer smoke passed. Read VALIDATION.md before claiming broader parity.
 
-## Current controls pass (0009–0012)
+## Implementation that matters for safety
 
-Implemented in source:
+0018 parks detached native Tab/Group/Split collections per window rather than closing/recreating pages on Space changes. It preserves WebContents, drafts, JavaScript, history and active selection. Incoming tabs are inserted before outgoing tabs detach, avoiding the last-tab close path. Inactive pages rejoin Chromium's unload/session pipeline before window close; cancellation parks them again. Retain the corresponding 0020 delayed-tab-metrics and 0021 split-navigation guards for detached tabs.
 
-- Show Chromium's native Split View button by default; preserve an explicit saved unpin choice.
-- Map Cmd+D to native pin/unpin and Cmd+S to sidebar collapse/expand.
-- Move Save Page to Cmd+Shift+S, retain bookmark access through the native menu.
-- Map Cmd+Shift+C to Copy Current URL, keeping Cmd+Option+C for Inspect.
-- Map Cmd+Option+Up/Down to previous/next sidebar tab.
-- Add Control+Shift+Plus to create a split, Control+Shift+1/2 to focus its panes, and Control+Shift+Minus to separate it while keeping both tabs/history.
-- Expose the new controls in the native Tab menu.
-- Add real command-bar actions for explicit Pin and Unpin, sidebar visibility, split creation/removal, pane focus, duplicate, reopen and copy URL.
-- Disable unavailable actions with an explanation; keep Cmd/Ctrl+Return searching literal command words.
-- Use native command allowlisting and current model-state checks, avoiding arbitrary command IDs from the renderer.
-- Handle Cove-only split command IDs in the browser command controller before Chromium's declarative action adapter, avoiding recursive command dispatch.
+0033–0036 bind persistent pins to stable live native handles. A navigated pin reuses its current page; after closing, its saved row reopens the stored home URL. Retained pin close uses native beforeunload without Chrome's extra pin toast. Last-pin close and Archive Today keep a marked blank canvas instead of closing the window. Archive uses normal close/history and retains pins/Favorites.
 
-New private IDs are in `chrome/app/cove_command_ids.h` (35070–35072). They are deliberately separate from the large upstream command-ID header. Audit for collisions when updating Chromium.
+0040 hides the duplicate expanded native pin grid only when every native pin is represented by the library. Collapsed/uncovered native pins retain upstream rendering. 0041 marks only Cove-created placeholders and performs deferred stable-handle cleanup. 0043 distinguishes ordinary user-created about:blank tabs from those placeholders. 0051 excludes pinned, split or grouped canvases from cleanup, including a final recheck before closing a handle. Do not remove these model/lifecycle guards as a cosmetic shortcut.
 
-Added native browser regressions cover create/focus/separate preserving tabs/URLs and pin/unpin retention. Added Mac menu shortcut coverage and split-button preference coverage. Added WebUI action, modified-Return, disabled-action and explicit pin/unpin regressions. Added tests are not evidence of execution; see final validation status below.
+0049 reserves sidebar location/search focus before macOS's first responder while preserving the upstream app/fullscreen policy gates. Cmd+L routes to the visible address field; command dispatch through hidden toolbar actions is also handled.
 
-## What remains unfinished
+0050 uses system Cocoa menus on macOS. Destroy the old menu runner before replacing its model. Keep the native MenuButton controller, pressed lock and weak guard after RunMenuAt, because the Cocoa call can block and an action can rebuild/delete its originating button.
 
-### First priority: runtime verification of this controls pass
+0052 updates pin selection/favicon styling in place instead of recreating buttons on selection/navigation. It also adds native folder icons and corrects footer icon/dot insets. 0053 fixes the reproduced accessibility use-after-free in View::HandleAccessibleAction: a native menu action can delete the pressed view, so a ViewTracker must suppress the subsequent synthetic release when the target no longer exists.
 
-Walk through every shortcut in `CONTROLS.md` in the final compiled binary, including after restarting the app. Check actual pin persistence, split creation with a new page and with an existing tab, independent navigation, pane focus, separator dragging, swapping, orientation, closing one pane, separation and session restoration. Verify command-bar mouse submission as well as keyboard actions. Verify these from page content, not only from an already-focused toolbar.
+0054 derives unpinned-list visibility from newly calculated bounds, not the scroll view's previous hidden state. 0055 refreshes canvas coverage and Archive Today availability when a tab changes, including navigation of an existing placeholder without a model insertion.
 
-The full native test binaries have not been built/run for these changes. Useful targets/filters, once built:
+## Verification
 
-- `browser_tests`: `BrowserCommandControllerBrowserTest.Cove*` and `TabSearchTest.*Page*` (check the current platform's MAYBE_Page/disabled status).
-- `unit_tests`: `MainMenuBuilderTest.CoveControlsHaveDiscoverableShortcuts`.
-- `interactive_ui_tests`: `*CoveDefaultVisibleAndExplicitUnpin*`.
-- WebUI typecheck target: `chrome/test/data/webui/tab_search:build_ts`.
+See `VALIDATION.md` for the final build digest and latest GUI results.
 
-The default split-button preference changes an upstream default. Other toolbar-customization suites may need explicit baseline preferences, rather than changing Cove's intended default to satisfy an old assumption.
+- All 32 build-tool Python tests and 4 patch-verifier tests pass.
+- The ordered series applies against the original pinned upstream files with SHA256 checks. `/tmp/cove-original-source` is a disposable fixture, reconstructed from `git show HEAD:<path>` using native/upstream-files.json. Do not pass the patched checkout to verify_patches.py as original source.
+- Native application builds and renderer smoke tests have passed repeatedly. Final state must still match the current patch/config digest.
+- The native `cove_accessibility_lifetime_smoke` executable passed. It calls the real View accessibility default-action dispatcher with a small custom event fixture, checks normal press/release, and checks target deletion during press. It initializes AXPlatform and avoids unrelated Widget/AppKit setup. This is not a full Cocoa/widget test.
+- Real GUI checks passed for repeated native folder creation, Favorite addition, Cmd+L navigation after menus, one-press persistent pin close, selected pin state, command-bar URL submission/dismissal, split creation from a marked empty Space, right-pane navigation, pane focus and separation. Both separated tabs remained reachable through native tab cycling.
+- Earlier live-Space QA preserved the exact page UUID, unsent draft and history across a Space round trip. Inactive guarded pages participated in native beforeunload; cancellation preserved the original live page.
 
-### Arc behavior/model gaps
+The full browser_tests/unit_tests/interactive_ui_tests binaries have not run. Five CoveSidebarLibraryBrowserTest source cases, split/pin command regressions and the detached-metrics regression are not execution evidence. Earlier WebUI test TypeScript compiled, but those browser tests were not executed.
 
-- Favorites, Spaces and folders are not implemented natively.
-- Pins currently use Chromium's pinned-tab/session model. Arc's pinned-home URL, reset/replacement, close-without-removing-pin and archive behavior are not implemented. Chromium's pinned-tab close confirmation remains.
-- Native splits currently support two panes. Arc's larger splits and exact sidebar drag-to-split behavior are not established.
-- Arc's five-recent-tabs Ctrl+Tab chooser is missing. Do not present Chromium's existing tab cycle/MRU behavior as an exact equivalent.
-- Cmd+L currently uses Chromium's native address bar; centered current-tab URL editing is not ported.
-- Spaces shortcuts, Little Arc, Peek, archive/Clear Today, custom shortcut settings, pin renaming and full Arc split/favorite semantics remain.
+To build/run the small native lifetime check after a valid gen/build:
 
-### Visual/layout gaps
+```sh
+export PATH="/Volumes/CoveBuild/checkout/depot_tools:$PATH"
+export DEPOT_TOOLS_UPDATE=0 DEPOT_TOOLS_METRICS=0
+cd /Volumes/CoveBuild/checkout/chromium/src
+autoninja -C out/Cove -j 2 cove_accessibility_lifetime_smoke
+out/Cove/cove_accessibility_lifetime_smoke
+```
 
-- The full-width Chromium toolbar remains above the page. Arc's compact sidebar address/navigation host and page starting at the top edge are not implemented.
-- Existing layout owner: `chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc`. `CalculateTopContainerLayout()` consumes toolbar height; vertical-sidebar layout is also managed there.
-- Do not blindly reparent/narrow the entire ToolbarView: it can be backed by WebUI and has minimum-width/security/menu assumptions. Build a compact native sidebar location/navigation host, then change vertical-mode layout while preserving horizontal mode, fullscreen and side panels.
-- Favorite tiles, folder hierarchy, bottom space dots, exact pane headers/borders, flat command results and detailed typography/spacing still differ from the reference.
-- No measured animation latency, frame time, reduced-motion, accessibility or memory/performance parity claim is justified yet.
+## QA cautions
 
-### Product maintenance
+Use CUA for UI interaction. Freshly read AX state before using element IDs. Native menus can lose stale AX item handles between tool calls; direct mouse opening and keyboard item selection in one interaction worked. Cmd+T needs an observation after opening before typing into its newly focused WebUI field. Verify the query text before submitting; automation paste/typing occasionally failed to deliver the intended punctuation or text. Do not diagnose that as a navigation classifier bug without inspecting the actual field value.
 
-Native branding still includes upstream Chromium icon/descriptions in places. Production signing/notarization, update delivery, upstream security maintenance and an explicit data importer remain. Keep Arc, Electron and native profiles separate.
+A real crash at `/Users/brianchen/Library/Logs/DiagnosticReports/Cove-2026-10-26-205025.ips` had a null virtual dispatch from View::HandleAccessibleAction during native accessibility activation. The ViewTracker fix addresses that exact gap; the small native regression passed. After a crash, CUA can auto-launch a default-profile window. Confirm the process/profile before further input instead of treating that window as QA.
 
-## UI automation lessons
+Unique renamed QA app bundles caused very long CUA attachment calls, including a 3682-second stall, despite the underlying native build already succeeding. Prefer the production dev.cove.browser bundle with exactly one explicitly launched QA-profile instance. The ordinary run command intentionally refuses profile overrides, so QA launch is a separate controlled development operation. Never weaken Keychain, browser security warnings or OS permissions to fix an attachment problem. Mock Keychain is confined to explicit test profiles; normal npm start does not use it.
 
-Use CUA for interactive app control. Its macOS `typeText`/paste sometimes chose the main omnibox while a popup was open; individual `pressKey` characters worked for command-bar checks. Popup destruction can leave a stale window handle (`cgWindowNotFound`) or cause a large AX snapshot timeout even when the browser is healthy. Reconnect and verify before diagnosing a product crash.
+A local-only fixture at `/tmp/cove-runtime-fixture` is served on 127.0.0.1:8765 for forms, stable page identity, history and beforeunload. Temporary files/logs disappear across reboots; retain conclusions here rather than relying on /tmp alone.
 
-Test-only `CoveUIValidation-*` profiles used `--use-mock-keychain`; normal launch does not. Never enable that flag for the user's normal profile to avoid a Keychain prompt. Do not accept permissions or disable encryption as a UI fix. The normal development profile previously showed a Keychain/relaunch notice after a canceled OS prompt.
+## Next work, in order
 
-A real earlier crash was action-dispatch recursion: calling `ExecuteCommand(IDC_NEW_TAB)` from its own action callback reinvoked the same action. The committed code calls the native helper directly instead. Maintain that separation when wiring future controls.
-
-## Final validation status for this controls pass
-
-Updated at wrap-up below; source implementation and patch applicability must be distinguished from compiled/runtime-verified behavior.
-
-The final ordered 12-patch series verifies successfully. All 32 Python tooling/verifier tests pass. The native `chrome` target built successfully (249-step shared-interface rebuild, followed by a final 14-step incremental build after the last edits). `npm run test:ui` then passed using the actual native renderer in a separate temporary profile. Both recorded `generated_config` and `built_config` match the final patch/configuration digest. The app is ready to launch with `npm start`; no compile remains running.
-
-The new C++ browser, menu and interactive test binaries have NOT been built/run. The current controls pass has NOT had its end-to-end GUI walkthrough. Those are the first continuation tasks, ahead of adding more features. Product WebUI TypeScript/template/CSS checks passed during the native build; the final `chrome/test/data/webui/tab_search:build_ts` target also passed, type-checking the new WebUI regression tests. These tests were not executed in a browser-test binary.
-
-Build-tool hardening follow-up: capture the patch/configuration digest before starting Ninja and reject a changed digest at completion. The current driver recomputes the digest when recording success. Avoid editing patches during a compile; this session explicitly runs a final gen/build after the last edits so the final recorded build corresponds to the final source.
+1. Persist per-Space ownership across native session restore. Current shutdown reunites inactive tabs for Chromium persistence, so restart can merge ownership; URL snapshots are only a fallback. BrowserLiveTabContext::GetExtraDataForTab and SessionService::AddTabExtraData can store a stable Space ID. Restore it in browser_tabrestore.cc before insertion. Persist the active Space per window via GetExtraDataForWindow too. Reconstruct detached ownership after bulk restore, preserving native groups/splits and respecting canceled unload. This was researched, not implemented.
+2. Complete pin-model unification, home/reset behavior, folder move/reorder coverage, nested folders and dragging between folders/Spaces. Favorites are global saved URLs; do not infer complete global live-tab ownership from that.
+3. Add Arc-style pane-specific URL/navigation headers and joined split rows. Current native controls support two panes; exact reference layout, drag-to-split and more panes remain unfinished.
+4. Finish Space shortcuts, recent-tab chooser, configurable keybindings, Peek, Little Arc and import.
+5. Measure focus/frame-time/memory behavior and validate reduced motion/accessibility. Finish branding/icons, standalone packaging, signing/notarization, updater and Chromium security maintenance before treating this as a production browser.
