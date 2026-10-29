@@ -28,3 +28,5 @@ The existing `out/Cove` directory is reused. No Electron dependency, entrypoint 
 The native patches add a centered dark command palette, URL/default-engine search, tab switching and compact vertical tabs. ⌘T opens the palette; Return opens a selected tab or submits a URL/search, and ⌘Return opens the query in a new tab. The sidebar also has live Spaces, global Favorites, folders and native address/navigation controls. Full Space session restoration and other Arc workflows remain unfinished; see the [parity notes](native/ARC_PARITY.md) and [validation record](native/VALIDATION.md). All product work belongs in the native Chromium patch series.
 
 See [the current handoff](native/HANDOFF.md), [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).
+
+To resume native development in another agent session, run `python3 scripts/chromium/handoff.py` and read the [continuation prompt](native/NEXT_AGENT_PROMPT.md). The script reports current build/Git state without changing the checkout or browser data.

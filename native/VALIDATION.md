@@ -1,6 +1,14 @@
 # Native validation — 2026-10-29
 
-## Current native build
+## New 81-patch source batch: acceptance pending
+
+The current versioned source extends through 0081: nested folders, the reference-frame correction and separate ambient website appearance. Final GN generation passed at `75d4bf2d065b8f347e740b406c9f33f3b6002840ea3daa2688005aa84cb1ea66`. The native app compile is in progress in `/tmp/cove-native81-build-final.log`; its built_config is not yet accepted. Two compiler findings (folder-model destructor and a shadowed local) were corrected before this generation. Do not launch or report the old app bundle as the new completed build.
+
+All 36 Python tests passed. The final corrected 81-patch series passed original-file SHA256/application verification. The six added folder tests (61 expected focused tests total) and three added appearance browser tests have not run. New native runtime and renderer-smoke acceptance remain pending. CUA did attach this turn, so the earlier blanket attachment blocker below is historical.
+
+Run `python3 scripts/chromium/handoff.py` and read [NEXT_AGENT_PROMPT.md](NEXT_AGENT_PROMPT.md) for exact continuation commands and UI acceptance. No complete Arc-parity claim is made.
+
+## Previous accepted 78-patch native build
 
 Cove is native Chromium 156.0.8078.48 at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`. The ordered native series contains 78 patches. The final build and renderer startup smoke passed. Both configuration records equal:
 

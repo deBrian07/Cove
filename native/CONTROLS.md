@@ -2,7 +2,7 @@
 
 These controls use Chromium's real tab, split, navigation and session models. They do not use the retired Electron renderer.
 
-The native build covers 78 patches. Build, renderer smoke and focused regression checks pass. Final live acceptance of the newest Space, pin-home and split commands is pending because automation cannot attach to the QA window; see [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
+The native source series extends through patch 0081. Build, test and runtime checks for 0079–0081 are pending. Six new folder-model tests bring the expected focused suite to 61 tests, not yet run. The earlier 78-patch build, renderer smoke and 55 focused regressions passed. CUA attached to the QA window this turn; the new folder and appearance changes, plus the newest Space, pin-home and split commands, still need live acceptance. See [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
 
 | macOS shortcut | Action |
 | --- | --- |
@@ -23,6 +23,8 @@ The native build covers 78 patches. Build, renderer smoke and focused regression
 
 The full-width toolbar is hidden in vertical-sidebar mode. Create a split from the native Tab menu, the command bar or the shortcut. The upstream Split View toolbar button remains available when the toolbar is shown, respecting a saved choice to unpin it. In a split, its menu offers separate views, swap, side-by-side/stacked orientation and closing either pane. The native Tab menu also exposes split creation, pane focus, separation and pinning.
 
+Patch 0080 removes the 36 DIP top strip in hidden-toolbar mode, changes the page corners to 8 DIP and darkens the violet frame surfaces. Patch 0081 defaults web pages to the system appearance while keeping Cove's chrome dark; saved explicit appearance choices take precedence. These changes await build and runtime validation.
+
 Type a command into ⌘T, or use `/` or `>` for actions mode. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
 
 New native action groups:
@@ -38,7 +40,11 @@ The footer's + menu exposes Add/Remove Favorites, Pin this page, New folder, New
 
 Space dots, Control+number and typing a Space name in Cmd+T switch live pages without closing them. Horizontal sidebar swipes and a 240 ms slide are implemented; physical trackpad acceptance is still pending because automated horizontal events contained zero movement. Right-click a dot to rename its Space. New Spaces open a blank canvas; Cmd+T opens navigation. Full Space membership/session restoration across restart remains unfinished.
 
-Pin rows retain their native tab after it navigates elsewhere, and reopen the saved page after closing. Cmd+W on a retained pin uses normal beforeunload handling without Chrome's extra pinned-tab toast. Closing the last retained pin keeps a blank browser window. Uncovered native pins retain upstream confirmation behavior. Right-click a pin to rename it, move it into a folder or remove it. Right-click a folder to rename/remove it; removal keeps its pins. Click a folder row to expand/collapse, with the choice saved.
+Pin rows retain their native tab after it navigates elsewhere, and reopen the saved page after closing. Cmd+W on a retained pin uses normal beforeunload handling without Chrome's extra pinned-tab toast. Closing the last retained pin keeps a blank browser window. Uncovered native pins retain upstream confirmation behavior.
+
+Patch 0079 adds nested folder rows and menus. Right-click a folder for New Subfolder, rename, Move Up/Down among siblings, Move Outside Folders, a destination path such as Work / Research, or Remove Folder (Keep Contents). Moving a folder carries its descendants; self and descendant destinations are rejected. Removal reparents its direct child folders and pins to its parent, retaining their saved data and pages. Click a folder row to expand/collapse; collapsed ancestors hide their descendants, and the choice is saved.
+
+Right-click a pin to rename it, remove it or move it to a nested folder path. Move Outside Folders returns it to the Space's root. Moving content into a folder expands the destination path. The new folder and pin-menu behavior awaits build, focused tests and live acceptance.
 
 Archive Today closes current-Space unpinned pages through Chromium's native history and unsaved-page handling, retaining pins and Favorites. Cmd+Shift+T reopens recently closed pages. The current native split model supports two panes. Split-pin flag synchronization, complete cross-window ownership and folder/Space dragging are still incomplete. The new pin-home actions need final live acceptance.
 

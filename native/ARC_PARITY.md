@@ -2,7 +2,9 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current feature batch is patches 0076–0078. The native build, renderer startup smoke, 55 gesture/animation tests and 36 tooling/verifier tests passed. Final live feature acceptance is blocked by CUA cgWindowNotFound. Existing validation is recorded in [VALIDATION.md](VALIDATION.md); continuation details are in [HANDOFF.md](HANDOFF.md).
+The current source batch extends through patch 0081. Patch 0079 adds nested folder organization; 0080 revises the hidden-toolbar frame and violet surfaces; 0081 lets web pages follow the system appearance by default while Cove's chrome stays dark, preserving explicit appearance choices. Build, test and runtime acceptance for 0079–0081 are pending. Six folder-model regressions bring the expected focused test count to 61; they have not run yet.
+
+The earlier 0078 native build, renderer startup smoke, 55 gesture/animation tests and 36 tooling/verifier tests passed. CUA attachment succeeded this turn, resolving the earlier cgWindowNotFound attachment blocker. The newest folder, appearance, Space, pin-home and split functions still need live acceptance. Existing validation is recorded in [VALIDATION.md](VALIDATION.md); continuation details are in [HANDOFF.md](HANDOFF.md).
 
 ## Spaces and organization
 
@@ -33,8 +35,10 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
 | Favorites | Native saved URLs and grid; 0076 adds command | Arc-style shared live Favorite ownership and profile semantics remain partial |
-| Create, rename and collapse folders | Native; 0076 adds named command creation | Nested folders, dragging, reordering, moving whole folders and cycle rejection remain missing |
-| Move pins into folders | Native menu | Dragging and cross-Space moves remain missing |
+| Create, rename and collapse folders | Native; 0076 adds named command creation; 0079 adds nested rows and New Subfolder | Build and live-check nesting, saved collapse and descendant visibility; dragging remains missing |
+| Move and reorder whole folders | 0079 adds destination paths, root moves, sibling reorder and cycle rejection | Build and live-check moves, boundary enablement and persistence; cross-Space moves remain missing |
+| Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
+| Move pins into or outside folders | 0079 adds root moves and nested destination paths to the native menu | Build and live-check destination enablement and persistence; dragging and cross-Space moves remain missing |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
 | Recently used tab switcher | Missing | MRU overlay and modifier-release selection, beyond sequential Chromium tab cycling |
 | Sidebar undo/restore | Missing | Recover sidebar organization changes without replacing browser profiles |
@@ -71,7 +75,7 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 
 These need their own native work and acceptance; they are not covered by the current sidebar patches:
 
-- Per-Space appearance editing, light/dark selection and advanced themes.
+- Per-Space appearance editing and advanced themes. Patch 0081 adds default system appearance for web pages while browser chrome stays dark, preserving explicit appearance choices; build and runtime checks are pending.
 - Boosts, site-specific styling and element hiding.
 - Capture tools, saved captures and Easel workflows where supported by the target Arc version.
 - Live folders and calendar/service integrations.
@@ -97,6 +101,8 @@ The native series through patch 0055 implements:
 - Native Cocoa footer menus on macOS. Repeated New Folder use, Favorite creation, pin close and command/address navigation were exercised in the running app.
 - Cleanup guards that keep intentionally blank split canvases, plus safe accessibility event dispatch when a native menu action deletes its target view.
 
+Those frame dimensions describe the earlier baseline. Patch 0080 removes the 36 DIP top strip and uses 8 DIP page corners in hidden-toolbar mode, with darker violet surfaces. Its build and rendered appearance have not been validated yet.
+
 The latest live pass also exercised split creation, focus and separation, command-bar URL submission, and the retained-pin lifecycle. Patches 0054–0055 passed the final native empty-to-real tab, Archive Today and reopen checks. Other build and runtime observations are in [VALIDATION.md](VALIDATION.md). Cove remains an incomplete Arc replica; source changes and renderer smoke do not establish full interaction parity.
 
 The command bar targets approximately 760px width, a 64px query field and five 48px single-line result rows, with a dark surface, blue selection, thin border and restrained shadow. URL/search/tab-switch submission dismisses the native bubble. Remaining layout differences must be assessed from the rendered app rather than a mockup.
@@ -104,7 +110,7 @@ The command bar targets approximately 760px width, a 64px query field and five 4
 ## Implementation order
 
 1. Complete the current Space, pin and command functions and validate their effects.
-2. Durable Space/session ownership, tab/folder/Space moves and nested organization.
+2. Validate nested folder operations, then complete durable Space/session ownership, tab/cross-Space moves and dragging.
 3. Split rows, pane headers, split-by-drag and additional layouts.
 4. Peek, Little Arc, MRU switching and editable shortcuts.
 5. Appearance/Boosts, capture/library/media and integration features.

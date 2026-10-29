@@ -1,8 +1,24 @@
 # Cove continuation — 2026-10-29
 
-## Latest state: feature parity first
+## Latest state: reference-frame and folder pass
 
-The user's latest priority is to match Arc functions before further polish. Use [ARC_PARITY.md](ARC_PARITY.md) as the feature acceptance list. Fix crashes that block those functions, but do not spend another whole session tuning one popup while major Arc workflows are absent.
+Continuation entrypoint: `python3 scripts/chromium/handoff.py`; copyable agent prompt: [NEXT_AGENT_PROMPT.md](NEXT_AGENT_PROMPT.md), also printed by `python3 scripts/chromium/handoff.py --prompt`. The status script is read-only.
+
+The current source series extends through 0081. The native compile is in progress; do not call the new app accepted until the final build, smoke and UI observations below are updated. The generated configuration is `75d4bf2d065b8f347e740b406c9f33f3b6002840ea3daa2688005aa84cb1ea66`.
+
+- 0079 adds a separate folder-tree model with regression source and native nested-folder menus: subfolder creation, moving whole folders, sibling ordering, moving pins to nested paths or the root, and removing folders while reparenting their contents. It rejects self/descendant moves and ambiguous duplicate IDs. Rendering handles malformed parents and cycles without recursion. Six model tests cover data preservation, JSON round trips, collapse, cycles, duplicates and 10,000 levels of nesting.
+- 0080 addresses the latest screenshots: removes the extra 36 DIP caption strip when the sidebar is hidden, avoids doubling its leading frame inset, tightens single-page corners from 12 to 8 DIP and darkens the default violet surfaces. Native window buttons hide with the sidebar and return on reveal; fullscreen keeps AppKit ownership. Explicit/custom/accessibility themes retain their existing handling.
+- 0081 separates the untouched default browser appearance from ordinary website appearance. Cove chrome remains dark; ordinary pages follow the system. Explicit appearance preferences, WebUI, incognito, enterprise and guest behavior retain their existing handling. Three browser regressions were added, but browser_tests has not been built/run.
+
+CUA attached successfully this turn and showed the user's screenshot mismatch in the running app. The old blanket cgWindowNotFound blocker is resolved. The old instance was quit normally through Cove's menu before compilation, preserving its data. New runtime acceptance is pending. The user withdrew the latest Cmd+S pop-back report as already fixed; this batch does not change the sidebar hover state machine.
+
+The first development compile caught Chromium's required explicit out-of-line destructor for the complex folder model; the next caught a New Folder local variable shadowing its command ID. Both were corrected and re-exported before final GN generation. All 36 Python tooling/verifier tests passed. The final corrected 81-patch series passed original-file SHA256/application verification too. Build logs are `/tmp/cove-native81-build-final.log` and `/tmp/cove-native81-gen-final.log`; these are disposable and not the permanent validation record.
+
+See [SPACE_RESTORE_DESIGN.md](SPACE_RESTORE_DESIGN.md) for the audited next implementation. Full session journal resets omit parked tabs unless serialization enumerates them explicitly; recently-closed extra data alone is insufficient. Do not implement a metadata-only migration and call it durable restore.
+
+New focused commits: `4b6eb90` nested folders, `a1bf750` reference frame and `9ebaf88` website appearance. None has a co-author trailer. The authorized GitHub remote is `https://github.com/deBrian07/Cove.git`; publication status must be checked with Git rather than inferred from these notes.
+
+## Previous 78-patch feature baseline
 
 The complete 78-patch native series builds and starts. `generated_config` and `built_config` both equal `a64d8332da85feb3a5c0599ffa31e054e68dfc94c4e6fdd51c1064a903a4a878`. The last incremental compile rebuilt two steps in 57.57s after the larger feature build. Final renderer smoke passed in an isolated temporary profile. All 55 focused native tests and 36 tooling/verifier tests passed, and the complete ordered series applies against the pinned original files. Full Chromium browser/unit/interactive suites have not run.
 
