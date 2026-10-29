@@ -1,0 +1,1033 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -8,6 +8,7 @@
+ #include <map>
+ #include <memory>
+ #include <string>
++#include <string_view>
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
+@@ -123,7 +124,11 @@
+                       const gfx::Point& point,
+                       ui::mojom::MenuSourceType source_type);
+   void PinActivePage();
+-  void AddFolder();
++  std::string AddFolder(std::string parent_id = {});
++  void MoveFolder(std::string id, std::string parent);
++  void ReorderFolder(std::string id, bool down);
++  void AppendFolderDestinations(bool moving_folder);
++  bool CanMovePinToFolder(std::string_view folder_id) const;
+   void ToggleFolder(std::string folder_id);
+   void AddSpace();
+   void SwitchSpace(std::string space_id);
+@@ -154,6 +159,8 @@
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
+   std::map<const views::View*, std::string> row_space_ids_;
++  std::string menu_space_id_;
++  std::map<int, std::string> menu_folder_moves_;
+   std::string context_folder_id_;
+   std::string context_space_id_;
+   std::string context_pin_id_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -29,6 +29,7 @@
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/cove/cove_name_dialog.h"
++#include "chrome/browser/ui/views/cove/cove_folder_model.h"
+ #include "components/favicon/content/content_favicon_driver.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/prefs/scoped_user_pref_update.h"
+@@ -86,7 +87,27 @@
+ constexpr int kRemoveFolderCommand = 8;
+ constexpr int kRenameSpaceCommand = 9;
+ constexpr int kArchiveTodayCommand = 10;
++constexpr int kNewSubfolderCommand = 11;
++constexpr int kMoveFolderToRootCommand = 12;
++constexpr int kMoveFolderUpCommand = 13;
++constexpr int kMoveFolderDownCommand = 14;
++constexpr int kMovePinToRootCommand = 15;
+ constexpr int kMovePinCommandBase = 100;
++constexpr int kMoveFolderCommandBase = 10000;
++
++void ExpandFolderPath(base::DictValue& space, std::string id) {
++  const cove::FolderTree tree(space.FindList("folders"));
++  auto* folders = space.FindList("folders");
++  if (!folders) return;
++  while (!id.empty() && tree.Contains(id)) {
++    for (auto& value : *folders) {
++      auto* folder = value.GetIfDict();
++      const auto* current = folder ? folder->FindString("id") : nullptr;
++      if (current && *current == id) folder->Set("collapsed", false);
++    }
++    id = tree.Parent(id);
++  }
++}
+ 
+ // A native archive box, rendered at the same stroke weight as caption icons.
+ constexpr gfx::PathElement kCoveArchivePath[] = {gfx::CANVAS_DIMENSIONS,
+@@ -442,90 +463,52 @@
+   if (const auto* name = space->FindString("name")) {
+     MakeHeader(this, base::UTF8ToUTF16(*name));
+   }
+-  const base::ListValue* pins = space->FindList("pins");
+-  if (pins) {
+-    for (const base::Value& pin_value : *pins) {
+-      const base::DictValue* pin = pin_value.GetIfDict();
+-      if (!pin) {
+-        continue;
+-      }
+-      const std::string* folder = pin->FindString("folder");
+-      if (folder && !folder->empty()) {
+-        continue;
+-      }
+-      const std::string* url = pin->FindString("url");
+-      const std::string* title = pin->FindString("title");
+-      const std::string* id = pin->FindString("id");
+-      if (!url || !id) {
+-        continue;
+-      }
+-      auto* row = MakeRow(
+-          this, base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
++  const auto* pins = space->FindList("pins");
++  const cove::FolderTree tree(space->FindList("folders"));
++  const auto add_pins = [&](const std::string& parent, size_t depth) {
++    if (!pins) return;
++    for (const auto& value : *pins) {
++      const auto* pin = value.GetIfDict();
++      if (!pin) continue;
++      const auto* folder = pin->FindString("folder");
++      // An orphaned association must not make a saved pin disappear.
++      const std::string owner = folder && tree.Contains(*folder) ? *folder : "";
++      if (owner != parent) continue;
++      const auto* url = pin->FindString("url");
++      const auto* title = pin->FindString("title");
++      const auto* id = pin->FindString("id");
++      if (!url || !id) continue;
++      auto* row = MakeRow(this,
++          base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+           base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+                               weak_factory_.GetWeakPtr(), *id, GURL(*url)));
++      row->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
++          4, 8 + 14 * static_cast<int>(std::min<size_t>(depth, 8)), 4, 8)));
+       row->set_context_menu_controller(this);
+       row->SetTooltipText(base::UTF8ToUTF16(*url));
+       row_pin_ids_[row] = *id;
+     }
+-  }
+-  const base::ListValue* folders = space->FindList("folders");
+-  if (folders) {
+-    for (const base::Value& folder_value : *folders) {
+-      const base::DictValue* folder = folder_value.GetIfDict();
+-      if (!folder || !folder->FindString("name") || !folder->FindString("id")) {
+-        continue;
+-      }
+-      const std::string& folder_id = *folder->FindString("id");
+-      const bool collapsed = folder->FindBool("collapsed").value_or(false);
+-      auto* folder_row =
+-          MakeRow(this,
+-                  (collapsed ? u"▸ " : u"▾ ") +
+-                      base::UTF8ToUTF16(*folder->FindString("name")),
+-                  base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
+-                                      weak_factory_.GetWeakPtr(), folder_id));
+-      folder_row->SetImageModel(
+-          views::Button::STATE_NORMAL,
+-          ui::ImageModel::FromVectorIcon(
+-              collapsed ? vector_icons::kFolderFlippableIcon
+-                        : vector_icons::kFolderOpenIcon,
+-              ui::kColorIcon, 16));
+-      folder_row->SetImageLabelSpacing(8);
+-      if (collapsed) {
+-        folder_row->GetViewAccessibility().SetIsCollapsed();
+-      } else {
+-        folder_row->GetViewAccessibility().SetIsExpanded();
+-      }
+-      folder_row->set_context_menu_controller(this);
+-      row_folder_ids_[folder_row] = folder_id;
+-      folder_row->SetTooltipText(collapsed ? u"Expand folder"
+-                                           : u"Collapse folder");
+-      if (collapsed || !pins) {
+-        continue;
+-      }
+-      for (const base::Value& pin_value : *pins) {
+-        const base::DictValue* pin = pin_value.GetIfDict();
+-        const std::string* pin_folder =
+-            pin ? pin->FindString("folder") : nullptr;
+-        if (!pin || !pin_folder || *pin_folder != folder_id) {
+-          continue;
+-        }
+-        const std::string* url = pin->FindString("url");
+-        const std::string* title = pin->FindString("title");
+-        const std::string* id = pin->FindString("id");
+-        if (!url || !id) {
+-          continue;
+-        }
+-        auto* row = MakeRow(
+-            this,
+-            u"    " +
+-                base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
+-            base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+-                                weak_factory_.GetWeakPtr(), *id, GURL(*url)));
+-        row->set_context_menu_controller(this);
+-        row_pin_ids_[row] = *id;
+-        row->SetTooltipText(base::UTF8ToUTF16(*url));
+-      }
+-    }
++  };
++  add_pins("", 0);
++  for (const auto& folder : tree.Rows()) {
++    const auto name = folder.name.empty() ? u"Folder" : folder.name;
++    auto* row = MakeRow(this, (folder.collapsed ? u"▸ " : u"▾ ") + name,
++        base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
++                            weak_factory_.GetWeakPtr(), folder.id));
++    row->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
++        4, 8 + 14 * static_cast<int>(std::min<size_t>(folder.depth, 8)), 4, 8)));
++    row->SetImageModel(views::Button::STATE_NORMAL,
++        ui::ImageModel::FromVectorIcon(
++            folder.collapsed ? vector_icons::kFolderFlippableIcon
++                             : vector_icons::kFolderOpenIcon,
++            ui::kColorIcon, 16));
++    row->SetImageLabelSpacing(8);
++    if (folder.collapsed) row->GetViewAccessibility().SetIsCollapsed();
++    else row->GetViewAccessibility().SetIsExpanded();
++    row->set_context_menu_controller(this);
++    row->SetTooltipText(folder.collapsed ? u"Expand folder" : u"Collapse folder");
++    row_folder_ids_[row] = folder.id;
++    if (!folder.collapsed) add_pins(folder.id, folder.depth + 1);
+   }
+ 
+   UpdatePinRowAppearance();
+@@ -810,6 +793,12 @@
+ }
+ 
+ void CoveSidebarLibraryView::ShowLibraryMenu() {
++  menu_space_id_ = active_space_id_;
++  context_folder_id_.clear();
++  context_pin_id_.clear();
++  context_space_id_.clear();
++  menu_folder_ids_.clear();
++  menu_folder_moves_.clear();
+   auto* footer = space_footer_.view();
+   VLOG(1) << "Cove footer menu footer=" << !!footer
+           << " widget=" << (footer && footer->GetWidget());
+@@ -873,19 +862,33 @@
+   }
+ }
+ 
+-void CoveSidebarLibraryView::AddFolder() {
+-  PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  base::DictValue* space = FindSpace(*update, active_space_id_);
+-  if (!space) {
+-    return;
+-  }
+-  base::ListValue* folders = space->EnsureList("folders");
++std::string CoveSidebarLibraryView::AddFolder(std::string parent_id) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  auto* space = FindSpace(*update, active_space_id_);
++  if (!space || (!parent_id.empty() &&
++      !cove::FolderTree(space->FindList("folders")).CanAddChild(parent_id))) return {};
++  auto* folders = space->EnsureList("folders");
++  const std::string id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+   base::DictValue folder;
+-  folder.Set("id", base::Uuid::GenerateRandomV4().AsLowercaseString());
++  folder.Set("id", id);
+   folder.Set("name", "Folder " + base::NumberToString(folders->size() + 1));
++  folder.Set("parent", parent_id);
+   folders->Append(std::move(folder));
+-  Rebuild();
++  ExpandFolderPath(*space, parent_id);
++  return id;
++}
++
++void CoveSidebarLibraryView::MoveFolder(std::string id, std::string parent) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_);
++      space && cove::FolderTree::Move(*space, id, parent))
++    ExpandFolderPath(*space, parent);
++}
++
++void CoveSidebarLibraryView::ReorderFolder(std::string id, bool down) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_))
++    cove::FolderTree::Reorder(*space, id, down);
+ }
+ 
+ void CoveSidebarLibraryView::ToggleFolder(std::string folder_id) {
+@@ -1153,15 +1156,8 @@
+       BeginRename(kRenameSpaceCommand, active_space_id_);
+       break;
+     case IDC_COVE_NEW_FOLDER: {
+-      AddFolder();
+-      const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
+-                                       ->GetDict(kCoveSidebarPref), active_space_id_);
+-      const auto* folders = space ? space->FindList("folders") : nullptr;
+-      if (folders && !folders->empty()) {
+-        const auto* folder = folders->back().GetIfDict();
+-        const auto* folder_id = folder ? folder->FindString("id") : nullptr;
+-        if (folder_id) BeginRename(kRenameFolderCommand, *folder_id);
+-      }
++      const std::string folder_id = AddFolder();
++      if (!folder_id.empty()) BeginRename(kRenameFolderCommand, folder_id);
+       break;
+     }
+     case IDC_COVE_TOGGLE_FAVORITE: toggle_favorite_.Run(); break;
+@@ -1555,15 +1551,17 @@
+   if (!pins) {
+     return;
+   }
++  if (!folder_id.empty() &&
++      !cove::FolderTree(space->FindList("folders")).CanAddChild(folder_id)) return;
+   for (base::Value& pin_value : *pins) {
+-    base::DictValue* pin = pin_value.GetIfDict();
+-    const std::string* id = pin ? pin->FindString("id") : nullptr;
++    auto* pin = pin_value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
+     if (id && *id == pin_id) {
+       pin->Set("folder", folder_id);
++      ExpandFolderPath(*space, folder_id);
+       break;
+     }
+   }
+-  Rebuild();
+ }
+ 
+ void CoveSidebarLibraryView::BeginRename(int kind, std::string id) {
+@@ -1630,27 +1628,50 @@
+ }
+ 
+ void CoveSidebarLibraryView::RemoveFolder(std::string id) {
+-  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
+-                              kCoveSidebarPref);
+-  auto* space = FindSpace(*update, active_space_id_);
+-  auto* folders = space ? space->FindList("folders") : nullptr;
+-  if (!folders) {
+-    return;
+-  }
+-  if (auto* pins = space->FindList("pins")) {
+-    for (auto& value : *pins) {
+-      auto* pin = value.GetIfDict();
+-      if (pin && pin->FindString("folder") &&
+-          *pin->FindString("folder") == id) {
+-        pin->Set("folder", "");
+-      }
+-    }
+-  }
+-  folders->EraseIf([&id](const base::Value& value) {
+-    const auto* folder = value.GetIfDict();
+-    return folder && folder->FindString("id") &&
+-           *folder->FindString("id") == id;
+-  });
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_))
++    cove::FolderTree::Remove(*space, id);
++}
++
++bool CoveSidebarLibraryView::CanMovePinToFolder(std::string_view destination) const {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                   ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space || (!destination.empty() &&
++      !cove::FolderTree(space->FindList("folders")).CanAddChild(destination))) return false;
++  const auto* pins = space->FindList("pins");
++  if (!pins) return false;
++  for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    if (id && *id == context_pin_id_) {
++      const auto* folder = pin->FindString("folder");
++      return (folder ? *folder : "") != destination;
++    }
++  }
++  return false;
++}
++
++void CoveSidebarLibraryView::AppendFolderDestinations(bool moving_folder) {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                   ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space) return;
++  const cove::FolderTree tree(space->FindList("folders"));
++  std::map<std::string, std::u16string> paths;
++  for (const auto& row : tree.Rows(true)) {
++    auto path = row.name.empty() ? std::u16string(u"Folder") : row.name;
++    if (!row.parent.empty()) path = paths[row.parent] + u" / " + path;
++    paths[row.id] = path;
++    if (moving_folder) {
++      if (!tree.CanMove(context_folder_id_, row.id)) continue;
++      const int command = kMoveFolderCommandBase + static_cast<int>(menu_folder_moves_.size());
++      menu_folder_moves_[command] = row.id;
++      menu_model_->AddItem(command, u"Move to " + path);
++    } else {
++      menu_folder_ids_.push_back(row.id);
++      menu_model_->AddItem(kMovePinCommandBase +
++          static_cast<int>(menu_folder_ids_.size()) - 1, u"Move to " + path);
++    }
++  }
+ }
+ 
+ void CoveSidebarLibraryView::RunContextMenu(
+@@ -1668,13 +1689,26 @@
+     views::View* source,
+     const gfx::Point& point,
+     ui::mojom::MenuSourceType source_type) {
++  menu_space_id_ = active_space_id_;
++  context_folder_id_.clear();
++  context_pin_id_.clear();
++  context_space_id_.clear();
++  menu_folder_ids_.clear();
++  menu_folder_moves_.clear();
+   if (const auto folder = row_folder_ids_.find(source);
+       folder != row_folder_ids_.end()) {
+     context_folder_id_ = folder->second;
+     menu_runner_.reset();
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kNewSubfolderCommand, u"New Subfolder");
+     menu_model_->AddItem(kRenameFolderCommand, u"Rename Folder");
+-    menu_model_->AddItem(kRemoveFolderCommand, u"Remove Folder");
++    menu_model_->AddItem(kMoveFolderUpCommand, u"Move Up");
++    menu_model_->AddItem(kMoveFolderDownCommand, u"Move Down");
++    menu_model_->AddItem(kMoveFolderToRootCommand, u"Move Outside Folders");
++    menu_folder_moves_[kMoveFolderToRootCommand] = "";
++    AppendFolderDestinations(true);
++    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++    menu_model_->AddItem(kRemoveFolderCommand, u"Remove Folder (Keep Contents)");
+     RunContextMenu(source, point, source_type);
+     return;
+   }
+@@ -1700,22 +1734,8 @@
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+   menu_model_->AddItem(kRenamePinCommand, u"Rename Pin");
+   menu_model_->AddItem(kRemovePinCommand, u"Remove pin");
+-  const base::DictValue& root =
+-      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+-  const base::DictValue* space = FindSpace(root, active_space_id_);
+-  const base::ListValue* folders = space ? space->FindList("folders") : nullptr;
+-  if (folders) {
+-    for (const base::Value& folder_value : *folders) {
+-      const base::DictValue* folder = folder_value.GetIfDict();
+-      if (!folder || !folder->FindString("id") || !folder->FindString("name")) {
+-        continue;
+-      }
+-      menu_folder_ids_.push_back(*folder->FindString("id"));
+-      menu_model_->AddItem(
+-          kMovePinCommandBase + static_cast<int>(menu_folder_ids_.size()) - 1,
+-          u"Move to " + base::UTF8ToUTF16(*folder->FindString("name")));
+-    }
+-  }
++  menu_model_->AddItem(kMovePinToRootCommand, u"Move Outside Folders");
++  AppendFolderDestinations(false);
+   menu_runner_ = std::make_unique<views::MenuRunner>(
+       menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+   menu_runner_->RunMenuAt(source->GetWidget(), nullptr,
+@@ -1727,6 +1747,22 @@
+ END_METADATA
+ 
+ bool CoveSidebarLibraryView::IsCommandIdEnabled(int command_id) const {
++  if (!menu_space_id_.empty() && menu_space_id_ != active_space_id_) return false;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                   ->GetDict(kCoveSidebarPref), active_space_id_);
++  const cove::FolderTree tree(space ? space->FindList("folders") : nullptr);
++  if (const auto move = menu_folder_moves_.find(command_id);
++      move != menu_folder_moves_.end())
++    return tree.CanMove(context_folder_id_, move->second);
++  if (command_id == kNewSubfolderCommand) return tree.CanAddChild(context_folder_id_);
++  if (command_id == kRemoveFolderCommand) return tree.CanRemove(context_folder_id_);
++  if (command_id == kRenameFolderCommand) return tree.Contains(context_folder_id_);
++  if (command_id == kMoveFolderUpCommand || command_id == kMoveFolderDownCommand)
++    return tree.CanReorder(context_folder_id_, command_id == kMoveFolderDownCommand);
++  if (command_id == kMovePinToRootCommand) return CanMovePinToFolder("");
++  const int destination = command_id - kMovePinCommandBase;
++  if (destination >= 0 && destination < static_cast<int>(menu_folder_ids_.size()))
++    return CanMovePinToFolder(menu_folder_ids_[destination]);
+   if (command_id == kArchiveTodayCommand) {
+     return HasArchivableTabs();
+   }
+@@ -1746,6 +1782,25 @@
+ }
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
++  if (!IsCommandIdEnabled(command_id)) return;
++  if (const auto move = menu_folder_moves_.find(command_id);
++      move != menu_folder_moves_.end()) {
++    MoveFolder(context_folder_id_, move->second);
++    return;
++  }
++  if (command_id == kNewSubfolderCommand) {
++    const auto id = AddFolder(context_folder_id_);
++    if (!id.empty()) BeginRename(kRenameFolderCommand, id);
++    return;
++  }
++  if (command_id == kMoveFolderUpCommand || command_id == kMoveFolderDownCommand) {
++    ReorderFolder(context_folder_id_, command_id == kMoveFolderDownCommand);
++    return;
++  }
++  if (command_id == kMovePinToRootCommand) {
++    MovePinToFolder(context_pin_id_, "");
++    return;
++  }
+   if (command_id == kArchiveTodayCommand) {
+     ArchiveToday();
+     return;
+@@ -1775,7 +1830,8 @@
+     return;
+   }
+   if (command_id == kNewFolderCommand) {
+-    AddFolder();
++    const auto id = AddFolder();
++    if (!id.empty()) BeginRename(kRenameFolderCommand, id);
+     return;
+   }
+   if (command_id == kNewSpaceCommand) {
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3571,6 +3571,7 @@
+     public_deps += [ "//chrome/browser/ui/views/tabs/common:impl" ]
+ 
+     deps += [
++      "//chrome/browser/ui/views/cove:folder_model",
+       ":browser_init_state",
+       ":idle_bubble",
+       ":idle_dialog",
+diff --git a/chrome/browser/ui/animation/BUILD.gn b/chrome/browser/ui/animation/BUILD.gn
+--- a/chrome/browser/ui/animation/BUILD.gn
++++ b/chrome/browser/ui/animation/BUILD.gn
+@@ -77,10 +77,12 @@
+   sources = [
+     "browser_animation_controller_unittest.cc",
+     "cove_animation_test_main.cc",
++    "../views/cove/cove_folder_model_unittest.cc",
+     "../views/tabs/vertical/cove_space_swipe_state_unittest.cc",
+   ]
+   deps = [
+     ":animation",
++    "//chrome/browser/ui/views/cove:folder_model",
+     "//chrome/browser/ui/views/tabs/vertical:cove_space_swipe_state",
+     "//base/test:test_support",
+     "//chrome/browser/ui/browser_window",
+diff --git a/chrome/browser/ui/views/cove/BUILD.gn b/chrome/browser/ui/views/cove/BUILD.gn
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/BUILD.gn
+@@ -0,0 +1,11 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++
++source_set("folder_model") {
++  sources = [
++    "cove_folder_model.cc",
++    "cove_folder_model.h",
++  ]
++  public_deps = [ "//base" ]
++}
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model.h b/chrome/browser/ui/views/cove/cove_folder_model.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_folder_model.h
+@@ -0,0 +1,65 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_FOLDER_MODEL_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_FOLDER_MODEL_H_
++
++#include <stddef.h>
++
++#include <map>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/values.h"
++
++namespace cove {
++
++struct FolderItem {
++  std::string id;
++  std::u16string name;
++  std::string parent;
++  bool collapsed = false;
++  size_t depth = 0;
++};
++
++// A snapshot of saved folder topology. Reads never repair or mutate prefs.
++// The first nonempty occurrence of an ID wins; malformed names become empty.
++// Missing parents and cycle edges are presented as roots. Mutations refuse
++// ambiguous IDs and moves involving cyclic ancestry.
++class FolderTree {
++ public:
++  explicit FolderTree(const base::ListValue* folders);
++  ~FolderTree();
++  bool Contains(std::string_view id) const;
++  bool CanAddChild(std::string_view id) const;
++  bool CanRemove(std::string_view id) const;
++  std::string Parent(std::string_view id) const;
++  std::vector<FolderItem> Rows(bool include_collapsed = false) const;
++  bool CanMove(std::string_view id, std::string_view parent) const;
++  bool CanReorder(std::string_view id, bool down) const;
++
++  static bool Move(base::DictValue& space,
++                   std::string_view id,
++                   std::string_view parent);
++  static bool Reorder(base::DictValue& space, std::string_view id, bool down);
++  static bool Remove(base::DictValue& space, std::string_view id);
++
++ private:
++  struct Node {
++    FolderItem item;
++    size_t list_index = 0;
++    bool duplicate = false;
++    bool cyclic_ancestry = false;
++  };
++
++  size_t Sibling(std::string_view id, bool down) const;
++
++  std::vector<Node> nodes_;
++  std::map<std::string, size_t, std::less<>> indices_;
++};
++
++}  // namespace cove
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_FOLDER_MODEL_H_
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model.cc b/chrome/browser/ui/views/cove/cove_folder_model.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_folder_model.cc
+@@ -0,0 +1,240 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_folder_model.h"
++
++#include <algorithm>
++#include <limits>
++#include <utility>
++
++#include "base/strings/utf_string_conversions.h"
++
++namespace cove {
++namespace {
++constexpr size_t kNone = std::numeric_limits<size_t>::max();
++}  // namespace
++
++FolderTree::FolderTree(const base::ListValue* folders) {
++  if (!folders) {
++    return;
++  }
++  for (size_t i = 0; i < folders->size(); ++i) {
++    const base::DictValue* dict = (*folders)[i].GetIfDict();
++    const std::string* id = dict ? dict->FindString("id") : nullptr;
++    if (!id || id->empty()) {
++      continue;
++    }
++    auto [entry, inserted] = indices_.emplace(*id, nodes_.size());
++    if (!inserted) {
++      nodes_[entry->second].duplicate = true;
++      continue;
++    }
++    Node node;
++    node.item.id = *id;
++    if (const std::string* name = dict->FindString("name")) {
++      node.item.name = base::UTF8ToUTF16(*name);
++    }
++    if (const std::string* parent = dict->FindString("parent")) {
++      node.item.parent = *parent;
++    }
++    node.item.collapsed = dict->FindBool("collapsed").value_or(false);
++    node.list_index = i;
++    nodes_.push_back(std::move(node));
++  }
++  // Walk each edge once. Positions identify cycles without recursion, including
++  // trees deep enough to overflow a UI thread's stack.
++  std::vector<size_t> parents(nodes_.size(), kNone);
++  for (size_t i = 0; i < nodes_.size(); ++i) {
++    auto parent = indices_.find(nodes_[i].item.parent);
++    if (parent == indices_.end()) {
++      nodes_[i].item.parent.clear();
++    } else {
++      parents[i] = parent->second;
++    }
++  }
++  std::vector<bool> finished(nodes_.size(), false);
++  std::vector<size_t> positions(nodes_.size(), kNone);
++  for (size_t i = 0; i < nodes_.size(); ++i) {
++    if (finished[i]) {
++      continue;
++    }
++    std::vector<size_t> path;
++    size_t current = i;
++    while (current != kNone && !finished[current] &&
++           positions[current] == kNone) {
++      positions[current] = path.size();
++      path.push_back(current);
++      current = parents[current];
++    }
++    bool cyclic = current != kNone &&
++                  (!finished[current] || nodes_[current].cyclic_ancestry);
++    if (current != kNone && !finished[current]) {
++      for (size_t j = positions[current]; j < path.size(); ++j) {
++        nodes_[path[j]].item.parent.clear();
++      }
++    }
++    for (size_t index : path) {
++      nodes_[index].cyclic_ancestry = cyclic;
++      finished[index] = true;
++      positions[index] = kNone;
++    }
++  }
++}
++
++FolderTree::~FolderTree() = default;
++
++bool FolderTree::Contains(std::string_view id) const {
++  return indices_.contains(id);
++}
++
++bool FolderTree::CanAddChild(std::string_view id) const {
++  const auto entry = indices_.find(id);
++  return entry != indices_.end() && !nodes_[entry->second].duplicate &&
++         !nodes_[entry->second].cyclic_ancestry;
++}
++
++bool FolderTree::CanRemove(std::string_view id) const {
++  const auto entry = indices_.find(id);
++  return entry != indices_.end() && !nodes_[entry->second].duplicate;
++}
++
++std::string FolderTree::Parent(std::string_view id) const {
++  auto entry = indices_.find(id);
++  return entry == indices_.end() ? std::string()
++                                 : nodes_[entry->second].item.parent;
++}
++
++std::vector<FolderItem> FolderTree::Rows(bool include_collapsed) const {
++  std::vector<std::vector<size_t>> children(nodes_.size() + 1);
++  for (size_t i = 0; i < nodes_.size(); ++i) {
++    auto parent = indices_.find(nodes_[i].item.parent);
++    children[parent == indices_.end() ? nodes_.size() : parent->second]
++        .push_back(i);
++  }
++  std::vector<std::pair<size_t, size_t>> pending;
++  for (auto it = children.back().rbegin(); it != children.back().rend(); ++it) {
++    pending.emplace_back(*it, 0);
++  }
++  std::vector<FolderItem> rows;
++  while (!pending.empty()) {
++    auto [index, depth] = pending.back();
++    pending.pop_back();
++    FolderItem row = nodes_[index].item;
++    row.depth = depth;
++    rows.push_back(std::move(row));
++    if (!include_collapsed && nodes_[index].item.collapsed) {
++      continue;
++    }
++    for (auto it = children[index].rbegin(); it != children[index].rend(); ++it) {
++      pending.emplace_back(*it, depth + 1);
++    }
++  }
++  return rows;
++}
++
++bool FolderTree::CanMove(std::string_view id, std::string_view parent) const {
++  auto source = indices_.find(id);
++  if (source == indices_.end() || nodes_[source->second].duplicate ||
++      nodes_[source->second].cyclic_ancestry || id == parent ||
++      Parent(id) == parent) {
++    return false;
++  }
++  if (!parent.empty() && !Contains(parent)) {
++    return false;
++  }
++  while (!parent.empty()) {
++    const Node& node = nodes_[indices_.find(parent)->second];
++    if (node.duplicate || node.cyclic_ancestry || node.item.id == id) {
++      return false;
++    }
++    parent = node.item.parent;
++  }
++  return true;
++}
++
++size_t FolderTree::Sibling(std::string_view id, bool down) const {
++  auto source = indices_.find(id);
++  if (source == indices_.end() || nodes_[source->second].duplicate ||
++      nodes_[source->second].cyclic_ancestry) {
++    return kNone;
++  }
++  const Node& node = nodes_[source->second];
++  size_t previous = kNone;
++  for (size_t i = 0; i < nodes_.size(); ++i) {
++    if (nodes_[i].item.parent != node.item.parent) {
++      continue;
++    }
++    if (i == source->second && !down) {
++      return previous;
++    }
++    if (i > source->second && down) {
++      return nodes_[i].duplicate || nodes_[i].cyclic_ancestry ? kNone : i;
++    }
++    previous = nodes_[i].duplicate || nodes_[i].cyclic_ancestry ? kNone : i;
++  }
++  return kNone;
++}
++
++bool FolderTree::CanReorder(std::string_view id, bool down) const {
++  return Sibling(id, down) != kNone;
++}
++
++bool FolderTree::Move(base::DictValue& space,
++                      std::string_view id,
++                      std::string_view parent) {
++  base::ListValue* folders = space.FindList("folders");
++  FolderTree tree(folders);
++  if (!tree.CanMove(id, parent)) {
++    return false;
++  }
++  (*folders)[tree.nodes_[tree.indices_.find(id)->second].list_index]
++      .GetDict()
++      .Set("parent", std::string(parent));
++  return true;
++}
++
++bool FolderTree::Reorder(base::DictValue& space, std::string_view id, bool down) {
++  base::ListValue* folders = space.FindList("folders");
++  FolderTree tree(folders);
++  size_t sibling = tree.Sibling(id, down);
++  if (sibling == kNone) {
++    return false;
++  }
++  size_t source = tree.nodes_[tree.indices_.find(id)->second].list_index;
++  std::swap((*folders)[source], (*folders)[tree.nodes_[sibling].list_index]);
++  return true;
++}
++
++bool FolderTree::Remove(base::DictValue& space, std::string_view id) {
++  base::ListValue* folders = space.FindList("folders");
++  FolderTree tree(folders);
++  auto source = tree.indices_.find(id);
++  if (!tree.CanRemove(id)) {
++    return false;
++  }
++  // Copy before mutating: callers may pass a string_view into the prefs.
++  const std::string removed_id(id);
++  const std::string parent = tree.Parent(id);
++  const size_t index = tree.nodes_[source->second].list_index;
++  for (base::Value& value : *folders) {
++    base::DictValue* folder = value.GetIfDict();
++    const std::string* old_parent = folder ? folder->FindString("parent") : nullptr;
++    if (old_parent && *old_parent == removed_id) {
++      folder->Set("parent", parent);
++    }
++  }
++  if (base::ListValue* pins = space.FindList("pins")) {
++    for (base::Value& value : *pins) {
++      base::DictValue* pin = value.GetIfDict();
++      const std::string* folder = pin ? pin->FindString("folder") : nullptr;
++      if (folder && *folder == removed_id) {
++        pin->Set("folder", parent);
++      }
++    }
++  }
++  folders->erase(folders->begin() + index);
++  return true;
++}
++
++}  // namespace cove
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc b/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc
+@@ -0,0 +1,187 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_folder_model.h"
++
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++namespace cove {
++namespace {
++
++base::DictValue Space(std::string_view json) {
++  return base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC).value();
++}
++
++std::vector<std::string> Ids(const FolderTree& tree, bool all = false) {
++  std::vector<std::string> ids;
++  for (const FolderItem& row : tree.Rows(all)) {
++    ids.push_back(row.id);
++  }
++  return ids;
++}
++
++TEST(CoveFolderModelTest, CompoundEditsPreservePagesAndRoundTrip) {
++  base::DictValue space = Space(R"({
++    "folders":[{"id":"a","name":"A"},{"id":"b","name":"B"},
++               {"id":"c","name":"C"},{"id":"d","name":"D"}],
++    "pins":[{"id":"pin","folder":"b","url":"https://example.test/",
++             "pages":[{"url":"https://example.test/kept"}]}],
++    "pages":[{"id":"live","history":["one","two"],"draft":"kept"}]
++  })");
++  const base::Value pages = space.Find("pages")->Clone();
++  const base::Value pin_pages =
++      space.FindList("pins")->front().GetDict().Find("pages")->Clone();
++  EXPECT_TRUE(FolderTree::Move(space, "b", "a"));
++  EXPECT_TRUE(FolderTree::Move(space, "c", "b"));
++  EXPECT_TRUE(FolderTree::Move(space, "d", "a"));
++  EXPECT_FALSE(FolderTree::Move(space, "a", "c"));
++  EXPECT_FALSE(FolderTree::Move(space, "b", "b"));
++  EXPECT_FALSE(FolderTree::Move(space, "b", "a"));
++  EXPECT_FALSE(FolderTree::Move(space, "b", "missing"));
++  EXPECT_FALSE(FolderTree::Move(space, "missing", ""));
++  EXPECT_TRUE(FolderTree::Reorder(space, "d", false));
++  EXPECT_EQ((std::vector<std::string>{"a", "d", "b", "c"}),
++            Ids(FolderTree(space.FindList("folders"))));
++  EXPECT_FALSE(FolderTree::Reorder(space, "d", false));
++  EXPECT_TRUE(FolderTree::Reorder(space, "d", true));
++  EXPECT_TRUE(FolderTree::Remove(space, "b"));
++  FolderTree tree(space.FindList("folders"));
++  EXPECT_FALSE(tree.Contains("b"));
++  EXPECT_EQ("a", tree.Parent("c"));
++  EXPECT_EQ("a", *space.FindList("pins")->front().GetDict().FindString("folder"));
++  EXPECT_EQ(pages, *space.Find("pages"));
++  EXPECT_EQ(pin_pages,
++            *space.FindList("pins")->front().GetDict().Find("pages"));
++  EXPECT_TRUE(FolderTree::Move(space, "c", ""));
++  EXPECT_FALSE(FolderTree::Remove(space, "missing"));
++
++  std::optional<std::string> serialized = base::WriteJson(space);
++  ASSERT_TRUE(serialized);
++  base::DictValue reloaded = Space(*serialized);
++  EXPECT_EQ(space, reloaded);
++  EXPECT_EQ(Ids(FolderTree(space.FindList("folders"))),
++            Ids(FolderTree(reloaded.FindList("folders"))));
++}
++
++TEST(CoveFolderModelTest, CollapseOnlyHidesDescendantsAndPreservesSiblingOrder) {
++  base::DictValue space = Space(R"({"folders":[
++    {"id":"child","name":"Child","parent":"root"},
++    {"id":"root","name":"Root","collapsed":true},
++    {"id":"grandchild","parent":"child"},
++    {"id":"second","parent":"root"},{"id":"other"}]})");
++  const base::DictValue before = space.Clone();
++  FolderTree tree(space.FindList("folders"));
++  EXPECT_EQ((std::vector<std::string>{"root", "other"}), Ids(tree));
++  EXPECT_EQ((std::vector<std::string>{"root", "child", "grandchild",
++                                    "second", "other"}),
++            Ids(tree, true));
++  const std::vector<FolderItem> rows = tree.Rows(true);
++  ASSERT_EQ(5u, rows.size());
++  EXPECT_EQ(0u, rows[0].depth);
++  EXPECT_EQ(1u, rows[1].depth);
++  EXPECT_EQ(2u, rows[2].depth);
++  EXPECT_EQ(1u, rows[3].depth);
++  EXPECT_EQ(u"Child", rows[1].name);
++  EXPECT_EQ(before, space);
++}
++
++TEST(CoveFolderModelTest, CyclesAndOrphansRemainVisibleWithoutMutatingPrefs) {
++  base::DictValue space = Space(R"({"folders":[
++    {"id":"tail","parent":"a"},{"id":"a","parent":"b"},
++    {"id":"b","parent":"a"},{"id":"self","parent":"self"},
++    {"id":"orphan","parent":"missing"},{"id":"normal"}],
++    "pins":[{"id":"orphan-pin","folder":"missing"},
++            {"id":"owned","folder":"orphan"}]})");
++  const base::DictValue before = space.Clone();
++  FolderTree tree(space.FindList("folders"));
++  EXPECT_EQ((std::vector<std::string>{"a", "tail", "b", "self", "orphan",
++                                    "normal"}),
++            Ids(tree));
++  EXPECT_EQ("", tree.Parent("a"));
++  EXPECT_EQ("", tree.Parent("b"));
++  EXPECT_EQ("", tree.Parent("orphan"));
++  EXPECT_EQ("a", tree.Parent("tail"));
++  EXPECT_FALSE(tree.CanAddChild("a"));
++  EXPECT_FALSE(tree.CanAddChild("tail"));
++  EXPECT_TRUE(tree.CanRemove("a"));
++  EXPECT_FALSE(tree.CanMove("normal", "tail"));
++  EXPECT_FALSE(tree.CanMove("tail", "normal"));
++  EXPECT_FALSE(FolderTree::Move(space, "a", "normal"));
++  EXPECT_FALSE(FolderTree::Reorder(space, "b", true));
++  EXPECT_EQ(before, space);
++  EXPECT_TRUE(FolderTree::Remove(space, "orphan"));
++  EXPECT_EQ("missing",
++            *space.FindList("pins")->front().GetDict().FindString("folder"));
++  EXPECT_EQ("", *(*space.FindList("pins"))[1].GetDict().FindString("folder"));
++  EXPECT_TRUE(FolderTree::Remove(space, "a"));
++  EXPECT_EQ("", FolderTree(space.FindList("folders")).Parent("tail"));
++  EXPECT_EQ("", FolderTree(space.FindList("folders")).Parent("b"));
++}
++
++TEST(CoveFolderModelTest, MalformedAndDuplicateEntriesArePreserved) {
++  base::DictValue space = Space(R"({"folders":[
++    null,4,{"name":"No ID"},{"id":""},{"id":false},
++    {"id":"a","name":"First","parent":5},
++    {"id":"a","name":"Duplicate","extra":"kept"},
++    {"id":"b","name":7,"collapsed":"wrong"},
++    {"id":"c","parent":"b"}],
++    "pins":[false,{"folder":5},{"folder":"b","extra":"kept"}]})");
++  const base::DictValue before = space.Clone();
++  FolderTree tree(space.FindList("folders"));
++  EXPECT_EQ((std::vector<std::string>{"a", "b", "c"}), Ids(tree));
++  ASSERT_EQ(3u, tree.Rows().size());
++  EXPECT_EQ(u"First", tree.Rows()[0].name);
++  EXPECT_TRUE(tree.Rows()[1].name.empty());
++  EXPECT_FALSE(FolderTree::Move(space, "a", "b"));
++  EXPECT_FALSE(FolderTree::Reorder(space, "a", true));
++  EXPECT_FALSE(FolderTree::Remove(space, "a"));
++  EXPECT_EQ(before, space);
++  EXPECT_TRUE(FolderTree::Remove(space, "b"));
++  ASSERT_EQ(8u, space.FindList("folders")->size());
++  EXPECT_EQ((*before.FindList("folders"))[6],
++            (*space.FindList("folders"))[6]);
++  EXPECT_EQ("", FolderTree(space.FindList("folders")).Parent("c"));
++  EXPECT_EQ("kept", *(*space.FindList("pins"))[2].GetDict().FindString("extra"));
++}
++
++TEST(CoveFolderModelTest, EmptyOrMalformedListsAreNoOps) {
++  FolderTree empty(nullptr);
++  EXPECT_TRUE(empty.Rows().empty());
++  EXPECT_FALSE(empty.Contains(""));
++  EXPECT_FALSE(empty.CanReorder("missing", true));
++  base::DictValue space = Space(R"({"folders":false,"pins":[{"folder":"a"}]})");
++  const base::DictValue before = space.Clone();
++  EXPECT_FALSE(FolderTree::Move(space, "a", ""));
++  EXPECT_FALSE(FolderTree::Reorder(space, "a", true));
++  EXPECT_FALSE(FolderTree::Remove(space, "a"));
++  EXPECT_EQ(before, space);
++}
++
++TEST(CoveFolderModelTest, DeepTreeUsesIterativeTraversal) {
++  base::ListValue folders;
++  constexpr size_t kDepth = 10000;
++  for (size_t i = 0; i < kDepth; ++i) {
++    base::DictValue folder;
++    folder.Set("id", std::to_string(i));
++    if (i > 0) {
++      folder.Set("parent", std::to_string(i - 1));
++    }
++    folders.Append(std::move(folder));
++  }
++  FolderTree tree(&folders);
++  const std::vector<FolderItem> rows = tree.Rows();
++  ASSERT_EQ(kDepth, rows.size());
++  EXPECT_EQ(kDepth - 1, rows.back().depth);
++  EXPECT_FALSE(tree.CanMove("0", std::to_string(kDepth - 1)));
++}
++
++}  // namespace
++}  // namespace cove
