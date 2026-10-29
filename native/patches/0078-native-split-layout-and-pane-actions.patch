@@ -1,0 +1,140 @@
+diff --git a/chrome/app/cove_command_ids.h b/chrome/app/cove_command_ids.h
+--- a/chrome/app/cove_command_ids.h
++++ b/chrome/app/cove_command_ids.h
+@@ -21,6 +21,10 @@
+ #define IDC_COVE_RESET_SPACE 35081
+ #define IDC_COVE_RENAME_PIN 35082
+ #define IDC_COVE_RENAME_SPACE 35083
++#define IDC_COVE_SPLIT_SIDE_BY_SIDE 35084
++#define IDC_COVE_SPLIT_STACKED 35085
++#define IDC_COVE_SPLIT_SWAP 35086
++#define IDC_COVE_SPLIT_RESET_RATIO 35087
+ #define IDC_COVE_SPACE_FIRST 35100
+ #define IDC_COVE_SPACE_LAST 35108
+ 
+@@ -32,7 +36,8 @@
+ 
+ constexpr bool IsSplitCommand(int id) {
+   return id == IDC_COVE_REMOVE_SPLIT || id == IDC_COVE_FOCUS_SPLIT_LEFT ||
+-         id == IDC_COVE_FOCUS_SPLIT_RIGHT;
++         id == IDC_COVE_FOCUS_SPLIT_RIGHT ||
++         (id >= IDC_COVE_SPLIT_SIDE_BY_SIDE && id <= IDC_COVE_SPLIT_RESET_RATIO);
+ }
+ }  // namespace cove
+ 
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -920,6 +920,10 @@
+       break;
+     case IDC_COVE_REMOVE_SPLIT:
+     case IDC_COVE_FOCUS_SPLIT_LEFT:
++    case IDC_COVE_SPLIT_SIDE_BY_SIDE:
++    case IDC_COVE_SPLIT_STACKED:
++    case IDC_COVE_SPLIT_SWAP:
++    case IDC_COVE_SPLIT_RESET_RATIO:
+     case IDC_COVE_FOCUS_SPLIT_RIGHT: {
+       auto* model = browser_->GetTabStripModel();
+       const auto split_id = model->GetActiveTab()->GetSplit();
+@@ -930,6 +934,21 @@
+         // Separating a split keeps both tabs and their navigation histories.
+         model->RemoveSplit(*split_id);
+         model->GetActiveWebContents()->Focus();
++        break;
++      }
++      if (id == IDC_COVE_SPLIT_SIDE_BY_SIDE || id == IDC_COVE_SPLIT_STACKED) {
++        model->UpdateSplitLayout(*split_id,
++            id == IDC_COVE_SPLIT_STACKED ? split_tabs::SplitTabLayout::kStacked
++                                         : split_tabs::SplitTabLayout::kSideBySide);
++        model->UpdateSplitRatio(*split_id, 0.5);
++        break;
++      }
++      if (id == IDC_COVE_SPLIT_SWAP) {
++        model->ReverseTabsInSplit(*split_id);
++        break;
++      }
++      if (id == IDC_COVE_SPLIT_RESET_RATIO) {
++        model->UpdateSplitRatio(*split_id, 0.5);
+         break;
+       }
+       const auto tabs = model->GetSplitData(*split_id)->ListTabs();
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -32,6 +32,7 @@
+ #include "components/omnibox/browser/autocomplete_match.h"
+ #include "components/sessions/core/tab_restore_service.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "components/tabs/public/split_tab_data.h"
+ #include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/web_contents.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -254,14 +255,27 @@
+     Dismiss();
+     return true;
+   }
++  if (event.IsControlDown() && event.IsShiftDown() && !event.IsCommandDown() &&
++      !event.IsAltDown() && (event.key_code() == ui::VKEY_1 ||
++                             event.key_code() == ui::VKEY_2)) {
++    const int command = event.key_code() == ui::VKEY_1
++                            ? IDC_COVE_FOCUS_SPLIT_LEFT : IDC_COVE_FOCUS_SPLIT_RIGHT;
++    auto browser = browser_;
++    if (browser && chrome::IsCommandEnabled(browser.get(), command)) {
++      Dismiss();
++      chrome::ExecuteCommand(browser.get(), command);
++    }
++    return true;
++  }
+   if (event.IsControlDown() && !event.IsCommandDown() &&
+       !event.IsShiftDown() && !event.IsAltDown() &&
+       event.key_code() >= ui::VKEY_1 && event.key_code() <= ui::VKEY_9) {
+     const int command = IDC_COVE_SPACE_FIRST + event.key_code() - ui::VKEY_1;
+     auto browser = browser_;
+-    Dismiss();
+-    if (browser && chrome::IsCommandEnabled(browser.get(), command))
++    if (browser && chrome::IsCommandEnabled(browser.get(), command)) {
++      Dismiss();
+       chrome::ExecuteCommand(browser.get(), command);
++    }
+     return true;
+   }
+   if (event.key_code() == ui::VKEY_DOWN || event.key_code() == ui::VKEY_UP) {
+@@ -298,6 +312,9 @@
+   const auto* active_tab = browser_ ? browser_->GetTabStripModel()->GetActiveTab() : nullptr;
+   const bool pinned = active_tab && active_tab->IsPinned();
+   const bool is_split = active_tab && active_tab->IsSplit();
++  const bool stacked = is_split && browser_->GetTabStripModel()
++      ->GetSplitData(*active_tab->GetSplit())->visual_data()->split_layout() ==
++          split_tabs::SplitTabLayout::kStacked;
+   struct Action {
+     int id;
+     const char16_t* title;
+@@ -308,8 +325,12 @@
+       {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, u"Toggle Sidebar", true},
+       {IDC_NEW_SPLIT_TAB, u"Add Split View", !is_split},
+       {IDC_COVE_REMOVE_SPLIT, u"Separate Split View", is_split},
+-      {IDC_COVE_FOCUS_SPLIT_LEFT, u"Focus Left Pane", is_split},
+-      {IDC_COVE_FOCUS_SPLIT_RIGHT, u"Focus Right Pane", is_split},
++      {IDC_COVE_SPLIT_SIDE_BY_SIDE, u"Split Side by Side", is_split},
++      {IDC_COVE_SPLIT_STACKED, u"Split Top and Bottom", is_split},
++      {IDC_COVE_SPLIT_SWAP, u"Swap Split Panes", is_split},
++      {IDC_COVE_SPLIT_RESET_RATIO, u"Reset Split Sizes", is_split},
++      {IDC_COVE_FOCUS_SPLIT_LEFT, stacked ? u"Focus Top Pane" : u"Focus Left Pane", is_split},
++      {IDC_COVE_FOCUS_SPLIT_RIGHT, stacked ? u"Focus Bottom Pane" : u"Focus Right Pane", is_split},
+       {IDC_DUPLICATE_TAB, u"Duplicate Tab", true},
+       {IDC_RESTORE_TAB, u"Reopen Closed Tab", true},
+       {IDC_COPY_URL, u"Copy Current URL", true},
+diff --git a/chrome/browser/global_keyboard_shortcuts_mac.mm b/chrome/browser/global_keyboard_shortcuts_mac.mm
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -124,7 +124,9 @@
+       {false, true,  true,  false, kVK_PageDown,          IDC_MOVE_TAB_NEXT},
+       {false, true,  true,  false, kVK_PageUp,            IDC_MOVE_TAB_PREVIOUS},
+ 
+-      // Control-1..9 selects a Space; Command-1..9 continues selecting tabs.
++        {false, true, true, false, kVK_ANSI_1, IDC_COVE_FOCUS_SPLIT_LEFT},
++      {false, true, true, false, kVK_ANSI_2, IDC_COVE_FOCUS_SPLIT_RIGHT},
++    // Control-1..9 selects a Space; Command-1..9 continues selecting tabs.
+       {false, false, true, false, kVK_ANSI_1, IDC_COVE_SPACE_FIRST + 0},
+       {false, false, true, false, kVK_ANSI_2, IDC_COVE_SPACE_FIRST + 1},
+       {false, false, true, false, kVK_ANSI_3, IDC_COVE_SPACE_FIRST + 2},
