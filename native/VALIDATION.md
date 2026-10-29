@@ -1,10 +1,20 @@
 # Native validation — 2026-10-29
 
-## New 81-patch source batch: acceptance pending
+## Current 81-patch build: automated checks passed, UI acceptance pending
 
-The current versioned source extends through 0081: nested folders, the reference-frame correction and separate ambient website appearance. Final GN generation passed at `75d4bf2d065b8f347e740b406c9f33f3b6002840ea3daa2688005aa84cb1ea66`. The native app compile is in progress in `/tmp/cove-native81-build-final.log`; its built_config is not yet accepted. Two compiler findings (folder-model destructor and a shadowed local) were corrected before this generation. Do not launch or report the old app bundle as the new completed build.
+The current versioned source extends through 0081: nested folders, the reference-frame correction and separate ambient website appearance. GN generation and the native application build passed. Both generated_config and built_config equal `4b18cf075b8f4eca2e03dc704a8e9019410fa33b6db2f0b64586dee38709529a`.
 
-All 36 Python tests passed. The final corrected 81-patch series passed original-file SHA256/application verification. The six added folder tests (61 expected focused tests total) and three added appearance browser tests have not run. New native runtime and renderer-smoke acceptance remain pending. CUA did attach this turn, so the earlier blanket attachment blocker below is historical.
+Resuming the interrupted compile found an 0080 type error: the layout stores browser_view as views::View*, so BrowserView-only calls did not compile. The patch now uses the layout's existing fullscreen state; vertical tabs are already restricted to normal windows. The earlier folder-model destructor and shadowed-local fixes remain intact.
+
+- All 36 Python tooling/verifier tests passed after the correction.
+- All 81 patches passed original-file SHA256, sequential application and whitespace verification against `/tmp/cove-original-source`.
+- The final incremental app build passed: 37 steps in 2m22.10s, reusing out/Cove.
+- The focused native test build passed: two steps in 44.08s. All 61 executed tests passed: 43 animation controller, 12 gesture/Cocoa phase and six folder model tests.
+- Native renderer smoke passed with a fresh temporary profile after the final app build.
+
+The three appearance browser regressions remain source-only; browser_tests and the full Chromium unit/interactive suites have not run. This session has no CUA tools, so no new actual UI acceptance was attempted. Earlier successful CUA attachment is historical evidence, not current tool availability. Folder menus/persistence, frame/caption hit targets and fullscreen, live website appearance, plus the pending Space/pin/split/input checks still need the final UI pass. No normal browser profile was launched, replaced or migrated.
+
+Disposable logs are `/tmp/cove-native81-build-resume.log`, `/tmp/cove-native81-focused-build.log`, `/tmp/cove-native81-focused-tests.log` and `/tmp/cove-native81-smoke.log`. The results above are the permanent record.
 
 Run `python3 scripts/chromium/handoff.py` and read [NEXT_AGENT_PROMPT.md](NEXT_AGENT_PROMPT.md) for exact continuation commands and UI acceptance. No complete Arc-parity claim is made.
 

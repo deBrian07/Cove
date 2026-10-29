@@ -10,15 +10,17 @@ That script is read-only. It prints Git state, patch count, live build processes
 
 The user wants native Cove to match Arc's functions and supplied screenshots, and requested a continuation handoff before the usage limit. They also authorized pushing the complete project history to `https://github.com/deBrian07/Cove.git`, branch `main`, without co-author trailers. Preserve existing history; do not reinitialize Git or replace README with a one-line stub. The requested remote was empty when checked, and GitHub authentication uses `deBrian07`.
 
-## First: finish the current batch
+## First: actual UI acceptance of the built batch
 
-Patches 0079–0081 are new. Their final build/runtime status is in HANDOFF and VALIDATION; refresh it from the live script/log before acting. Two compiler findings were corrected: the folder model needs an out-of-line destructor, and the New Folder command's local variable must not shadow its command ID. The final regenerated series includes both fixes. Do not revert them.
+The corrected 81-patch app build, renderer smoke, all 61 focused native tests, all 36 tooling tests and original-file/SHA patch verification passed. Both generated_config and built_config equal `4b18cf075b8f4eca2e03dc704a8e9019410fa33b6db2f0b64586dee38709529a`. Refresh these records with the handoff script before acting; do not repeat an unchanged passing build just to resume. Actual UI acceptance is next.
+
+Three compiler findings were corrected: the folder model needs an out-of-line destructor; the New Folder local must not shadow its command ID; and patch 0080 must use `is_fullscreen(layout_data_->window_state)` because the layout stores browser_view as views::View*. Vertical tabs are already restricted to normal browser windows. Keep all three corrections.
 
 - 0079: persistent nested folders, create subfolders, move whole folders, reorder siblings, move pins into nested paths or out to root, remove a folder while reparenting contents. A separate pure tree model rejects invalid/cyclic destinations and ambiguous duplicate IDs. Six new model tests include 10,000-level traversal and JSON/data-preservation checks.
-- 0080: remove the extra 36 DIP top caption strip when the sidebar is hidden; keep a symmetric narrow frame; 8 DIP page corners; darker default violet. Native caption buttons hide at rest and return with sidebar reveal. Fullscreen/AppKit, custom themes and accessibility modes retain their handling. Source review found no blocker, but actual button hit testing, hover and fullscreen cycles need UI evidence.
+- 0080: remove the extra 36 DIP top caption strip when the sidebar is hidden; keep a symmetric narrow frame; 8 DIP page corners; darker default violet. Native caption buttons hide at rest and return with sidebar reveal. Fullscreen/AppKit, custom themes and accessibility modes retain their handling. The final native compile and renderer smoke passed, but actual button hit testing, hover and fullscreen cycles need UI evidence.
 - 0081: untouched default dark Cove chrome no longer forces ordinary websites dark. Pages follow system appearance; explicit appearance preferences remain authoritative. WebUI/incognito/enterprise/guest behavior is preserved. Three added browser regression cases are SOURCE ONLY unless subsequently built/run.
 
-Do not edit patch/config inputs while GN/Ninja is running. Do not launch a second Ninja against the same output. Once idle, use the existing checkout/output:
+Do not edit patch/config inputs while GN/Ninja is running. Do not launch a second Ninja against the same output. Only if the source/configuration changes, and once idle, use the existing checkout/output:
 
 ```sh
 python3 scripts/chromium/cove_chromium.py gen
@@ -27,7 +29,7 @@ python3 scripts/chromium/cove_chromium.py build --jobs 2
 
 If the current build is already running, monitor it first instead of restarting. Logs under `/tmp/cove-native81*` are disposable. On this Mac there is 18 GiB RAM; two build jobs are deliberate. A BrowserView header change invalidates many native objects, so this batch is larger than the previous two-step rebuild. Never delete output to speed it up.
 
-After the app builds, compile and execute the focused test target sequentially:
+The focused target has already built and all 61 tests passed for this digest. After future relevant changes, compile and execute it sequentially:
 
 ```sh
 export PATH="/Volumes/CoveBuild/checkout/depot_tools:$PATH"
@@ -37,9 +39,9 @@ autoninja -C out/Cove -j2 cove_animation_tests
 out/Cove/cove_animation_tests
 ```
 
-Expected: 61 tests (43 animation controller, 12 gesture/Cocoa phase, 6 folder model). Do not report 61 passed until executed. Root `npm test` has 36 tooling/verifier tests. The final corrected ordered 81-patch series passed original-file/SHA verification. The original fixture is `/tmp/cove-original-source`, reconstructed from pinned `git show HEAD:<path>` originals, never from patched source.
+Executed: 61 tests (43 animation controller, 12 gesture/Cocoa phase, 6 folder model), all passed. Logs are `/tmp/cove-native81-focused-build.log` and `/tmp/cove-native81-focused-tests.log`; HANDOFF and VALIDATION retain the evidence. Root `npm test` has 36 tooling/verifier tests. The final corrected ordered 81-patch series passed original-file/SHA verification. The original fixture is `/tmp/cove-original-source`, reconstructed from pinned `git show HEAD:<path>` originals, never from patched source.
 
-Run renderer smoke only with no QA CUA attachment to the same bundle:
+Renderer smoke already passed for this digest. After future rebuilds, run it only with no QA CUA attachment to the same bundle:
 
 ```sh
 cd /Users/brianchen/Documents/Cove
@@ -50,7 +52,7 @@ Both `generated_config` and `built_config` in `/Volumes/CoveBuild/checkout/.cove
 
 ## Native UI acceptance
 
-Use CUA exclusively for UI input. After context compaction, call `await cua.rewriteDocumentation()`. Binding `await cua.getApp('dev.cove.browser')` worked this turn; the old blanket cgWindowNotFound blocker is resolved. Observe fresh AX IDs before acting. CUA `getApp` can launch a default window if the app has quit, so launch the isolated QA profile deliberately first.
+Use CUA exclusively for UI input. The continuation session had no CUA tools and performed no UI acceptance or QA launch. Obtain a session with CUA before these checks; the earlier attachment success is historical. After context compaction, call `await cua.rewriteDocumentation()`. Binding `await cua.getApp('dev.cove.browser')` worked in the earlier session; the old blanket cgWindowNotFound blocker was resolved there. Observe fresh AX IDs before acting. CUA `getApp` can launch a default window if the app has quit, so launch the isolated QA profile deliberately first.
 
 The user has authorized closing all Cove and reopening the QA profile. Quit through the Cove menu if held Cmd+Q does not quit. Preserve every profile. Use exactly one production-bundle QA instance rather than renamed app bundles, which previously caused long attachment stalls:
 

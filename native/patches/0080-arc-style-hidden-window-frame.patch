@@ -106,7 +106,7 @@ diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_imp
      const {
 +  // The edge-revealed Cove sidebar includes its own caption row.
 +  if (layout_data_->tab_strip_type == TabStripType::kVertical &&
-+      views().browser_view->GetIsNormalType() && !views().browser_view->IsFullscreen())
++      !is_fullscreen(layout_data_->window_state))
 +    return 0;
 +
    // When the top container isn't in the browser view, the exclusion won't apply

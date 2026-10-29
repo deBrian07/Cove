@@ -2,7 +2,7 @@
 
 These controls use Chromium's real tab, split, navigation and session models. They do not use the retired Electron renderer.
 
-The native source series extends through patch 0081. Build, test and runtime checks for 0079–0081 are pending. Six new folder-model tests bring the expected focused suite to 61 tests, not yet run. The earlier 78-patch build, renderer smoke and 55 focused regressions passed. CUA attached to the QA window this turn; the new folder and appearance changes, plus the newest Space, pin-home and split commands, still need live acceptance. See [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
+The native source series extends through patch 0081. The corrected 81-patch app build, renderer smoke, all 61 focused native tests, all 36 tooling tests and patch verification passed. The new folder/frame/appearance changes, plus the newest Space, pin-home and split commands, still need live acceptance. This continuation session has no CUA tools; appearance browser regressions remain source-only. See [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
 
 | macOS shortcut | Action |
 | --- | --- |
@@ -23,7 +23,7 @@ The native source series extends through patch 0081. Build, test and runtime che
 
 The full-width toolbar is hidden in vertical-sidebar mode. Create a split from the native Tab menu, the command bar or the shortcut. The upstream Split View toolbar button remains available when the toolbar is shown, respecting a saved choice to unpin it. In a split, its menu offers separate views, swap, side-by-side/stacked orientation and closing either pane. The native Tab menu also exposes split creation, pane focus, separation and pinning.
 
-Patch 0080 removes the 36 DIP top strip in hidden-toolbar mode, changes the page corners to 8 DIP and darkens the violet frame surfaces. Patch 0081 defaults web pages to the system appearance while keeping Cove's chrome dark; saved explicit appearance choices take precedence. These changes await build and runtime validation.
+Patch 0080 removes the 36 DIP top strip in hidden-toolbar mode, changes the page corners to 8 DIP and darkens the violet frame surfaces. Patch 0081 defaults web pages to the system appearance while keeping Cove's chrome dark; saved explicit appearance choices take precedence. These changes compile and pass renderer smoke; actual UI and appearance-browser validation remain pending.
 
 Type a command into ⌘T, or use `/` or `>` for actions mode. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
 
