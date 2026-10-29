@@ -1,0 +1,148 @@
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
+@@ -61,6 +61,7 @@
+ 
+   base::RepeatingCallback<void(bool)> space_navigation_;
+   cove::SpaceSwipeState space_swipe_;
++  cove::MacSpaceSwipePhaseMapper space_phase_mapper_;
+ 
+   GestureState gesture_state_ = GestureState::kNone;
+   float cumulative_x_ = 0.0f;
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+@@ -56,12 +56,17 @@
+ void VerticalTabStripFocusSwipeController::OnMouseEvent(ui::MouseEvent* event) {
+   if (!event->IsMouseWheelEvent()) return;
+   if (space_navigation_) {
++#if BUILDFLAG(IS_MAC)
++    // Widget converts unhandled raw scrolls to wheels: never count them twice.
++    return;
++#else
+     const auto* wheel = event->AsMouseWheelEvent();
+     float dx = wheel->x_offset();
+     float dy = wheel->y_offset();
+     if (event->IsShiftDown() && dx == 0) { dx = dy; dy = 0; }
+     ProcessSpaceSwipe(dx, dy, cove::SpaceSwipeState::Phase::kNone, event);
+     return;
++#endif
+   }
+   if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+       !region_view_ || region_view_->IsDragging()) {
+@@ -77,19 +82,29 @@
+     ui::ScrollEvent* event) {
+   if (space_navigation_) {
+     using Phase = cove::SpaceSwipeState::Phase;
+-    auto phase = Phase::kUpdate;
+-    if (event->type() == ui::EventType::kScrollFlingStart ||
+-        event->momentum_phase() != ui::EventMomentumPhase::NONE) {
+-      phase = event->momentum_phase() == ui::EventMomentumPhase::END
+-                  ? Phase::kMomentumEnd : Phase::kMomentum;
+-    } else if (event->type() == ui::EventType::kScrollFlingCancel ||
+-               event->scroll_event_phase() == ui::ScrollEventPhase::kBegan) {
++    using NativePhase = cove::MacSpaceSwipePhaseMapper::NativePhase;
++    auto native = NativePhase::kTouchUpdate;
++    switch (event->momentum_phase()) {
++      case ui::EventMomentumPhase::MAY_BEGIN:
++        native = NativePhase::kTouchBegin;
++        break;
++      case ui::EventMomentumPhase::BEGAN:
++      case ui::EventMomentumPhase::INERTIAL_UPDATE:
++        native = NativePhase::kInertia;
++        break;
++      case ui::EventMomentumPhase::BLOCKED:
++      case ui::EventMomentumPhase::END:
++        native = NativePhase::kEnd;
++        break;
++      case ui::EventMomentumPhase::NONE:
++        break;
++    }
++    auto phase = space_phase_mapper_.Convert(
++        native, event->x_offset() != 0 || event->y_offset() != 0);
++    if (event->type() == ui::EventType::kScrollFlingStart)
++      phase = Phase::kMomentum;
++    else if (event->type() == ui::EventType::kScrollFlingCancel)
+       phase = Phase::kBegin;
+-    } else if (event->scroll_event_phase() == ui::ScrollEventPhase::kEnd) {
+-      phase = Phase::kEnd;
+-    } else if (event->scroll_event_phase() == ui::ScrollEventPhase::kNone) {
+-      phase = Phase::kNone;
+-    }
+     ProcessSpaceSwipe(event->x_offset(), event->y_offset(), phase, event);
+     return;
+   }
+diff --git a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h
+--- a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h
++++ b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h
+@@ -55,5 +55,33 @@
+   bool triggered_ = false;
+   base::TimeTicks last_;
+ };
++// Cocoa conflates touch and momentum phases. A phase-less mouse wheel is END
++// with displacement; END following a touch/inertia stream terminates that stream.
++class MacSpaceSwipePhaseMapper {
++ public:
++  enum class NativePhase { kTouchBegin, kTouchUpdate, kInertia, kEnd };
++  SpaceSwipeState::Phase Convert(NativePhase native, bool has_displacement) {
++    using Phase = SpaceSwipeState::Phase;
++    switch (native) {
++      case NativePhase::kTouchBegin:
++        stream_active_ = true;
++        return Phase::kBegin;
++      case NativePhase::kTouchUpdate:
++        stream_active_ = true;
++        return Phase::kUpdate;
++      case NativePhase::kInertia:
++        stream_active_ = true;
++        return Phase::kMomentum;
++      case NativePhase::kEnd:
++        if (stream_active_ || !has_displacement) {
++          stream_active_ = false;
++          return Phase::kEnd;
++        }
++        return Phase::kNone;
++    }
++  }
++ private:
++  bool stream_active_ = false;
++};
+ }  // namespace cove
+ #endif
+diff --git a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc
+--- a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc
++++ b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc
+@@ -49,4 +49,33 @@
+   s.Update(0, 0, Phase::kEnd, t);
+   EXPECT_EQ(Result::kPass, s.Update(-900, 0, Phase::kMomentum, t));
+ }
++TEST(CoveSpaceSwipe, CocoaStandaloneWheelHasDisplacement) {
++  MacSpaceSwipePhaseMapper mapper;
++  using Native = MacSpaceSwipePhaseMapper::NativePhase;
++  EXPECT_EQ(Phase::kNone, mapper.Convert(Native::kEnd, true));
++  EXPECT_EQ(Phase::kNone, mapper.Convert(Native::kEnd, true));
++}
++TEST(CoveSpaceSwipe, CocoaTouchEndNeverStartsAnotherSwipe) {
++  MacSpaceSwipePhaseMapper mapper;
++  using Native = MacSpaceSwipePhaseMapper::NativePhase;
++  EXPECT_EQ(Phase::kBegin, mapper.Convert(Native::kTouchBegin, false));
++  EXPECT_EQ(Phase::kUpdate, mapper.Convert(Native::kTouchUpdate, true));
++  EXPECT_EQ(Phase::kEnd, mapper.Convert(Native::kEnd, true));
++  EXPECT_EQ(Phase::kNone, mapper.Convert(Native::kEnd, true));
++}
++TEST(CoveSpaceSwipe, CocoaFinalMomentumDeltaCannotBecomeWheel) {
++  MacSpaceSwipePhaseMapper mapper;
++  using Native = MacSpaceSwipePhaseMapper::NativePhase;
++  EXPECT_EQ(Phase::kMomentum, mapper.Convert(Native::kInertia, true));
++  EXPECT_EQ(Phase::kEnd, mapper.Convert(Native::kEnd, true));
++}
++TEST(CoveSpaceSwipe, CocoaTouchUpdatesDoNotTimeoutAsWheelBursts) {
++  MacSpaceSwipePhaseMapper mapper;
++  SpaceSwipeState state;
++  using Native = MacSpaceSwipePhaseMapper::NativePhase;
++  const auto time = base::TimeTicks::Now();
++  state.Update(-90, 0, mapper.Convert(Native::kTouchBegin, true), time);
++  EXPECT_EQ(Result::kConsume, state.Update(-90, 0,
++      mapper.Convert(Native::kTouchUpdate, true), time + base::Seconds(2)));
++}
+ }  // namespace cove

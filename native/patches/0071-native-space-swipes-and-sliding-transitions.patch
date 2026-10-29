@@ -1,0 +1,599 @@
+diff --git a/chrome/browser/ui/views/tabs/vertical/BUILD.gn b/chrome/browser/ui/views/tabs/vertical/BUILD.gn
+--- a/chrome/browser/ui/views/tabs/vertical/BUILD.gn
++++ b/chrome/browser/ui/views/tabs/vertical/BUILD.gn
+@@ -15,7 +15,7 @@
+     "vertical_tab_strip_top_container.h",
+   ]
+ 
+-  public_deps = [ "//chrome/browser/ui/views/tabs/common" ]
++  public_deps = [ ":cove_space_swipe_state", "//chrome/browser/ui/views/tabs/common" ]
+ 
+   deps = [
+     "//base",
+@@ -197,3 +197,8 @@
+     "//ui/views",
+   ]
+ }
++
++source_set("cove_space_swipe_state") {
++  sources = [ "cove_space_swipe_state.h" ]
++  public_deps = [ "//base" ]
++}
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h
+@@ -5,7 +5,9 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_FOCUS_SWIPE_CONTROLLER_H_
+ #define CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_FOCUS_SWIPE_CONTROLLER_H_
+ 
++#include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
++#include "chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+ #include "ui/events/event_handler.h"
+@@ -30,10 +32,11 @@
+       const VerticalTabStripFocusSwipeController&) = delete;
+   ~VerticalTabStripFocusSwipeController() override;
+ 
++  void SetSpaceNavigationCallback(base::RepeatingCallback<void(bool)> callback);
++
+   // ui::EventHandler:
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   void OnMouseEvent(ui::MouseEvent* event) override;
+-#elif BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC)
+   void OnScrollEvent(ui::ScrollEvent* event) override;
+ #endif
+ 
+@@ -48,11 +51,16 @@
+     kVerticalPassthrough,
+   };
+ 
++  void ProcessSpaceSwipe(float dx, float dy, cove::SpaceSwipeState::Phase phase,
++                         ui::Event* event);
+   void ProcessSwipeOffset(float x_offset, float y_offset, ui::Event* event);
+   void ResetGesture();
+   void RotateTabGroupFocus(bool forward);
+ 
+   const raw_ptr<VerticalTabStripRegionView> region_view_;
++
++  base::RepeatingCallback<void(bool)> space_navigation_;
++  cove::SpaceSwipeState space_swipe_;
+ 
+   GestureState gesture_state_ = GestureState::kNone;
+   float cumulative_x_ = 0.0f;
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+@@ -25,11 +25,46 @@
+   region_view_->RemovePreTargetHandler(this);
+ }
+ 
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
++void VerticalTabStripFocusSwipeController::SetSpaceNavigationCallback(
++    base::RepeatingCallback<void(bool)> callback) {
++  space_navigation_ = std::move(callback);
++  space_swipe_.Reset();
++}
++
++void VerticalTabStripFocusSwipeController::ProcessSpaceSwipe(
++    float dx, float dy, cove::SpaceSwipeState::Phase phase, ui::Event* event) {
++  if (region_view_->IsDragging()) {
++    space_swipe_.Reset();
++    return;
++  }
++  if (!space_swipe_.horizontal() && !region_view_->IsSpaceSwipeTarget(*event)) {
++    space_swipe_.Reset();
++    return;
++  }
++  using Result = cove::SpaceSwipeState::Result;
++  const auto result = space_swipe_.Update(dx, dy, phase, base::TimeTicks::Now());
++  if (result == Result::kPass) return;
++  event->SetHandled();
++  event->StopPropagation();
++  if (result == Result::kNext || result == Result::kPrevious) {
++    bool forward = result == Result::kNext;
++    if (base::i18n::IsRTL()) forward = !forward;
++    space_navigation_.Run(forward);
++  }
++}
++
+ void VerticalTabStripFocusSwipeController::OnMouseEvent(ui::MouseEvent* event) {
++  if (!event->IsMouseWheelEvent()) return;
++  if (space_navigation_) {
++    const auto* wheel = event->AsMouseWheelEvent();
++    float dx = wheel->x_offset();
++    float dy = wheel->y_offset();
++    if (event->IsShiftDown() && dx == 0) { dx = dy; dy = 0; }
++    ProcessSpaceSwipe(dx, dy, cove::SpaceSwipeState::Phase::kNone, event);
++    return;
++  }
+   if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+-      !region_view_ || region_view_->IsDragging() ||
+-      !event->IsMouseWheelEvent()) {
++      !region_view_ || region_view_->IsDragging()) {
+     return;
+   }
+ 
+@@ -37,9 +72,27 @@
+   ProcessSwipeOffset(static_cast<float>(wheel_event->x_offset()),
+                      static_cast<float>(wheel_event->y_offset()), wheel_event);
+ }
+-#elif BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_MAC)
+ void VerticalTabStripFocusSwipeController::OnScrollEvent(
+     ui::ScrollEvent* event) {
++  if (space_navigation_) {
++    using Phase = cove::SpaceSwipeState::Phase;
++    auto phase = Phase::kUpdate;
++    if (event->type() == ui::EventType::kScrollFlingStart ||
++        event->momentum_phase() != ui::EventMomentumPhase::NONE) {
++      phase = event->momentum_phase() == ui::EventMomentumPhase::END
++                  ? Phase::kMomentumEnd : Phase::kMomentum;
++    } else if (event->type() == ui::EventType::kScrollFlingCancel ||
++               event->scroll_event_phase() == ui::ScrollEventPhase::kBegan) {
++      phase = Phase::kBegin;
++    } else if (event->scroll_event_phase() == ui::ScrollEventPhase::kEnd) {
++      phase = Phase::kEnd;
++    } else if (event->scroll_event_phase() == ui::ScrollEventPhase::kNone) {
++      phase = Phase::kNone;
++    }
++    ProcessSpaceSwipe(event->x_offset(), event->y_offset(), phase, event);
++    return;
++  }
+   if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+       !region_view_ || region_view_->IsDragging()) {
+     return;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -48,7 +48,10 @@
+ class VerticalTabStripStateController;
+ }  // namespace tabs
+ 
++namespace ui { class LayerTreeOwner; }
++
+ namespace views {
++class AnimationAbortHandle;
+ class LabelButton;
+ class ResizeArea;
+ class Separator;
+@@ -214,6 +217,10 @@
+   friend class VerticalTabStripExpandOnHoverLock;
+ 
+   void UpdateCovePinnedTabsVisibility();
++  bool IsSpaceSwipeTarget(const ui::Event& event) const;
++  void BeginSpaceTransition(int direction);
++  void FinishSpaceTransition();
++  void ClearSpaceTransition();
+ 
+   // OrganizerPanelHost:
+   void SetOrganizerPanelView(std::unique_ptr<views::View> panel_view) override;
+@@ -266,6 +273,12 @@
+   bool organizer_panel_was_visible_ = false;
+ 
+   raw_ptr<views::View> content_area_view_ = nullptr;
++  raw_ptr<views::View> space_clip_view_ = nullptr;
++  raw_ptr<views::View> space_rows_view_ = nullptr;
++  std::unique_ptr<ui::LayerTreeOwner> space_snapshot_;
++  std::unique_ptr<views::AnimationAbortHandle> space_animation_;
++  int space_transition_generation_ = 0;
++  int space_direction_ = 1;
+   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
+   raw_ptr<CoveLocationView> location_view_ = nullptr;
+   raw_ptr<CoveFavoritesView> favorites_view_ = nullptr;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -70,6 +70,12 @@
+ #include "ui/base/l10n/l10n_util.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/compositor/layer.h"
++#include "ui/compositor/layer_tree_owner.h"
++#include "ui/gfx/animation/animation.h"
++#include "ui/gfx/geometry/transform.h"
++#include "ui/views/animation/animation_builder.h"
++#include "ui/views/animation/animation_abort_handle.h"
++#include "ui/views/layout/fill_layout.h"
+ #include "ui/display/screen.h"
+ #include "ui/events/event.h"
+ #include "ui/gfx/geometry/point.h"
+@@ -87,6 +93,7 @@
+ #include "ui/views/layout/layout_types.h"
+ #include "ui/views/layout/proposed_layout.h"
+ #include "ui/views/view.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "ui/views/view_class_properties.h"
+ #include "ui/views/view_utils.h"
+ 
+@@ -97,6 +104,22 @@
+ constexpr int kCollapsedResizeAreaWidth = 2;
+ constexpr int kKeyboardResizeWidth = 50;
+ constexpr int kSnapDistance = 15;
++
++// Recreate only the painted layer tree. Old layers have no View delegates,
++// so rebuilding rows cannot make a transition retain destroyed tab Views.
++void SnapshotChildLayers(views::View* parent, ui::Layer* old_parent) {
++  for (views::View* child : parent->children()) {
++    ui::Layer* old_child_parent = old_parent;
++    if (child->layer()) {
++      auto old = child->RecreateLayer();
++      child->SchedulePaint();
++      if (old->parent()) old->parent()->Remove(old.get());
++      old_parent->Add(old.get());
++      old_child_parent = old.release();
++    }
++    SnapshotChildLayers(child, old_child_parent);
++  }
++}
+ 
+ // Shadow is used in expand-on-hover mode. Shadow radius and opacity are dynamic
+ // and set by the layout.
+@@ -154,7 +177,25 @@
+ 
+   favorites_view_ = content_area_view_->AddChildView(
+       std::make_unique<CoveFavoritesView>(browser_view->browser()));
+-  library_view_ = content_area_view_->AddChildView(
++  space_clip_view_ = content_area_view_->AddChildView(std::make_unique<views::View>());
++  space_clip_view_->SetProperty(views::kFlexBehaviorKey,
++      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
++                                views::MaximumFlexSizeRule::kUnbounded));
++  space_clip_view_->SetLayoutManager(std::make_unique<views::FillLayout>());
++  space_clip_view_->SetPaintToLayer();
++  space_clip_view_->layer()->SetFillsBoundsOpaquely(false);
++  space_clip_view_->layer()->SetMasksToBounds(true);
++  auto rows = std::make_unique<views::FlexLayoutView>();
++  rows->SetOrientation(views::LayoutOrientation::kVertical);
++  rows->SetCollapseMargins(true);
++  rows->SetDefault(views::kFlexBehaviorKey,
++      views::FlexSpecification(views::LayoutOrientation::kVertical,
++          views::MinimumFlexSizeRule::kPreferred,
++          views::MaximumFlexSizeRule::kPreferred));
++  space_rows_view_ = space_clip_view_->AddChildView(std::move(rows));
++  space_rows_view_->SetPaintToLayer();
++  space_rows_view_->layer()->SetFillsBoundsOpaquely(false);
++  library_view_ = space_rows_view_->AddChildView(
+       std::make_unique<CoveSidebarLibraryView>(browser_view->browser()));
+   library_view_->SetFavoriteActions(
+       base::BindRepeating(&CoveFavoritesView::ToggleCurrentPage,
+@@ -168,6 +209,11 @@
+       &VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility,
+       weak_factory_.GetWeakPtr()));
+   space_footer_ = AddChildView(library_view_->CreateSpaceFooter());
++  library_view_->SetSpaceTransitionCallbacks(
++      base::BindRepeating(&VerticalTabStripRegionView::BeginSpaceTransition,
++                          weak_factory_.GetWeakPtr()),
++      base::BindRepeating(&VerticalTabStripRegionView::FinishSpaceTransition,
++                          weak_factory_.GetWeakPtr()));
+ 
+   // --------------
+   // Views that go into the content area below
+@@ -176,7 +222,7 @@
+       GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
+ 
+   auto* const top_button_separator =
+-      content_area_view_->AddChildView(std::make_unique<FrameSeparator>());
++      space_rows_view_->AddChildView(std::make_unique<FrameSeparator>());
+   // The TopContainer handles the padding distance to the separator so that we
+   // can control how far it is in the various states.
+   top_button_separator->SetProperty(
+@@ -185,7 +231,7 @@
+   top_button_separator->SetInactiveColorId(kColorTabDividerFrameInactive);
+   top_button_separator_ = top_button_separator;
+ 
+-  bottom_button_container_ = content_area_view_->AddChildView(
++  bottom_button_container_ = space_rows_view_->AddChildView(
+       std::make_unique<VerticalTabStripBottomContainer>(
+           state_controller_, root_action_item, browser_view->browser(),
+           base::BindRepeating(
+@@ -237,15 +283,17 @@
+       kExpandOnHoverShadowElevation, kExpandOnHoverShadowAlpha));
+   shadow_frame_->SetProperty(views::kViewIgnoredByLayoutKey, true);
+ 
+-  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+-    focus_swipe_controller_ =
+-        std::make_unique<VerticalTabStripFocusSwipeController>(this);
+-  }
++  focus_swipe_controller_ =
++      std::make_unique<VerticalTabStripFocusSwipeController>(this);
++  focus_swipe_controller_->SetSpaceNavigationCallback(base::BindRepeating(
++      &CoveSidebarLibraryView::SelectAdjacentSpace,
++      base::Unretained(library_view_.get())));
+ 
+   SetNotifyEnterExitOnChild(true);
+ }
+ 
+ VerticalTabStripRegionView::~VerticalTabStripRegionView() {
++  ClearSpaceTransition();
+   for (const auto& lock : hover_locks_) {
+     lock->ClearRegionViewOnDestruction();
+   }
+@@ -942,6 +990,58 @@
+   }
+ }
+ 
++bool VerticalTabStripRegionView::IsSpaceSwipeTarget(const ui::Event& event) const {
++  if (!event.target()) return true;
++  const auto* target = static_cast<const views::View*>(event.target());
++  return (!location_view_ || !location_view_->Contains(target)) &&
++         (!top_button_container_ || !top_button_container_->Contains(target));
++}
++
++void VerticalTabStripRegionView::ClearSpaceTransition() {
++  ++space_transition_generation_;
++  space_animation_.reset();
++  space_snapshot_.reset();
++  if (space_rows_view_ && space_rows_view_->layer())
++    space_rows_view_->layer()->SetTransform(gfx::Transform());
++}
++
++void VerticalTabStripRegionView::BeginSpaceTransition(int direction) {
++  ClearSpaceTransition();
++  if (!gfx::Animation::ShouldRenderRichAnimation() || !GetWidget() ||
++      !GetWidget()->IsVisible() || width() < kUncollapsedMinWidth ||
++      !space_rows_view_->layer() || space_clip_view_->width() <= 0) return;
++  space_direction_ = base::i18n::IsRTL() ? -direction : direction;
++  auto old = space_rows_view_->RecreateLayer();
++  space_rows_view_->SchedulePaint();
++  SnapshotChildLayers(space_rows_view_, old.get());
++  space_snapshot_ = std::make_unique<ui::LayerTreeOwner>(std::move(old));
++}
++
++void VerticalTabStripRegionView::FinishSpaceTransition() {
++  if (!space_snapshot_ || !GetWidget()) return;
++  GetWidget()->LayoutRootViewIfNecessary();
++  const int distance = space_clip_view_->width() * space_direction_;
++  gfx::Transform incoming;
++  incoming.Translate(distance, 0);
++  space_rows_view_->layer()->SetTransform(incoming);
++  gfx::Transform outgoing;
++  outgoing.Translate(-distance, 0);
++  views::AnimationBuilder animation;
++  animation.OnEnded(base::BindOnce(
++      [](base::WeakPtr<VerticalTabStripRegionView> region, int generation) {
++        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++            FROM_HERE, base::BindOnce(
++                [](base::WeakPtr<VerticalTabStripRegionView> view, int expected) {
++                  if (view && view->space_transition_generation_ == expected)
++                    view->ClearSpaceTransition();
++                }, region, generation));
++      }, weak_factory_.GetWeakPtr(), space_transition_generation_));
++  space_animation_ = animation.GetAbortHandle();
++  animation.Once().SetDuration(base::Milliseconds(240))
++      .SetTransform(space_rows_view_->layer(), gfx::Transform(), gfx::Tween::EASE_OUT)
++      .SetTransform(space_snapshot_->root(), outgoing, gfx::Tween::EASE_OUT);
++}
++
+ void VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility() {
+   if (!tab_strip_view() || !library_view_) {
+     return;
+@@ -977,7 +1077,7 @@
+           0));
+ 
+   views::View* const content_parent =
+-      content_area_view_ ? content_area_view_.get() : this;
++      space_rows_view_ ? space_rows_view_.get() : this;
+   std::optional<size_t> separator_index =
+       content_parent->GetIndexOf(bottom_button_container_);
+   CHECK(separator_index.has_value());
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -47,6 +47,9 @@
+   ~CoveSidebarLibraryView() override;
+ 
+   void SetCollapsed(bool collapsed);
++  void SelectAdjacentSpace(bool forward);
++  void SetSpaceTransitionCallbacks(base::RepeatingCallback<void(int)> begin,
++                                   base::RepeatingClosure finish);
+   void SetPinnedCoverageChangedCallback(base::RepeatingClosure callback);
+   std::unique_ptr<views::View> CreateSpaceFooter();
+   void SetFavoriteActions(base::RepeatingClosure toggle,
+@@ -134,6 +137,8 @@
+   bool empty_canvas_cleanup_posted_ = false;
+   int empty_canvas_cleanup_generation_ = 0;
+   base::RepeatingClosure pinned_coverage_changed_;
++  base::RepeatingCallback<void(int)> begin_space_transition_;
++  base::RepeatingClosure finish_space_transition_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -13,6 +13,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
+ #include "base/location.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+@@ -1024,6 +1025,29 @@
+   space->Set("tabs", std::move(tabs));
+ }
+ 
++void CoveSidebarLibraryView::SetSpaceTransitionCallbacks(
++    base::RepeatingCallback<void(int)> begin, base::RepeatingClosure finish) {
++  begin_space_transition_ = std::move(begin);
++  finish_space_transition_ = std::move(finish);
++}
++
++void CoveSidebarLibraryView::SelectAdjacentSpace(bool forward) {
++  const auto* spaces = browser_->GetProfile()->GetPrefs()
++                           ->GetDict(kCoveSidebarPref).FindList("spaces");
++  if (!spaces) return;
++  std::vector<std::string> ids;
++  for (const auto& value : *spaces) {
++    const auto* item = value.GetIfDict();
++    if (item && item->FindString("id")) ids.push_back(*item->FindString("id"));
++  }
++  const auto current = std::ranges::find(ids, active_space_id_);
++  if (current == ids.end()) return;
++  const int index = static_cast<int>(current - ids.begin());
++  const int next = std::clamp(index + (forward ? 1 : -1), 0,
++                              static_cast<int>(ids.size()) - 1);
++  if (next != index) SwitchSpace(ids[next]);
++}
++
+ void CoveSidebarLibraryView::SwitchSpace(std::string space_id) {
+   if (switching_space_ || closing_active_space_ ||
+       active_space_id_ == space_id) {
+@@ -1040,6 +1064,20 @@
+                                  : base::ListValue();
+   base::AutoReset<bool> switching(&switching_space_, true);
+   SaveActiveSnapshot();
++  int current_index = -1, target_index = -1;
++  if (const auto* spaces = prefs->GetDict(kCoveSidebarPref).FindList("spaces")) {
++    for (size_t i = 0; i < spaces->size(); ++i) {
++      const auto* item = (*spaces)[i].GetIfDict();
++      const auto* id = item ? item->FindString("id") : nullptr;
++      if (id && *id == active_space_id_) current_index = static_cast<int>(i);
++      if (id && *id == space_id) target_index = static_cast<int>(i);
++    }
++  }
++  if (begin_space_transition_)
++    begin_space_transition_.Run(target_index > current_index ? 1 : -1);
++  base::ScopedClosureRunner finish_transition(base::BindOnce(
++      [](base::RepeatingClosure finish) { if (finish) finish.Run(); },
++      finish_space_transition_));
+   auto outgoing = CaptureCurrentTabs();
+   auto incoming = std::make_unique<SpaceTabs>();
+   const auto found = inactive_spaces_.find(space_id);
+diff --git a/chrome/browser/ui/animation/BUILD.gn b/chrome/browser/ui/animation/BUILD.gn
+--- a/chrome/browser/ui/animation/BUILD.gn
++++ b/chrome/browser/ui/animation/BUILD.gn
+@@ -77,9 +77,11 @@
+   sources = [
+     "browser_animation_controller_unittest.cc",
+     "cove_animation_test_main.cc",
++    "../views/tabs/vertical/cove_space_swipe_state_unittest.cc",
+   ]
+   deps = [
+     ":animation",
++    "//chrome/browser/ui/views/tabs/vertical:cove_space_swipe_state",
+     "//base/test:test_support",
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/browser_window/test:test_support",
+diff --git a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h
+@@ -0,0 +1,59 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_COVE_SPACE_SWIPE_STATE_H_
++#define CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_COVE_SPACE_SWIPE_STATE_H_
++#include <cmath>
++#include "base/time/time.h"
++
++namespace cove {
++// One decision per physical touch. Momentum never changes the selected Space.
++class SpaceSwipeState {
++ public:
++  enum class Phase { kNone, kBegin, kUpdate, kEnd, kMomentum, kMomentumEnd };
++  enum class Result { kPass, kConsume, kNext, kPrevious };
++  bool horizontal() const { return axis_ == Axis::kHorizontal; }
++  void Reset() { axis_ = Axis::kNone; x_ = y_ = 0; triggered_ = false; last_ = {}; }
++  Result Update(float dx, float dy, Phase phase, base::TimeTicks now) {
++    if (phase == Phase::kBegin ||
++        (phase == Phase::kNone && !last_.is_null() &&
++         now - last_ > base::Milliseconds(300))) {
++      Reset();
++    }
++    last_ = now;
++    if (phase == Phase::kMomentum || phase == Phase::kMomentumEnd) {
++      const auto result = horizontal() ? Result::kConsume : Result::kPass;
++      if (phase == Phase::kMomentumEnd) Reset();
++      return result;
++    }
++    if (phase == Phase::kEnd) {
++      const auto result = horizontal() ? Result::kConsume : Result::kPass;
++      Reset();
++      return result;
++    }
++    if (axis_ == Axis::kVertical) return Result::kPass;
++    x_ += dx; y_ += dy;
++    if (axis_ == Axis::kNone) {
++      if (std::abs(y_) >= 15 && std::abs(y_) > 1.2f * std::abs(x_)) {
++        axis_ = Axis::kVertical;
++        return Result::kPass;
++      }
++      if (std::abs(x_) >= 15 && std::abs(x_) > 1.2f * std::abs(y_))
++        axis_ = Axis::kHorizontal;
++    }
++    if (!horizontal()) return Result::kPass;
++    if (!triggered_ && std::abs(x_) >= 75) {
++      triggered_ = true;
++      return x_ < 0 ? Result::kNext : Result::kPrevious;
++    }
++    return Result::kConsume;
++  }
++ private:
++  enum class Axis { kNone, kHorizontal, kVertical };
++  Axis axis_ = Axis::kNone;
++  float x_ = 0, y_ = 0;
++  bool triggered_ = false;
++  base::TimeTicks last_;
++};
++}  // namespace cove
++#endif
+diff --git a/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state_unittest.cc
+@@ -0,0 +1,52 @@
++// Copyright 2026 The Cove Authors
++#include "chrome/browser/ui/views/tabs/vertical/cove_space_swipe_state.h"
++#include "testing/gtest/include/gtest/gtest.h"
++namespace cove {
++using Phase = SpaceSwipeState::Phase;
++using Result = SpaceSwipeState::Result;
++TEST(CoveSpaceSwipe, AccumulatesAndSwitchesOnce) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kConsume, s.Update(-30, 0, Phase::kBegin, t));
++  EXPECT_EQ(Result::kNext, s.Update(-50, 0, Phase::kUpdate, t));
++  EXPECT_EQ(Result::kConsume, s.Update(-400, 0, Phase::kUpdate, t));
++  EXPECT_EQ(Result::kConsume, s.Update(800, 0, Phase::kUpdate, t));
++}
++TEST(CoveSpaceSwipe, VerticalGestureKeepsScrolling) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kPass, s.Update(1, 30, Phase::kBegin, t));
++  EXPECT_EQ(Result::kPass, s.Update(-200, 0, Phase::kUpdate, t));
++}
++TEST(CoveSpaceSwipe, MomentumNeverSwitches) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kPass, s.Update(-200, 0, Phase::kMomentum, t));
++  EXPECT_EQ(Result::kPass, s.Update(200, 0, Phase::kMomentumEnd, t));
++}
++TEST(CoveSpaceSwipe, FingersLiftAllowsOppositeGesture) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kNext, s.Update(-90, 0, Phase::kBegin, t));
++  EXPECT_EQ(Result::kConsume, s.Update(0, 0, Phase::kEnd, t));
++  EXPECT_EQ(Result::kPrevious, s.Update(90, 0, Phase::kBegin, t));
++}
++TEST(CoveSpaceSwipe, TouchPauseDoesNotSwitchTwice) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kNext, s.Update(-90, 0, Phase::kBegin, t));
++  EXPECT_EQ(Result::kConsume, s.Update(-200, 0, Phase::kUpdate, t + base::Seconds(3)));
++}
++TEST(CoveSpaceSwipe, WheelBurstResetsAfterPause) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kNext, s.Update(-90, 0, Phase::kNone, t));
++  EXPECT_EQ(Result::kConsume, s.Update(-90, 0, Phase::kNone, t + base::Milliseconds(20)));
++  EXPECT_EQ(Result::kNext, s.Update(-90, 0, Phase::kNone, t + base::Seconds(1)));
++}
++TEST(CoveSpaceSwipe, DiagonalAndTinyJitterDoNotSwitch) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kPass, s.Update(5, 5, Phase::kBegin, t));
++  EXPECT_EQ(Result::kPass, s.Update(-100, -100, Phase::kBegin, t));
++}
++TEST(CoveSpaceSwipe, MomentumAfterTouchCannotAddAnotherStep) {
++  SpaceSwipeState s; const auto t = base::TimeTicks::Now();
++  EXPECT_EQ(Result::kNext, s.Update(-90, 0, Phase::kBegin, t));
++  s.Update(0, 0, Phase::kEnd, t);
++  EXPECT_EQ(Result::kPass, s.Update(-900, 0, Phase::kMomentum, t));
++}
++}  // namespace cove
