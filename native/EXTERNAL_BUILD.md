@@ -76,7 +76,7 @@ npm run chromium:build -- --jobs 2
 npm run chromium:run
 ```
 
-The last command launches the native build with its separate `CoveDevelopment` profile. It does not use an existing Chrome, Arc or prototype profile. The active runtime is Chromium `156.0.8078.48` at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`; the ordered Cove patch series currently has 55 patches. The expected application is:
+The last command launches the native build with its separate `CoveDevelopment` profile. It does not use an existing Chrome, Arc or prototype profile. The active runtime is Chromium `156.0.8078.48` at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`; the ordered Cove patch series currently has 78 patches. See [VALIDATION.md](VALIDATION.md) for the exact build digest and executed checks. The expected application is:
 
 ```text
 /Volumes/CoveBuild/checkout/chromium/src/out/Cove/Cove.app

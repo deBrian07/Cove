@@ -2,14 +2,15 @@
 
 These controls use Chromium's real tab, split, navigation and session models. They do not use the retired Electron renderer.
 
-The native build covers the 55-patch series. Live checks confirmed the final empty-to-real tab, Archive Today and reopen behavior; the full Arc control set remains incomplete.
+The native build covers 78 patches. Build, renderer smoke and focused regression checks pass. Final live acceptance of the newest Space, pin-home and split commands is pending because automation cannot attach to the QA window; see [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
 
 | macOS shortcut | Action |
 | --- | --- |
 | ⌘T | Open command bar |
 | ⌘L | Edit the focused tab or split pane's address |
 | ⌘D | Pin or unpin the current tab |
-| ⌘S | Collapse or expand the sidebar |
+| ⌘S | Dismiss an open command bar; otherwise hide or reveal the sidebar |
+| ⌃1–9 | Select Space 1–9 |
 | ⌃⇧+ | Add a side-by-side Split View |
 | ⌃⇧1 | Focus the first pane (left, or top when stacked) |
 | ⌃⇧2 | Focus the second pane (right, or bottom when stacked) |
@@ -22,15 +23,24 @@ The native build covers the 55-patch series. Live checks confirmed the final emp
 
 The full-width toolbar is hidden in vertical-sidebar mode. Create a split from the native Tab menu, the command bar or the shortcut. The upstream Split View toolbar button remains available when the toolbar is shown, respecting a saved choice to unpin it. In a split, its menu offers separate views, swap, side-by-side/stacked orientation and closing either pane. The native Tab menu also exposes split creation, pane focus, separation and pinning.
 
-Type a command into ⌘T, or type `/` to list browser commands: Pin Tab, Unpin Tab, Toggle Sidebar, Add Split View, Remove Split View, Focus Left Pane, Focus Right Pane, Duplicate Tab, Reopen Closed Tab and Copy Current URL. Arrow keys choose a row; Return runs it. Disabled commands explain why they are unavailable. ⌘Return searches the literal query even when it matches a command.
+Type a command into ⌘T, or use `/` or `>` for actions mode. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
+
+New native action groups:
+
+- New Space, New Folder, Rename Space, next/previous Space and direct Space-name selection.
+- Favorite Tab, Clear Today, Rename Current Tab (retained pins), Reset Tab, Replace Pin with Current Page and Reset Space.
+- Add/Separate Split View, Split Side by Side, Split Top and Bottom, Swap Split Panes and Reset Split Sizes. Focus actions show left/right or top/bottom labels for the current orientation.
+- Window/private-window, navigation/reload, find, downloads, history, preferences, extensions, developer tools, fullscreen, open-file, save/print and zoom actions.
+
+Reset Tab navigates the current live pin to its saved home. Replace Pin with Current Page changes that saved home while retaining its label. Reset Space returns the current Space's live pins home; it does not open closed pins or navigate inactive Spaces.
 
 The footer's + menu exposes Add/Remove Favorites, Pin this page, New folder, New Space and Archive Today. Unsupported blank-page Favorite/Pin actions are disabled. Favorites are shared between Spaces and use Chromium's cached favicons. Click a Favorite to focus its page or open it; right-click to remove it.
 
-Space dots switch live pages without closing them. Right-click a dot to rename its Space. New Spaces open a blank canvas; Cmd+T opens navigation. Full Space membership/session restoration across restart remains unfinished.
+Space dots, Control+number and typing a Space name in Cmd+T switch live pages without closing them. Horizontal sidebar swipes and a 240 ms slide are implemented; physical trackpad acceptance is still pending because automated horizontal events contained zero movement. Right-click a dot to rename its Space. New Spaces open a blank canvas; Cmd+T opens navigation. Full Space membership/session restoration across restart remains unfinished.
 
 Pin rows retain their native tab after it navigates elsewhere, and reopen the saved page after closing. Cmd+W on a retained pin uses normal beforeunload handling without Chrome's extra pinned-tab toast. Closing the last retained pin keeps a blank browser window. Uncovered native pins retain upstream confirmation behavior. Right-click a pin to rename it, move it into a folder or remove it. Right-click a folder to rename/remove it; removal keeps its pins. Click a folder row to expand/collapse, with the choice saved.
 
-Archive Today closes current-Space unpinned pages through Chromium's native history and unsaved-page handling, retaining pins and Favorites. Cmd+Shift+T reopens recently closed pages. The current native split model supports two panes. Split-pin flag synchronization, pinned-home reset rules and folder/Space drag behavior are still incomplete.
+Archive Today closes current-Space unpinned pages through Chromium's native history and unsaved-page handling, retaining pins and Favorites. Cmd+Shift+T reopens recently closed pages. The current native split model supports two panes. Split-pin flag synchronization, complete cross-window ownership and folder/Space dragging are still incomplete. The new pin-home actions need final live acceptance.
 
 Arc's published [command-bar actions](https://start.arc.net/command-bar-actions) informed command names and separation behavior. This is the implemented Cove control set, not a claim that every Arc shortcut or feature is present.
 

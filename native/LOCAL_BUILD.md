@@ -37,7 +37,7 @@ npm run build -- --jobs 2
 npm start
 ```
 
-Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48` at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`, bundle ID `dev.cove.browser`. The native patch series currently has 55 ordered patches. It adds live Spaces, global Favorites, folders, pin handling and sidebar navigation; per-Space session restoration and other Arc workflows remain incomplete. See [ARC_PARITY.md](ARC_PARITY.md) and [VALIDATION.md](VALIDATION.md).
+Reuse `out/Cove`; do not remove it. The runtime is Chromium `156.0.8078.48` at pinned revision `d0c02bfad08ec92a6ffcf989e53cd995e6381a4c`, bundle ID `dev.cove.browser`. The native patch series currently has 78 ordered patches. The current build and executed checks are recorded in VALIDATION.md. It adds live Spaces, global Favorites, folders, pin handling and sidebar navigation; per-Space session restoration and other Arc workflows remain incomplete. See [ARC_PARITY.md](ARC_PARITY.md) and [VALIDATION.md](VALIDATION.md).
 
 The APFS image has a growable virtual capacity. Its backing drive must also have real free space. Default storage checks use the smaller of the image's free space and the backing drive's free space, so a large virtual capacity cannot hide a full host disk.
 

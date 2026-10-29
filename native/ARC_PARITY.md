@@ -1,4 +1,87 @@
-# Arc reference and native parity
+# Arc function parity
+
+Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
+
+The current feature batch is patches 0076–0078. The native build, renderer startup smoke, 55 gesture/animation tests and 36 tooling/verifier tests passed. Final live feature acceptance is blocked by CUA cgWindowNotFound. Existing validation is recorded in [VALIDATION.md](VALIDATION.md); continuation details are in [HANDOFF.md](HANDOFF.md).
+
+## Spaces and organization
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Create and rename Spaces | Native footer/menu exists; 0076 adds command-bar creation and naming | Exercise new command and name dialog; deletion and ordering still missing |
+| Switch Spaces through footer | Live native switching preserves pages | Repeat after new features; preserve drafts, history, groups and splits |
+| Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition implemented | Physical trackpad acceptance remains. Automation delivered dx=0/dy=0, so its horizontal scroll is not evidence |
+| Control+1–9 Space selection | Added in 0076 | Verify native shortcuts, missing slots and use while the palette is open |
+| Type a Space name in Cmd+T | Stable Space IDs added in 0076 | Verify switching to both populated and empty Spaces |
+| Next/previous Space actions | Added in 0076 | Verify boundaries and slide direction |
+| Independent Space themes and icons | Missing | Persist and apply each Space's appearance |
+| Profiles assigned to Spaces | Missing | Separate cookies, storage, credentials and profile-specific Favorites |
+| Tab moves and Space ordering | Missing | Move live tab/group/split ownership without reloading pages |
+| Restore Spaces after restart | Partial | Live parking works; shutdown reunites tabs and can merge ownership on restore |
+| Air Traffic Control | Missing | URL rules, default destination and external-link routing |
+| Share/import Spaces | Missing | Export/import sidebar structure; shareable hosted views need a separate service |
+
+The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/en-us/articles/19228064149143-Spaces-Distinct-Browsing-Areas), including Control+number and name-based selection. Cove does not use Arc accounts or services.
+
+## Tabs, pins, folders and archive
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Pin/unpin and keep a saved home | Native, previously live-tested | Unify persisted and live ownership across windows/restart |
+| Reset a pin to its original URL | Added in 0076 | Verify the same native tab returns home and normal navigation protections apply |
+| Replace a pin's home with its current page | Added in 0076 | Verify home persists and a later reset uses the replacement |
+| Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
+| Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
+| Favorites | Native saved URLs and grid; 0076 adds command | Arc-style shared live Favorite ownership and profile semantics remain partial |
+| Create, rename and collapse folders | Native; 0076 adds named command creation | Nested folders, dragging, reordering, moving whole folders and cycle rejection remain missing |
+| Move pins into folders | Native menu | Dragging and cross-Space moves remain missing |
+| Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
+| Recently used tab switcher | Missing | MRU overlay and modifier-release selection, beyond sequential Chromium tab cycling |
+| Sidebar undo/restore | Missing | Recover sidebar organization changes without replacing browser profiles |
+
+## Command bar and keyboard
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Native Cmd+T input and URL/search submission | Implemented; native input previously exercised | Final immediate-input acceptance remains incomplete because automation can reactivate the parent window |
+| Open tabs and recently closed results | Native stable handles/session IDs | Parked tabs in inactive Spaces are not yet searched or activated directly |
+| Actions mode | Native `/` or `>` mode | 0076 expands browser and library actions; verify enabled-state and actual effects |
+| Common browser actions | 0076 adds window/private-window, navigation, find, downloads, history, preferences, extensions, developer tools, fullscreen, save/print, zoom and open-file entries | Native Chromium operations are reused; Arc-specific panel layouts are separate work |
+| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists | Keep context behavior and verify after feature changes |
+| Editable keybindings | Missing | User-defined bindings, conflict reporting, reset and persistence |
+| Full address suggestions | Partial | Current native bar classifies destinations; history/bookmark/online suggestion ranking is incomplete |
+
+The action baseline is Arc's [command-bar reference](https://start.arc.net/command-bar-actions). That reference also contains historical features; retired Arc Notes should not be presented as a current parity requirement without checking the target Arc release.
+
+## Split views and link workflows
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Two live split panes, resize, focus and separate | Native; prior live checks passed | Repeat with pins, folders and Space commands |
+| Joined sidebar split rows | Missing | Show membership and active pane together |
+| Pane-specific address/navigation headers | Missing | Match the supplied reference and route each control to its pane |
+| Drag or Option-click into a split | Missing | Drag targeting, replacing panes and moving existing tabs |
+| Split layouts, pane swap and size reset | Added in 0078 | Live-check side-by-side/top-bottom, swap, equal sizing and Control+Shift+1/2 focus |
+| More than two split panes | Missing | Extend native model and persistence |
+| Peek previews | Missing | Shift-click and pinned-link rules, overlay navigation, promote/dismiss and focus return |
+| Little Arc | Missing | Lightweight external-link window, routing, promotion and global shortcut |
+| Picture-in-picture and media | Chromium capability exists | Arc mini audio/video surfaces and cross-tab controls need implementation |
+
+## Remaining product functions
+
+These need their own native work and acceptance; they are not covered by the current sidebar patches:
+
+- Per-Space appearance editing, light/dark selection and advanced themes.
+- Boosts, site-specific styling and element hiding.
+- Capture tools, saved captures and Easel workflows where supported by the target Arc version.
+- Live folders and calendar/service integrations.
+- Cross-device sidebar sync and conflict recovery. This requires an independent Cove service and account/security design.
+- Arc Max-style optional remote features, with explicit data controls and an independent service rather than Arc backend access.
+- Arc import, first-run migration, sidebar backup/restore and settings organization.
+- Complete profile, password/autofill, extension and download surfaces. Chromium supplies the engines; engine availability alone is not UI parity.
+- Signed standalone packages, updates and Chromium security maintenance.
+
+## Retained visual reference and earlier native baseline
 
 The supplied Arc screenshots are the target: a roughly 250px violet sidebar, traffic lights and navigation on one row, a filled compact address field, icon-only Favorites cards, folder/pin hierarchy, a quiet New Tab row, bottom Space indicators and a narrow rounded frame around the page. Split views have independent headers and a joined sidebar row. All implementation belongs to the native Chromium fork; Electron is reference only.
 
@@ -16,12 +99,15 @@ The native series through patch 0055 implements:
 
 The latest live pass also exercised split creation, focus and separation, command-bar URL submission, and the retained-pin lifecycle. Patches 0054–0055 passed the final native empty-to-real tab, Archive Today and reopen checks. Other build and runtime observations are in [VALIDATION.md](VALIDATION.md). Cove remains an incomplete Arc replica; source changes and renderer smoke do not establish full interaction parity.
 
-## Remaining gaps
-
-1. Full per-Space session ownership after restart. Inactive pages rejoin Chromium's session service for shutdown, so restored tabs can be merged. URL snapshots are a compatibility fallback, not full native state restoration.
-2. Complete pin-model unification, pinned-home/reset rules, nested folders and drag/reorder between folders and Spaces. Covered native pin tiles are hidden in the expanded sidebar; collapsed and uncovered pins retain native rendering. Split-pin removal currently preserves native split membership rather than fully synchronizing every flag.
-3. Exact split-pane address/navigation headers, joined split sidebar rows, drag-to-split and more than two panes. Native creation/focus/separation commands exist, but reference layout parity is not established.
-4. Arc's recent-tabs chooser, Space keybindings, configurable shortcuts, Peek, Little Arc and import.
-5. Measured focus/motion latency, accessibility, reduced-motion and performance parity. Production signing, updater, complete icons/metadata and Chromium security maintenance remain.
-
 The command bar targets approximately 760px width, a 64px query field and five 48px single-line result rows, with a dark surface, blue selection, thin border and restrained shadow. URL/search/tab-switch submission dismisses the native bubble. Remaining layout differences must be assessed from the rendered app rather than a mockup.
+
+## Implementation order
+
+1. Complete the current Space, pin and command functions and validate their effects.
+2. Durable Space/session ownership, tab/folder/Space moves and nested organization.
+3. Split rows, pane headers, split-by-drag and additional layouts.
+4. Peek, Little Arc, MRU switching and editable shortcuts.
+5. Appearance/Boosts, capture/library/media and integration features.
+6. Independent sync/services, import/recovery and release packaging.
+
+Reliability checks follow each functional batch. Avoid spending the whole session polishing one popup while major Arc workflows are absent.

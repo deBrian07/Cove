@@ -1,4 +1,32 @@
-# Cove continuation — 2026-10-26
+# Cove continuation — 2026-10-29
+
+## Latest state: feature parity first
+
+The user's latest priority is to match Arc functions before further polish. Use [ARC_PARITY.md](ARC_PARITY.md) as the feature acceptance list. Fix crashes that block those functions, but do not spend another whole session tuning one popup while major Arc workflows are absent.
+
+The complete 78-patch native series builds and starts. `generated_config` and `built_config` both equal `a64d8332da85feb3a5c0599ffa31e054e68dfc94c4e6fdd51c1064a903a4a878`. The last incremental compile rebuilt two steps in 57.57s after the larger feature build. Final renderer smoke passed in an isolated temporary profile. All 55 focused native tests and 36 tooling/verifier tests passed, and the complete ordered series applies against the pinned original files. Full Chromium browser/unit/interactive suites have not run.
+
+New feature work:
+
+- 0076 adds Control+1–9 Space selection, stable-ID Space-name results in Cmd+T, next/previous Space actions, named Space/folder creation, rename commands, Favorite/Clear Today actions, pin reset, replacing a pin's home URL and resetting the current Space's live pins. The palette now has 44 static enabled-state-aware actions after 0078, plus dynamic Space-name results.
+- 0077 fixes a native crash found while exercising Control+2 immediately after a same-document history change. A parked tab's pending navigation reached LensOverlayHomeworkPageActionController, which dereferenced its absent BrowserWindowInterface. The homework action now ignores parked pages. Evidence: Cove-2026-10-29-025302.ips. The exact final GUI round trip still needs repetition.
+- 0078 adds side-by-side/top-bottom split layouts, swapping panes, equal-size reset and native routing for Control+Shift+1/2 pane focus. Focus labels follow the split orientation. Unavailable numeric targets leave palette text intact. These use native TabStripModel operations and keep pages alive.
+- The first 0078 smoke caught duplicate pane-focus accelerator entries. The duplicate was removed; the existing Cocoa mapping remains, with hidden global key routing added. AcceleratorsCocoa permits one canonical accelerator per command ID; aliases belong in hidden shortcut dispatch. Final startup smoke passed.
+
+Current UI validation limit: the running isolated profile is `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native78`. The app/renderer starts, but CUA repeatedly returns `cgWindowNotFound` even after reconnect/reset. A user question asks to bring that window onto the current desktop. Do not call the newest Space, pin-home or split actions GUI-accepted merely because the build passed. The 0074/0075 live checks did verify Customize Cove, explicit native-field typing and contextual Cmd+S. Earlier 0068 checks retained immediate raw input; final immediate-input acceptance is still incomplete because automation can reactivate the parent window.
+
+CUA horizontal scrolling delivered raw dx=0/dy=0 events in 0075 logs. That cannot validate a physical swipe; do not lower the gesture threshold to make zero-movement events switch Spaces. The 12 gesture tests cover actual Cocoa phase mapping, wheel bursts, axis locking, momentum and one switch per touch. Physical gesture feel, layer motion/reduced motion and rapid cancellation still require a real input pass.
+
+Next live acceptance, once attached:
+
+1. Type a draft, push history, immediately Control+2, then Control+1. Confirm the exact page instance, draft and #kept history return without a crash.
+2. Cmd+T → type a Space name → Enter; repeat next/previous and first/last boundaries. With only two Spaces, Control+9 in the palette must retain its query.
+3. Run New Space and New Folder; submit names and verify persistent rows. Exercise Favorite and Clear Today.
+4. Pin a local HTTP fixture, navigate away, Reset Tab, replace the home, navigate again and reset to the replacement. Check stable live-tab ownership and normal unload handling. Reset Space must affect only its current live pins.
+5. Add a split; change orientation, swap, resize/reset, focus each pane and separate. Both pages must survive; custom pin/folder drag-to-split, joined rows, pane headers and more than two panes are still unfinished.
+6. Recheck Cmd+S with and without the palette and final immediate typing after Cmd+L → Cmd+T. Then use an actual trackpad for Space slides.
+
+Focused commits so far: `5b8e0d6` native command bar/cache/lifetime, `79b5ef1` Space motion, `473aa31` Cove labels, `8552015` input diagnostics/fallback, `8abdbaf` Space/pin/action functions and `210c1a4` split controls. None has a co-author trailer. The external SSD, sparsebundle, native profiles and retired Electron archive remain separate and intact.
 
 ## Objective and boundaries
 
@@ -48,7 +76,7 @@ This is a component development build. Keep the complete out/Cove and image avai
 - `bdc093f`: patches 0048–0053, reserved focus shortcuts, Cocoa menus, organized canvas protection, active pin appearance and the accessibility lifetime regression.
 - `9ecabbc`: patches 0054–0055, tab-list visibility and navigation-driven canvas/Archive Today state.
 
-The complete 55-patch series is committed and built. Both generated_config and built_config equal `d623603353096572a62dd1ea4be06bb221d3a7b0e412855bdce177e3fac77ab3`. Final GUI checks confirmed tab rows and Archive Today become available after in-place canvas navigation, Archive closes the ordinary page while preserving the window, and Cmd+Shift+T restores the page with its visible row. Queued cleanup then removes the temporary placeholder. Final native renderer smoke passed. Read VALIDATION.md before claiming broader parity.
+The earlier 55-patch baseline was built at digest `d623603353096572a62dd1ea4be06bb221d3a7b0e412855bdce177e3fac77ab3`. The current series extends through 0078; see the latest validation section below for final build status. Final GUI checks confirmed tab rows and Archive Today become available after in-place canvas navigation, Archive closes the ordinary page while preserving the window, and Cmd+Shift+T restores the page with its visible row. Queued cleanup then removes the temporary placeholder. Final native renderer smoke passed. Read VALIDATION.md before claiming broader parity.
 
 ## Implementation that matters for safety
 
@@ -91,7 +119,7 @@ out/Cove/cove_accessibility_lifetime_smoke
 
 ## QA cautions
 
-Use CUA for UI interaction. Freshly read AX state before using element IDs. Native menus can lose stale AX item handles between tool calls; direct mouse opening and keyboard item selection in one interaction worked. Cmd+T needs an observation after opening before typing into its newly focused WebUI field. Verify the query text before submitting; automation paste/typing occasionally failed to deliver the intended punctuation or text. Do not diagnose that as a navigation classifier bug without inspecting the actual field value.
+Use CUA for UI interaction. Freshly read AX state before using element IDs. Native menus can lose stale AX item handles between tool calls; direct mouse opening and keyboard item selection in one interaction worked. The old WebUI palette needed an observation before typing. Normal Cove windows now use a native textfield; immediate raw-key input passed on the 0068 build. Verify the query text before submitting; automation paste/typing occasionally failed to deliver the intended punctuation or text. Do not diagnose that as a navigation classifier bug without inspecting the actual field value.
 
 A real crash at `/Users/brianchen/Library/Logs/DiagnosticReports/Cove-2026-10-26-205025.ips` had a null virtual dispatch from View::HandleAccessibleAction during native accessibility activation. The ViewTracker fix addresses that exact gap; the small native regression passed. After a crash, CUA can auto-launch a default-profile window. Confirm the process/profile before further input instead of treating that window as QA.
 
@@ -99,10 +127,44 @@ Unique renamed QA app bundles caused very long CUA attachment calls, including a
 
 A local-only fixture at `/tmp/cove-runtime-fixture` is served on 127.0.0.1:8765 for forms, stable page identity, history and beforeunload. Temporary files/logs disappear across reboots; retain conclusions here rather than relying on /tmp alone.
 
+## Shortcut bug pass — 2026-10-27
+
+0056 makes Cmd+S dismiss an open/loading command bar before changing sidebar state. Both declarative and legacy native dispatch use the same helper. It also aligns native button accelerators/tooltips with Cmd+S and adds opt-in presentation timing without query/URL logging. Live QA on the 57-patch build confirmed expanded and collapsed sidebar state survives palette dismissal, rapid Cmd+T then Cmd+S, URL submission and Escape. No app exit reproduced. The added browser regression is source coverage only; browser_tests was not built/run.
+
+0057 preloads the primary command bar without historical engagement or waiting for a page's first non-empty paint (about:blank may never provide one). Explicit feature parameters, disabling the preload feature and existing memory-pressure safeguards remain respected. That build measured first presentation 236.213 ms, cached 56.291 ms; after the old 30-second cache expiration, 630.837 ms, then cached 38.86 ms. These are isolated QA samples, not broad performance benchmarks.
+
+0058 replaces the persistent collapsed icon rail with a 6 DIP native edge target, hides its child controls at rest, retains native animation/reveal ownership, and reserves 36 DIP above content for caption buttons while hidden. Cmd+L still requests expansion before address focus. Custom library/Favorites/address/footer presentation follows expanded hover width too. 0059 retains only Tab Search's cached page for ten minutes instead of thirty seconds and makes Favorites collapse updates idempotent so layout does not recreate buttons continuously. The longer cache retains a hidden WebContents for longer; other bubble cache lifetimes stay unchanged.
+
+0060 tried retaining address focus during expansion; 0063 added an active-widget guard. Both are superseded by 0064: the rapid Cmd+L then Cmd+T case still lost focus after initial palette display. Final code completes only a focus-requested sidebar expansion synchronously with BrowserAnimationController::Reset, then focuses/selects the address. It removes the pending property and delayed layout callback entirely. Ordinary Cmd+S and hover animations remain unchanged. Validate by typing after the palette has initially appeared, not just observing its first AX snapshot.
+
+The 59-patch idle sample remained cached after 55 seconds: 81.97 ms, versus a first opening of 89.088 ms in that process. These are QA samples, not a general performance benchmark.
+
+0061 anchors the command bar to the always-visible BrowserView instead of the sidebar button. Full hiding makes that button invisible; tying the palette to it left later openings invisible during QA. Keep the View anchor and its native activation ownership; a rectangle-only anchor changed activation/shortcut behavior during QA and was replaced before final validation.
+
+0062 adds opt-in native routing diagnostics (no URLs or query text) to distinguish palette dismissal from collapse. On the settled 62-patch QA window, repeated Cmd+T/Cmd+S correctly logged palette dismissal; explicit sidebar hiding logged collapse only with no palette widget. That run measured 84.819 ms first presentation and 57.571–66.746 ms cached presentations.
+
+0065 fixes a real fatal crash exposed by 0064's fast-forward: BrowserAnimationController::GroupData::Reset completed the current motion without stopping its Animator. A later compositor frame reached UpdateCurrentValues with no current_motion_ and CHECK-failed at browser_animation_controller.cc:659. Reset now stops the existing ticker before OnAnimationEnded. The new ResetRunningMotionStopsItsTicker unit regression advances frames after resetting both running motions; all 43 real animation-controller tests passed in the focused cove_animation_tests executable, including the Reset regression. The full unit_tests binary has not been built/run. The fatal was captured in /tmp/cove-final64-runtime.log; preserve this explanation because /tmp is disposable. Do not call the 64-patch binary validated.
+
+## Native command bar and Space motion — 2026-10-28
+
+0066 replaces the primary normal-window WebUI palette with a native Views textfield and result rows. It supports stable live tab handles, URL/search classification, recent-session restoration, keyboard selection and the existing allowlisted browser actions. The old WebUI path remains for nonnormal windows and explicit WebUI test cases. On build 0068, raw r/a/p immediately after Cmd+T arrived intact, including after collapsed Cmd+L → Cmd+T; typed URL submission dismissed the palette. Cmd+S dismissed the palette without changing the sidebar, and ordinary pin/unpin/toggle-sidebar commands worked. These are actual UI checks, separate from the unexecuted native browser test source.
+
+0069 precreates and reuses the native palette window instead of destroying it after every dismissal. 0068 removes unused eager WebUI warmup from normal Cove windows. 0070 uses client-owned BubbleDialogDelegate and Widget objects with explicit destruction order and synchronous close cleanup. The earlier deprecated creation path leaked its unowned delegate, which retained an anchor/theme observer and crashed during a theme update at Widget::ThemeChanged (report Cove-2026-10-28-214816.ips). Hidden cached palettes now detach their anchor and reconnect before showing. Revalidate repeated hide/show, parent close, and theme changes after any ownership edit.
+
+0071 uses horizontal wheel/trackpad gestures on the sidebar to select adjacent Spaces, clamped at the ends. Vertical gestures and address/top controls pass through. A pure state machine locks the axis, requires 75 DIP travel, switches once per touch, ignores momentum and treats phase-less wheel bursts separately. Sidebar rows slide in/out over 240 ms; Favorites and footer remain stationary. Snapshots retain painted layers, not WebContents; the existing live tab parking model still performs the actual Space switch. Reduced motion skips the slide. Cleanup is posted outside layer animation callbacks with a generation guard, and rapid switching cancels/restores the prior transform before taking a new snapshot.
+
+The 0071 app built and 51 focused tests passed, but real UI checks found two additional failures. Its Cmd+T cached reopen cast Widget::GetContentsView() (a nonclient wrapper) to CoveCommandBarView, corrupting access to the view's weak reference and crashing with lock_impl_posix DCHECK. 0072 retrieves the delegate's actual contents through checked Views metadata instead. Do not use the 0071 binary as an accepted baseline.
+
+0073 handles actual Cocoa phases: MAY_BEGIN is touch begin, NONE is touch update, INERTIAL_UPDATE is momentum, and standalone END with displacement is wheel input. A tracked touch/momentum stream distinguishes its final END (even with displacement) from a fresh wheel burst. 0075 subsequently allows descendant wheel fallback when no matching raw event was received, using the event timestamp to avoid counting its raw scroll again. Four focused native phase-normalization tests were added after the first UI swipe check failed.
+
+0074 rebrands 84 English product messages including Customize Cove and the default PDF viewer infobar. The latter uses a generic document icon instead of the Chromium logo. Chromium Authors, license, Chromium OS and engine references remain accurate; translations and a custom application icon still need their own pass.
+
+The final 0078 native build and renderer smoke passed. All 55 focused native tests (43 controller and 12 gesture/phase cases) and all 36 Python tooling/verifier tests passed. Live acceptance of the newest functions is incomplete because CUA cannot attach to the current QA window. Do not interpret patch application or a source-only browser regression as runtime validation. See STEDDING_BENCHMARK.md for the pinned source comparison and the remaining gaps.
+
 ## Next work, in order
 
 1. Persist per-Space ownership across native session restore. Current shutdown reunites inactive tabs for Chromium persistence, so restart can merge ownership; URL snapshots are only a fallback. BrowserLiveTabContext::GetExtraDataForTab and SessionService::AddTabExtraData can store a stable Space ID. Restore it in browser_tabrestore.cc before insertion. Persist the active Space per window via GetExtraDataForWindow too. Reconstruct detached ownership after bulk restore, preserving native groups/splits and respecting canceled unload. This was researched, not implemented.
-2. Complete pin-model unification, home/reset behavior, folder move/reorder coverage, nested folders and dragging between folders/Spaces. Favorites are global saved URLs; do not infer complete global live-tab ownership from that.
+2. Validate the new pin-home commands, then complete pin-model unification, folder move/reorder coverage, nested folders and dragging between folders/Spaces. Favorites are global saved URLs; do not infer complete global live-tab ownership from that.
 3. Add Arc-style pane-specific URL/navigation headers and joined split rows. Current native controls support two panes; exact reference layout, drag-to-split and more panes remain unfinished.
-4. Finish Space shortcuts, recent-tab chooser, configurable keybindings, Peek, Little Arc and import.
+4. Validate new Space shortcuts/name selection, then implement the recent-tab chooser, configurable keybindings, Peek, Little Arc and import.
 5. Measure focus/frame-time/memory behavior and validate reduced motion/accessibility. Finish branding/icons, standalone packaging, signing/notarization, updater and Chromium security maintenance before treating this as a production browser.
