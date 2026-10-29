@@ -1,0 +1,44 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -50,6 +50,7 @@
+ #include "ui/views/controls/textfield/textfield.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/view_utils.h"
+ #include "url/url_constants.h"
+ 
+ namespace {
+@@ -161,7 +162,9 @@
+ 
+ void CoveCommandBarView::ShowExisting(views::Widget* widget) {
+   const auto started = base::TimeTicks::Now();
+-  auto* bar = static_cast<CoveCommandBarView*>(widget->GetContentsView());
++  auto* bar = views::AsViewClass<CoveCommandBarView>(
++      widget->widget_delegate()->GetContentsView());
++  CHECK(bar);
+   if (!widget->IsVisible()) {
+     widget->widget_delegate()->AsBubbleDialogDelegate()->SetAnchorView(
+         bar->GetAnchorView());
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+@@ -32,6 +32,8 @@
+ #include "ui/views/bubble/bubble_frame_view.h"
+ #include "ui/views/controls/textfield/textfield.h"
+ #include "ui/views/focus/focus_manager.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget_delegate.h"
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #include "chromeos/ui/frame/multitask_menu/multitask_menu_nudge_controller.h"
+@@ -211,7 +213,8 @@
+   ASSERT_TRUE(host->ShowTabSearchBubble());
+   auto* widget = host->native_palette_widget_for_testing();
+   ASSERT_TRUE(widget);
+-  auto* bar = static_cast<CoveCommandBarView*>(widget->GetContentsView());
++  auto* bar = views::AsViewClass<CoveCommandBarView>(
++      widget->widget_delegate()->GetContentsView());
+   ASSERT_EQ(bar->search_field_for_testing(),
+             widget->GetFocusManager()->GetFocusedView());
+   // Directly dispatch through the native input controller, without a renderer

@@ -1,2 +1,2 @@
 # Blank context lines in unified diffs contain a literal space.
-native/patches/*.patch whitespace=-blank-at-eol,-space-before-tab
+native/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

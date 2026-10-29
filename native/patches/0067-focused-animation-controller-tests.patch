@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/ui/animation/BUILD.gn b/chrome/browser/ui/animation/BUILD.gn
+--- a/chrome/browser/ui/animation/BUILD.gn
++++ b/chrome/browser/ui/animation/BUILD.gn
+@@ -69,3 +69,23 @@
+     "//ui/gfx:test_support",
+   ]
+ }
++
++# Focused executable for the real animation controller, without building all of
++# Chrome's unit_tests. Uses the existing mock-clock controller tests unchanged.
++executable("cove_animation_tests") {
++  testonly = true
++  sources = [
++    "browser_animation_controller_unittest.cc",
++    "cove_animation_test_main.cc",
++  ]
++  deps = [
++    ":animation",
++    "//base/test:test_support",
++    "//chrome/browser/ui/browser_window",
++    "//chrome/browser/ui/browser_window/test:test_support",
++    "//testing/gmock",
++    "//testing/gtest",
++    "//ui/base/interaction:test_support",
++    "//ui/gfx:test_support",
++  ]
++}
+diff --git a/chrome/browser/ui/animation/cove_animation_test_main.cc b/chrome/browser/ui/animation/cove_animation_test_main.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/animation/cove_animation_test_main.cc
+@@ -0,0 +1,9 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "base/test/test_suite.h"
++
++int main(int argc, char** argv) {
++  return base::RunUnitTestsUsingBaseTestSuite(argc, argv);
++}

@@ -1,0 +1,55 @@
+diff --git a/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc b/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
+--- a/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
++++ b/chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.cc
+@@ -11,7 +11,6 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/feature_list.h"
+-#include "base/metrics/field_trial_params.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/memory_coordinator/traits.h"
+ #include "base/memory_coordinator/utils.h"
+@@ -97,11 +96,8 @@
+ }
+ 
+ bool IsSmartPreloadEnabled() {
+-  // Cove's primary command bar must not depend on historical engagement.
+-  // Keep explicit feature parameters and the existing memory-pressure guards.
+-  return IsFeatureEnabled() && base::GetFieldTrialParamByFeatureAsBool(
+-      features::kPreloadTopChromeWebUI,
+-      features::kPreloadTopChromeWebUISmartPreloadName, false);
++  return IsFeatureEnabled() &&
++         features::kPreloadTopChromeWebUISmartPreload.Get();
+ }
+ 
+ content::WebContents::CreateParams GetWebContentsCreateParams(
+@@ -632,11 +628,8 @@
+     return false;
+   }
+ 
+-  // about:blank may never produce a first non-empty paint. Warm the command
+-  // bar on browser initialization rather than waiting for that unrelated page.
+-  return IsFeatureEnabled() && base::GetFieldTrialParamByFeatureAsBool(
+-      features::kPreloadTopChromeWebUI,
+-      features::kPreloadTopChromeWebUIDelayPreloadName, false);
++  return IsFeatureEnabled() &&
++         features::kPreloadTopChromeWebUIDelayPreload.Get();
+ }
+ 
+ void WebUIContentsPreloadManager::OnProfileWillBeDestroyed(Profile* profile) {
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1060,7 +1060,11 @@
+                           base::Unretained(this), CanFullscreen()));
+   UpdateFullscreenAllowedFromPolicy(CanFullscreen());
+ 
+-  WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
++  // Cove's normal windows use a native command bar. Do not allocate a spare
++  // Tab Search renderer for an input surface they no longer use.
++  if (browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
++  }
+ 
+   browser_->GetFeatures().InitPostBrowserViewConstruction(this);
+ 

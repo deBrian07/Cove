@@ -63,3 +63,9 @@
 0063-preserve-newer-command-bar-focus.patch
 0064-complete-focus-reveal-before-next-command.patch
 0065-stop-animation-ticker-on-reset.patch
+0066-native-command-bar.patch
+0067-focused-animation-controller-tests.patch
+0068-stop-unused-command-bar-webui-warmup.patch
+0069-reuse-native-command-bar-window.patch
+0070-own-native-palette-widget-lifetime.patch
+0072-use-command-bar-delegate-content.patch

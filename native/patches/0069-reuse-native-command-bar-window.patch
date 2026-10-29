@@ -1,0 +1,271 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.h b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.h
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+@@ -23,6 +23,8 @@
+                            public views::TextfieldController {
+   METADATA_HEADER(CoveCommandBarView, views::View)
+  public:
++  static views::Widget* Create(BrowserWindowInterface* browser);
++  static void ShowExisting(views::Widget* widget);
+   static views::Widget* Show(BrowserWindowInterface* browser);
+   explicit CoveCommandBarView(BrowserWindowInterface* browser);
+   ~CoveCommandBarView() override;
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -74,6 +74,7 @@
+     SetShowTitle(false);
+     SetBackgroundColor(kGround);
+     set_corner_radius(14);
++    set_close_on_deactivate(false);
+     set_margins(gfx::Insets(10));
+   }
+   gfx::Rect GetAnchorRect() const override {
+@@ -141,7 +142,7 @@
+ END_METADATA
+ }  // namespace
+ 
+-views::Widget* CoveCommandBarView::Show(BrowserWindowInterface* browser) {
++views::Widget* CoveCommandBarView::Create(BrowserWindowInterface* browser) {
+   const auto started = base::TimeTicks::Now();
+   auto contents = std::make_unique<CoveCommandBarView>(browser);
+   auto* bar = contents.get();
+@@ -151,6 +152,29 @@
+   delegate->SetContentsView(std::move(contents));
+   auto* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
+       std::move(delegate), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
++  VLOG(1) << "Cove native palette create_ms="
++          << (base::TimeTicks::Now() - started).InMillisecondsF();
++  return widget;
++}
++
++views::Widget* CoveCommandBarView::Show(BrowserWindowInterface* browser) {
++  auto* widget = Create(browser);
++  ShowExisting(widget);
++  return widget;
++}
++
++void CoveCommandBarView::ShowExisting(views::Widget* widget) {
++  const auto started = base::TimeTicks::Now();
++  auto* bar = static_cast<CoveCommandBarView*>(widget->GetContentsView());
++  if (!widget->IsVisible()) {
++    bar->input_->SetText(std::u16string());
++    if (auto* anchor = bar->GetAnchorView()) {
++      bar->width_ = std::clamp(anchor->width() - 48, 280, 760);
++      bar->input_->SetPreferredSize(gfx::Size(bar->width_ - 20, 52));
++    }
++    bar->selected_ = 0;
++    bar->Rebuild();
++  }
+   widget->Show();
+   widget->Activate();
+   bar->input_->RequestFocus();
+@@ -165,7 +189,6 @@
+                            .InMillisecondsF();
+           },
+           started));
+-  return widget;
+ }
+ 
+ CoveCommandBarView::CoveCommandBarView(BrowserWindowInterface* browser)
+@@ -456,7 +479,7 @@
+ void CoveCommandBarView::Dismiss() {
+   auto browser = browser_;
+   if (GetWidget()) {
+-    GetWidget()->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
++    GetWidget()->Hide();
+   }
+   if (browser) {
+     if (auto* contents = browser->GetTabStripModel()->GetActiveWebContents()) {
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.h b/chrome/browser/ui/views/tab_search_bubble_host.h
+--- a/chrome/browser/ui/views/tab_search_bubble_host.h
++++ b/chrome/browser/ui/views/tab_search_bubble_host.h
+@@ -40,6 +40,7 @@
+   // views::WidgetObserver:
+   void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
+   void OnWidgetDestroying(views::Widget* widget) override;
++  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+ 
+   // WebUIBubbleManagerObserver:
+   void BeforeBubbleWidgetShowed(views::Widget* widget) override;
+@@ -58,7 +59,8 @@
+   bool DismissIfOpen();
+ 
+   // Existing WebUI integration tests explicitly exercise that legacy surface.
+-  void UseWebUIForTesting() { force_webui_for_testing_ = true; }
++  void UseWebUIForTesting();
++  void WarmUpNativePalette();
+   views::Widget* native_palette_widget_for_testing() {
+     return native_palette_widget_;
+   }
+@@ -91,6 +93,7 @@
+   std::unique_ptr<WebUIBubbleManager> webui_bubble_manager_;
+   raw_ptr<views::Widget> native_palette_widget_ = nullptr;
+   bool force_webui_for_testing_ = false;
++  bool native_palette_open_ = false;
+ 
+   views::WidgetOpenTimer widget_open_timer_;
+ 
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -104,6 +104,12 @@
+ void TabSearchBubbleHost::OnWidgetVisibilityChanged(views::Widget* widget,
+                                                     bool visible) {
+   if (widget == native_palette_widget_) {
++    if (!visible && native_palette_open_) {
++      native_palette_open_ = false;
++      for (auto& observer : observers_) {
++        observer.OnBubbleDestroying();
++      }
++    }
+     return;
+   }
+   CHECK_EQ(webui_bubble_manager_->GetBubbleWidget(), widget);
+@@ -146,8 +152,11 @@
+   if (widget == native_palette_widget_) {
+     bubble_widget_observation_.Reset();
+     native_palette_widget_ = nullptr;
+-    for (auto& observer : observers_) {
+-      observer.OnBubbleDestroying();
++    if (native_palette_open_) {
++      native_palette_open_ = false;
++      for (auto& observer : observers_) {
++        observer.OnBubbleDestroying();
++      }
+     }
+     return;
+   }
+@@ -159,6 +168,30 @@
+ 
+   for (auto& observer : observers_) {
+     observer.OnBubbleDestroying();
++  }
++}
++
++void TabSearchBubbleHost::OnWidgetActivationChanged(views::Widget* widget,
++                                                    bool active) {
++  if (widget == native_palette_widget_ && !active && widget->IsVisible() &&
++      !widget->IsClosed()) {
++    widget->Hide();
++  }
++}
++
++void TabSearchBubbleHost::WarmUpNativePalette() {
++  if (force_webui_for_testing_ || native_palette_widget_ ||
++      browser_window_interface_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return;
++  }
++  native_palette_widget_ = CoveCommandBarView::Create(browser_window_interface_);
++  bubble_widget_observation_.Observe(native_palette_widget_.get());
++}
++
++void TabSearchBubbleHost::UseWebUIForTesting() {
++  force_webui_for_testing_ = true;
++  if (native_palette_widget_) {
++    native_palette_widget_->CloseNow();
+   }
+ }
+ 
+@@ -207,19 +240,22 @@
+ 
+   if (!force_webui_for_testing_ && browser_window_interface_->GetType() ==
+                                        BrowserWindowInterface::TYPE_NORMAL) {
++    const auto started = base::TimeTicks::Now();
+     if (native_palette_widget_ && native_palette_widget_->IsClosed()) {
+       native_palette_widget_->CloseNow();
+     }
+-    if (native_palette_widget_) {
++    if (native_palette_widget_ && native_palette_widget_->IsVisible()) {
+       native_palette_widget_->Activate();
+       return false;
+     }
+     for (auto& observer : observers_) {
+       observer.OnBubbleInitializing();
+     }
+-    native_palette_widget_ =
+-        CoveCommandBarView::Show(browser_window_interface_);
+-    bubble_widget_observation_.Observe(native_palette_widget_.get());
++    WarmUpNativePalette();
++    native_palette_open_ = true;
++    CoveCommandBarView::ShowExisting(native_palette_widget_.get());
++    VLOG(1) << "Cove native palette host_show_ms="
++            << (base::TimeTicks::Now() - started).InMillisecondsF();
+     return true;
+   }
+   if (webui_bubble_manager_->GetBubbleWidget()) {
+@@ -274,15 +310,17 @@
+ }
+ 
+ bool TabSearchBubbleHost::DismissIfOpen() {
+-  if (native_palette_widget_ && native_palette_widget_->IsClosed()) {
++  if (native_palette_widget_ &&
++      (native_palette_widget_->IsClosed() || !native_palette_widget_->IsVisible())) {
+     return false;
+   }
+   if (native_palette_widget_) {
+-    native_palette_widget_->CloseWithReason(
+-        views::Widget::ClosedReason::kEscKeyPressed);
+-    if (auto* contents = browser_window_interface_->GetTabStripModel()
+-                             ->GetActiveWebContents()) {
+-      contents->Focus();
++    auto browser = browser_window_interface_->GetWeakPtr();
++    native_palette_widget_->Hide();
++    if (browser) {
++      if (auto* contents = browser->GetTabStripModel()->GetActiveWebContents()) {
++        contents->Focus();
++      }
+     }
+     return true;
+   }
+@@ -297,8 +335,7 @@
+ 
+ void TabSearchBubbleHost::CloseTabSearchBubble() {
+   if (native_palette_widget_) {
+-    native_palette_widget_->CloseWithReason(
+-        views::Widget::ClosedReason::kEscKeyPressed);
++    native_palette_widget_->Hide();
+     return;
+   }
+   webui_bubble_manager_->CloseBubble();
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc
+@@ -219,8 +219,14 @@
+   ui::KeyEvent shortcut(ui::EventType::kKeyPressed, ui::VKEY_S,
+                         ui::EF_COMMAND_DOWN);
+   EXPECT_TRUE(bar->HandleKeyEvent(bar->search_field_for_testing(), shortcut));
+-  EXPECT_TRUE(widget->IsClosed());
++  EXPECT_FALSE(widget->IsVisible());
+   EXPECT_EQ(collapse_state, controller->GetCollapseState());
+   base::RunLoop().RunUntilIdle();
+-  EXPECT_EQ(nullptr, host->native_palette_widget_for_testing());
+-}
++  EXPECT_EQ(widget, host->native_palette_widget_for_testing());
++  ASSERT_TRUE(host->ShowTabSearchBubble());
++  EXPECT_EQ(widget, host->native_palette_widget_for_testing());
++  EXPECT_EQ(bar->search_field_for_testing(),
++            widget->GetFocusManager()->GetFocusedView());
++  EXPECT_TRUE(host->DismissIfOpen());
++  EXPECT_FALSE(widget->IsVisible());
++}
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1064,6 +1064,16 @@
+   // Tab Search renderer for an input surface they no longer use.
+   if (browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+     WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
++  } else if (!headless::IsHeadlessMode()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce([](base::WeakPtr<BrowserView> view) {
++          if (view && view->GetWidget() && view->GetWidget()->IsVisible() &&
++              !view->GetWidget()->IsClosed()) {
++            if (auto* host = view->GetTabSearchBubbleHost()) {
++              host->WarmUpNativePalette();
++            }
++          }
++        }, weak_ptr_factory_.GetWeakPtr()));
+   }
+ 
+   browser_->GetFeatures().InitPostBrowserViewConstruction(this);
