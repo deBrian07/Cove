@@ -1,0 +1,96 @@
+diff --git a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc
+@@ -7,6 +7,7 @@
+ #include <cmath>
+ 
+ #include "base/feature_list.h"
++#include "base/logging.h"
+ #include "base/i18n/rtl.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -43,6 +44,7 @@
+   }
+   using Result = cove::SpaceSwipeState::Result;
+   const auto result = space_swipe_.Update(dx, dy, phase, base::TimeTicks::Now());
++  VLOG(1) << "Cove Space swipe result=" << static_cast<int>(result);
+   if (result == Result::kPass) return;
+   event->SetHandled();
+   event->StopPropagation();
+@@ -57,16 +59,19 @@
+   if (!event->IsMouseWheelEvent()) return;
+   if (space_navigation_) {
+ #if BUILDFLAG(IS_MAC)
+-    // Widget converts unhandled raw scrolls to wheels: never count them twice.
+-    return;
+-#else
++    // RootView can deliver only the wheel fallback to a descendant. If this
++    // controller already received the raw scroll, its converted wheel retains
++    // the timestamp and must not count that displacement twice.
++    if (!last_event_time_.is_null() &&
++        last_event_time_ == event->time_stamp()) return;
++#endif
+     const auto* wheel = event->AsMouseWheelEvent();
+     float dx = wheel->x_offset();
+     float dy = wheel->y_offset();
+     if (event->IsShiftDown() && dx == 0) { dx = dy; dy = 0; }
++    VLOG(1) << "Cove Space wheel dx=" << dx << " dy=" << dy;
+     ProcessSpaceSwipe(dx, dy, cove::SpaceSwipeState::Phase::kNone, event);
+     return;
+-#endif
+   }
+   if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+       !region_view_ || region_view_->IsDragging()) {
+@@ -81,6 +86,10 @@
+ void VerticalTabStripFocusSwipeController::OnScrollEvent(
+     ui::ScrollEvent* event) {
+   if (space_navigation_) {
++    last_event_time_ = event->time_stamp();
++    VLOG(1) << "Cove Space raw dx=" << event->x_offset()
++            << " dy=" << event->y_offset()
++            << " momentum=" << static_cast<int>(event->momentum_phase());
+     using Phase = cove::SpaceSwipeState::Phase;
+     using NativePhase = cove::MacSpaceSwipePhaseMapper::NativePhase;
+     auto native = NativePhase::kTouchUpdate;
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -173,10 +173,16 @@
+       bar->width_ = std::clamp(anchor->width() - 48, 280, 760);
+       bar->input_->SetPreferredSize(gfx::Size(bar->width_ - 20, 52));
+     }
++    VLOG(1) << "Cove native palette anchor_ms="
++            << (base::TimeTicks::Now() - started).InMillisecondsF();
+     bar->selected_ = 0;
+     bar->Rebuild();
++    VLOG(1) << "Cove native palette rebuild_ready_ms="
++            << (base::TimeTicks::Now() - started).InMillisecondsF();
+   }
+   widget->Show();
++  VLOG(1) << "Cove native palette shown_ms="
++          << (base::TimeTicks::Now() - started).InMillisecondsF();
+   widget->Activate();
+   bar->input_->RequestFocus();
+   VLOG(1) << "Cove native palette show_call_ms="
+@@ -232,6 +238,7 @@
+                                          const std::u16string&) {
+   input_->SetColor(kText);
+   selected_ = 0;
++  VLOG(1) << "Cove native palette query_length=" << input_->GetText().size();
+   Rebuild();
+ }
+ 
+diff --git a/chrome/browser/ui/views/tab_search_bubble_host.cc b/chrome/browser/ui/views/tab_search_bubble_host.cc
+--- a/chrome/browser/ui/views/tab_search_bubble_host.cc
++++ b/chrome/browser/ui/views/tab_search_bubble_host.cc
+@@ -180,6 +180,10 @@
+ 
+ void TabSearchBubbleHost::OnWidgetActivationChanged(views::Widget* widget,
+                                                     bool active) {
++  if (widget == native_palette_widget_.get()) {
++    VLOG(1) << "Cove native palette activation=" << active
++            << " visible=" << widget->IsVisible();
++  }
+   if (widget == native_palette_widget_.get() && !active && widget->IsVisible() &&
+       !widget->IsClosed()) {
+     widget->Hide();
