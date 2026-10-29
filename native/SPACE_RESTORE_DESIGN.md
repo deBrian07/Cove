@@ -31,3 +31,39 @@ Ordinary Space detachment must remain distinct from closing a tab. `SessionServi
 6. Restore legacy, unknown, orphaned and malformed metadata without data loss.
 
 A clean-close metadata-only change would leave journal-reset and crash-restore gaps. Keep those gaps explicit instead of shipping a partial migration that can silently lose parked pages.
+
+## Integration map from the continuation audit
+
+The 81-patch build remains unchanged by this audit. The functions below were read in the mounted pinned checkout; these are implementation requirements, not completed features or executed restore tests.
+
+### One snapshot for attached and parked pages
+
+`CoveSidebarLibraryView::SpaceTabs` owns a variant of detached loose tabs and detached collections, plus stable handles and the saved selection. Add a window-scoped, read-only snapshot to `CoveSpaceCloseHandler` so session services do not depend on Views. Enumerate the currently attached model and every inactive collection exactly once; do not turn parked pages into temporary attached pages for saving.
+
+Include native group and split visual data as well as page membership. A parked `TabGroupTabCollection` owns its `TabGroup`, and a `SplitTabCollection` owns its split data. Splits can be nested inside groups, so enumerating only the top-level detached variant is insufficient. Copy the required metadata while its owner is alive; do not post tasks holding borrowed collection pointers.
+
+Preserve native group sync identifiers using the existing session-service mapping rules. Keep journal indices unique across the entire window and derive the selected window index from the same snapshot. Per-Space order and selection must be explicit metadata: restored pinned tabs are inserted before unpinned tabs, so the restore insertion order alone cannot represent every Space's original order.
+
+### Cover incremental writes as well as resets
+
+`SessionServiceBase::BuildCommandsForBrowser` currently writes the active model's selected index, group metadata, split visuals and tab loop. All four must use the complete window snapshot for Cove windows. `SessionService::BuildCommandsForTab` already adds native group and split membership after the base navigation serialization; add Cove tab metadata there too. Keep unrelated app-window behavior unchanged.
+
+`SessionServiceBrowserHelper::SyncHistoryWithTabs` currently rewrites attached tab indices, pin state and group membership starting from a model index. Its insertion, removal, replacement and move callers, plus its direct selected-index writes, must use the same window-wide position mapping. Otherwise a Space switch can leave attached and parked tabs with colliding journal indices even after full-reset enumeration is fixed. Do not serialize an intermediate incoming-plus-outgoing switch state as the final Space assignment.
+
+`SessionServiceBase::TabRestored` calls `BuildCommandsForTab` with index -1 and no group or split. This path does not replace the complete snapshot pass. Keep ordinary detachment separate from deletion: `SessionServiceBrowserHelper` only calls `TabClosing` when `WillDeleteTab` is true.
+
+### Restore in two phases
+
+`browser_tabrestore.cc::CreateRestoredTab` creates WebContents and restores other extra data before `AddRestoredTabImpl` inserts it. Parse Cove metadata before insertion too. Keep that metadata available before native pin observers run, so they cannot turn a restored navigated pin into a new saved home.
+
+Full session restore creates windows in `SessionRestoreImpl::CreateRestoredBrowser`; recently closed windows use `BrowserLiveTabContext::Create`. Both need the saved active Space before normal assignment. Restoring into an existing startup browser also needs that handoff; covering only new-window creation misses this case.
+
+The full restore sequence in `session_restore.cc` inserts tabs, restores split visuals, restores group metadata (which may delete WebContents), restores the focused group, notifies SessionService and closes the replaced startup tab. It then processes startup URLs and calls `FinishedTabCreation`. Repartition only after this sequence, using weak window references and newly resolved tab handles. Never retain raw restored WebContents pointers across group restoration. Audit recently closed tab, group, split and window completion separately because those entrypoints do not all call `FinishedTabCreation`.
+
+If malformed ownership metadata would put members of one native group or split in different Spaces, preserve the collection together in a deterministic fallback Space. Do not repair a malformed ownership record by dropping pages or breaking their live collection.
+
+### Required executable regression coverage
+
+Use the existing `session_service_unittest.cc` and `session_restore_browsertest.cc` harnesses for journal reset/readback and end-to-end reconstruction. Add cases for unique window indices after repeated switches, nested group/split metadata, reopening a navigated pin without changing its home, two windows with different active Spaces, and invalid ownership metadata. These supplement the six acceptance cases above; pure metadata codec tests cannot establish durable restoration.
+
+The full browser_tests and unit_tests executables are absent from the current output. The 61-test focused executable covers animation, gestures and the folder model only. Plan the restore test build explicitly rather than treating those 61 passing tests as coverage for session persistence.
