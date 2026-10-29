@@ -1,0 +1,508 @@
+diff --git a/chrome/app/cove_command_ids.h b/chrome/app/cove_command_ids.h
+--- a/chrome/app/cove_command_ids.h
++++ b/chrome/app/cove_command_ids.h
+@@ -10,7 +10,26 @@
+ #define IDC_COVE_FOCUS_SPLIT_LEFT 35071
+ #define IDC_COVE_FOCUS_SPLIT_RIGHT 35072
+ 
++#define IDC_COVE_NEXT_SPACE 35073
++#define IDC_COVE_PREVIOUS_SPACE 35074
++#define IDC_COVE_NEW_SPACE 35075
++#define IDC_COVE_NEW_FOLDER 35076
++#define IDC_COVE_TOGGLE_FAVORITE 35077
++#define IDC_COVE_CLEAR_TODAY 35078
++#define IDC_COVE_RESET_PIN 35079
++#define IDC_COVE_REPLACE_PIN 35080
++#define IDC_COVE_RESET_SPACE 35081
++#define IDC_COVE_RENAME_PIN 35082
++#define IDC_COVE_RENAME_SPACE 35083
++#define IDC_COVE_SPACE_FIRST 35100
++#define IDC_COVE_SPACE_LAST 35108
++
+ namespace cove {
++constexpr bool IsLibraryCommand(int id) {
++  return (id >= IDC_COVE_NEXT_SPACE && id <= IDC_COVE_RENAME_SPACE) ||
++         (id >= IDC_COVE_SPACE_FIRST && id <= IDC_COVE_SPACE_LAST);
++}
++
+ constexpr bool IsSplitCommand(int id) {
+   return id == IDC_COVE_REMOVE_SPLIT || id == IDC_COVE_FOCUS_SPLIT_LEFT ||
+          id == IDC_COVE_FOCUS_SPLIT_RIGHT;
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -4,6 +4,9 @@
+ 
+ #ifndef CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+ #define CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
++
++#include <string>
++#include <vector>
+ 
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+ 
+@@ -18,6 +21,11 @@
+ void MarkCoveEmptyCanvas(content::WebContents* contents);
+ bool IsCoveEmptyCanvas(content::WebContents* contents);
+ 
++struct CoveSpaceInfo {
++  std::string id;
++  std::u16string name;
++};
++
+ // Window-scoped bridge between Spaces and the native browser unload pipeline.
+ // Inactive pages must rejoin the tab strip before beforeunload/session
+ // shutdown.
+@@ -31,6 +39,11 @@
+   virtual void PrepareForClose() = 0;
+   virtual void CancelClose() = 0;
+   virtual void OnEmptyCanvasMarked() {}
++  // Native commands use this window-scoped bridge without depending on Views.
++  virtual bool CanExecuteArcCommand(int command_id) const;
++  virtual void ExecuteArcCommand(int command_id) {}
++  virtual std::vector<CoveSpaceInfo> GetSpaces() const;
++  virtual void FocusSpace(std::string space_id) {}
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -56,6 +56,10 @@
+                           base::RepeatingCallback<bool()> is_current);
+ 
+   // CoveSpaceCloseHandler:
++  bool CanExecuteArcCommand(int command_id) const override;
++  void ExecuteArcCommand(int command_id) override;
++  std::vector<CoveSpaceInfo> GetSpaces() const override;
++  void FocusSpace(std::string space_id) override;
+   bool RetainsPinForTab(const tabs::TabInterface* tab) const override;
+   bool HasPendingTabs() const override;
+   void PrepareForClose() override;
+@@ -87,6 +91,8 @@
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
++  std::string ActivePinId() const;
++  void ResetPinHomes(bool entire_space);
+   struct SpaceTabs;
+   std::unique_ptr<SpaceTabs> CaptureCurrentTabs() const;
+   void DetachSpaceTabs(SpaceTabs& space);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -68,6 +68,9 @@
+ #include "ui/views/view_utils.h"
+ #include "ui/views/widget/widget.h"
+ #include "url/gurl.h"
++#include "chrome/app/cove_command_ids.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/common/referrer.h"
+ 
+ namespace {
+ 
+@@ -1031,6 +1034,159 @@
+   finish_space_transition_ = std::move(finish);
+ }
+ 
++std::vector<CoveSpaceInfo> CoveSidebarLibraryView::GetSpaces() const {
++  std::vector<CoveSpaceInfo> result;
++  if (browser_->GetProfile()->IsOffTheRecord()) return result;
++  const auto* spaces = browser_->GetProfile()->GetPrefs()
++                           ->GetDict(kCoveSidebarPref).FindList("spaces");
++  if (!spaces) return result;
++  for (const auto& value : *spaces) {
++    const auto* space = value.GetIfDict();
++    const auto* id = space ? space->FindString("id") : nullptr;
++    const auto* name = space ? space->FindString("name") : nullptr;
++    if (id) result.push_back({*id, name ? base::UTF8ToUTF16(*name) : u"Space"});
++  }
++  return result;
++}
++
++void CoveSidebarLibraryView::FocusSpace(std::string space_id) {
++  SwitchSpace(std::move(space_id));
++}
++
++std::string CoveSidebarLibraryView::ActivePinId() const {
++  const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
++  if (!tab || !RetainsPinForTab(tab)) return {};
++  const auto found = tab_pin_ids_.find(tab->GetHandle().raw_value());
++  if (found != tab_pin_ids_.end() && found->second.first == active_space_id_)
++    return found->second.second;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                   ->GetDict(kCoveSidebarPref), active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (pins) for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    const auto* url = pin ? pin->FindString("url") : nullptr;
++    if (id && url && GURL(*url) == tab->GetContents()->GetVisibleURL()) return *id;
++  }
++  return {};
++}
++
++bool CoveSidebarLibraryView::CanExecuteArcCommand(int id) const {
++  if (!browser_ || browser_->GetProfile()->IsOffTheRecord() || switching_space_ ||
++      closing_active_space_) return false;
++  const auto spaces = GetSpaces();
++  if (id >= IDC_COVE_SPACE_FIRST && id <= IDC_COVE_SPACE_LAST)
++    return static_cast<size_t>(id - IDC_COVE_SPACE_FIRST) < spaces.size();
++  if (id == IDC_COVE_NEXT_SPACE || id == IDC_COVE_PREVIOUS_SPACE) {
++    for (size_t i = 0; i < spaces.size(); ++i) if (spaces[i].id == active_space_id_)
++      return id == IDC_COVE_NEXT_SPACE ? i + 1 < spaces.size() : i > 0;
++    return false;
++  }
++  if (id == IDC_COVE_CLEAR_TODAY) return HasArchivableTabs();
++  if (id == IDC_COVE_RESET_PIN || id == IDC_COVE_RENAME_PIN)
++    return !ActivePinId().empty();
++  if (id == IDC_COVE_REPLACE_PIN || id == IDC_COVE_TOGGLE_FAVORITE) {
++    auto* contents = browser_->GetTabStripModel()->GetActiveWebContents();
++    const bool safe = contents && (contents->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
++                                  contents->GetVisibleURL().SchemeIsFile());
++    return safe && (id == IDC_COVE_REPLACE_PIN ? !ActivePinId().empty()
++                                              : !toggle_favorite_.is_null());
++  }
++  if (id == IDC_COVE_RESET_SPACE) {
++    const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                     ->GetDict(kCoveSidebarPref), active_space_id_);
++    const auto* pins = space ? space->FindList("pins") : nullptr;
++    return pins && !pins->empty();
++  }
++  return id == IDC_COVE_NEW_SPACE || id == IDC_COVE_NEW_FOLDER ||
++         id == IDC_COVE_RENAME_SPACE;
++}
++
++void CoveSidebarLibraryView::ResetPinHomes(bool entire_space) {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                   ->GetDict(kCoveSidebarPref), active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins) return;
++  std::map<std::string, GURL> homes;
++  for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    const auto* url = pin ? pin->FindString("url") : nullptr;
++    if (id && url && GURL(*url).is_valid() && !GURL(*url).SchemeIs("javascript"))
++      homes.emplace(*id, GURL(*url));
++  }
++  auto* model = browser_->GetTabStripModel();
++  std::vector<std::pair<tabs::TabHandle, GURL>> targets;
++  for (int i = 0; i < model->count(); ++i) {
++    auto* tab = model->GetTabAtIndex(i);
++    if (!tab->IsPinned() || (!entire_space && tab != model->GetActiveTab())) continue;
++    const auto binding = tab_pin_ids_.find(tab->GetHandle().raw_value());
++    const std::string id = binding != tab_pin_ids_.end() &&
++                          binding->second.first == active_space_id_
++                              ? binding->second.second
++                              : (tab == model->GetActiveTab() ? ActivePinId() : "");
++    const auto home = homes.find(id);
++    if (home != homes.end() && home->second != tab->GetContents()->GetVisibleURL())
++      targets.emplace_back(tab->GetHandle(), home->second);
++  }
++  auto weak = weak_factory_.GetWeakPtr();
++  for (const auto& [handle, home] : targets) {
++    if (!weak) return;
++    auto* tab = handle.Get();
++    if (tab && tab->GetBrowserWindowInterface() == browser_)
++      tab->GetContents()->GetController().LoadURL(
++          home, content::Referrer(), ui::PAGE_TRANSITION_AUTO_BOOKMARK, "");
++  }
++}
++
++void CoveSidebarLibraryView::ExecuteArcCommand(int id) {
++  if (!CanExecuteArcCommand(id)) return;
++  if (id >= IDC_COVE_SPACE_FIRST && id <= IDC_COVE_SPACE_LAST) {
++    FocusSpace(GetSpaces()[id - IDC_COVE_SPACE_FIRST].id);
++    return;
++  }
++  switch (id) {
++    case IDC_COVE_NEXT_SPACE: SelectAdjacentSpace(true); break;
++    case IDC_COVE_PREVIOUS_SPACE: SelectAdjacentSpace(false); break;
++    case IDC_COVE_NEW_SPACE:
++      AddSpace();
++      BeginRename(kRenameSpaceCommand, active_space_id_);
++      break;
++    case IDC_COVE_NEW_FOLDER: {
++      AddFolder();
++      const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                       ->GetDict(kCoveSidebarPref), active_space_id_);
++      const auto* folders = space ? space->FindList("folders") : nullptr;
++      if (folders && !folders->empty()) {
++        const auto* folder = folders->back().GetIfDict();
++        const auto* folder_id = folder ? folder->FindString("id") : nullptr;
++        if (folder_id) BeginRename(kRenameFolderCommand, *folder_id);
++      }
++      break;
++    }
++    case IDC_COVE_TOGGLE_FAVORITE: toggle_favorite_.Run(); break;
++    case IDC_COVE_CLEAR_TODAY: ArchiveToday(); break;
++    case IDC_COVE_RESET_PIN: ResetPinHomes(false); break;
++    case IDC_COVE_RESET_SPACE: ResetPinHomes(true); break;
++    case IDC_COVE_RENAME_PIN: BeginRename(kRenamePinCommand, ActivePinId()); break;
++    case IDC_COVE_RENAME_SPACE: BeginRename(kRenameSpaceCommand, active_space_id_); break;
++    case IDC_COVE_REPLACE_PIN: {
++      const std::string pin_id = ActivePinId();
++      const std::string url = browser_->GetTabStripModel()->GetActiveWebContents()
++                                  ->GetVisibleURL().spec();
++      ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++      auto* space = FindSpace(*update, active_space_id_);
++      auto* pins = space ? space->FindList("pins") : nullptr;
++      if (pins) for (auto& value : *pins) {
++        auto* pin = value.GetIfDict();
++        const auto* current = pin ? pin->FindString("id") : nullptr;
++        if (current && *current == pin_id) { pin->Set("url", url); break; }
++      }
++      break;
++    }
++  }
++}
++
+ void CoveSidebarLibraryView::SelectAdjacentSpace(bool forward) {
+   const auto* spaces = browser_->GetProfile()->GetPrefs()
+                            ->GetDict(kCoveSidebarPref).FindList("spaces");
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -27,6 +27,7 @@
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/cove_command_ids.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+ #include "chrome/browser/browser_process.h"
+@@ -552,7 +553,8 @@
+          command_id == IDC_WINDOW_PIN_TAB ||
+          command_id == IDC_TOGGLE_VERTICAL_TABS_COLLAPSE ||
+          command_id == IDC_COPY_URL || command_id == IDC_NEW_SPLIT_TAB ||
+-         ::cove::IsSplitCommand(command_id);
++         (::cove::IsSplitCommand(command_id) ||
++          ::cove::IsLibraryCommand(command_id));
+ }
+ 
+ void BrowserCommandController::TabStateChanged() {
+@@ -644,10 +646,15 @@
+ // BrowserCommandController, CommandUpdater implementation:
+ 
+ bool BrowserCommandController::SupportsCommand(int id) const {
+-  return ::cove::IsSplitCommand(id) || command_updater_->SupportsCommand(id);
++  return ::cove::IsSplitCommand(id) || ::cove::IsLibraryCommand(id) ||
++         command_updater_->SupportsCommand(id);
+ }
+ 
+ bool BrowserCommandController::IsCommandEnabled(int id) const {
++  if (::cove::IsLibraryCommand(id)) {
++    auto* library = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost());
++    return library && library->CanExecuteArcCommand(id);
++  }
+   if (id == IDC_NEW_SPLIT_TAB) {
+     const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
+     return command_updater_->IsCommandEnabled(id) && tab && !tab->IsSplit();
+@@ -694,6 +701,11 @@
+       (id == IDC_FOCUS_LOCATION || id == IDC_FOCUS_SEARCH) &&
+       browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+       !window()->IsLocationBarVisible();
++  if (::cove::IsLibraryCommand(id)) {
++    if (auto* library = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
++      library->ExecuteArcCommand(id);
++    return true;
++  }
+   if (::cove::IsSplitCommand(id) || cove_location_command) {
+     HandleCommandWithDisposition(id, disposition, time_stamp);
+     return true;
+diff --git a/chrome/browser/ui/cocoa/accelerators_cocoa.mm b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+--- a/chrome/browser/ui/cocoa/accelerators_cocoa.mm
++++ b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+@@ -31,6 +31,16 @@
+   int modifiers;              // The ui::EventFlag modifiers
+   ui::KeyboardCode key_code;  // The key used for cross-platform compatibility.
+ } kAcceleratorMap[] = {
++    // Arc's direct Space navigation: Control + Space number on macOS.
++    {IDC_COVE_SPACE_FIRST + 0, ui::EF_CONTROL_DOWN, ui::VKEY_1},
++    {IDC_COVE_SPACE_FIRST + 1, ui::EF_CONTROL_DOWN, ui::VKEY_2},
++    {IDC_COVE_SPACE_FIRST + 2, ui::EF_CONTROL_DOWN, ui::VKEY_3},
++    {IDC_COVE_SPACE_FIRST + 3, ui::EF_CONTROL_DOWN, ui::VKEY_4},
++    {IDC_COVE_SPACE_FIRST + 4, ui::EF_CONTROL_DOWN, ui::VKEY_5},
++    {IDC_COVE_SPACE_FIRST + 5, ui::EF_CONTROL_DOWN, ui::VKEY_6},
++    {IDC_COVE_SPACE_FIRST + 6, ui::EF_CONTROL_DOWN, ui::VKEY_7},
++    {IDC_COVE_SPACE_FIRST + 7, ui::EF_CONTROL_DOWN, ui::VKEY_8},
++    {IDC_COVE_SPACE_FIRST + 8, ui::EF_CONTROL_DOWN, ui::VKEY_9},
+     // Accelerators used in the toolbar menu.
+     {IDC_CLEAR_BROWSING_DATA, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_BACK},
+diff --git a/chrome/browser/global_keyboard_shortcuts_mac.mm b/chrome/browser/global_keyboard_shortcuts_mac.mm
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -13,6 +13,7 @@
+ #include "base/no_destructor.h"
+ #include "build/buildflag.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
+ #import "chrome/browser/app_controller_mac.h"
+ #include "chrome/browser/ui/cocoa/accelerators_cocoa.h"
+ #include "chrome/browser/ui/tabs/features.h"
+@@ -123,7 +124,18 @@
+       {false, true,  true,  false, kVK_PageDown,          IDC_MOVE_TAB_NEXT},
+       {false, true,  true,  false, kVK_PageUp,            IDC_MOVE_TAB_PREVIOUS},
+ 
+-      // Cmd-0..8 select the nth tab, with cmd-9 being "last tab".
++      // Control-1..9 selects a Space; Command-1..9 continues selecting tabs.
++      {false, false, true, false, kVK_ANSI_1, IDC_COVE_SPACE_FIRST + 0},
++      {false, false, true, false, kVK_ANSI_2, IDC_COVE_SPACE_FIRST + 1},
++      {false, false, true, false, kVK_ANSI_3, IDC_COVE_SPACE_FIRST + 2},
++      {false, false, true, false, kVK_ANSI_4, IDC_COVE_SPACE_FIRST + 3},
++      {false, false, true, false, kVK_ANSI_5, IDC_COVE_SPACE_FIRST + 4},
++      {false, false, true, false, kVK_ANSI_6, IDC_COVE_SPACE_FIRST + 5},
++      {false, false, true, false, kVK_ANSI_7, IDC_COVE_SPACE_FIRST + 6},
++      {false, false, true, false, kVK_ANSI_8, IDC_COVE_SPACE_FIRST + 7},
++      {false, false, true, false, kVK_ANSI_9, IDC_COVE_SPACE_FIRST + 8},
++
++    // Cmd-0..8 select the nth tab, with cmd-9 being "last tab".
+       {true,  false, false, false, kVK_ANSI_1,            IDC_SELECT_TAB_0},
+       {true,  false, false, false, kVK_ANSI_Keypad1,      IDC_SELECT_TAB_0},
+       {true,  false, false, false, kVK_ANSI_2,            IDC_SELECT_TAB_1},
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.h b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.h
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+@@ -38,7 +38,7 @@
+   views::Textfield* search_field_for_testing() { return input_; }
+ 
+  private:
+-  enum class Kind { kTab, kRestore, kNavigate, kCommand };
++  enum class Kind { kTab, kRestore, kNavigate, kCommand, kSpace };
+   struct Row {
+     Kind kind;
+     std::u16string title;
+@@ -46,6 +46,7 @@
+     std::u16string action;
+     ui::ImageModel icon;
+     int id = 0;
++    std::string space_id;
+   };
+   views::View* GetAnchorView() const;
+   void Rebuild();
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -14,6 +14,7 @@
+ #include "base/time/time.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/cove_command_ids.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/sessions/tab_restore_service_factory.h"
+@@ -22,7 +23,6 @@
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+-#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
+ #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -254,6 +254,16 @@
+     Dismiss();
+     return true;
+   }
++  if (event.IsControlDown() && !event.IsCommandDown() &&
++      !event.IsShiftDown() && !event.IsAltDown() &&
++      event.key_code() >= ui::VKEY_1 && event.key_code() <= ui::VKEY_9) {
++    const int command = IDC_COVE_SPACE_FIRST + event.key_code() - ui::VKEY_1;
++    auto browser = browser_;
++    Dismiss();
++    if (browser && chrome::IsCommandEnabled(browser.get(), command))
++      chrome::ExecuteCommand(browser.get(), command);
++    return true;
++  }
+   if (event.key_code() == ui::VKEY_DOWN || event.key_code() == ui::VKEY_UP) {
+     if (!rows_.empty()) {
+       const int count = static_cast<int>(rows_.size());
+@@ -303,8 +313,44 @@
+       {IDC_DUPLICATE_TAB, u"Duplicate Tab", true},
+       {IDC_RESTORE_TAB, u"Reopen Closed Tab", true},
+       {IDC_COPY_URL, u"Copy Current URL", true},
++      {IDC_COVE_NEW_SPACE, u"New Space", true},
++      {IDC_COVE_NEW_FOLDER, u"New Folder", true},
++      {IDC_COVE_NEXT_SPACE, u"Select Next Space", true},
++      {IDC_COVE_PREVIOUS_SPACE, u"Select Previous Space", true},
++      {IDC_COVE_RENAME_SPACE, u"Rename Space", true},
++      {IDC_COVE_TOGGLE_FAVORITE, u"Favorite Tab", true},
++      {IDC_COVE_CLEAR_TODAY, u"Clear Today", true},
++      {IDC_COVE_RESET_PIN, u"Reset Tab", true},
++      {IDC_COVE_REPLACE_PIN, u"Replace Pin with Current Page", true},
++      {IDC_COVE_RESET_SPACE, u"Reset Space", true},
++      {IDC_COVE_RENAME_PIN, u"Rename Current Tab", true},
++      {IDC_NEW_WINDOW, u"New Window", true},
++      {IDC_NEW_INCOGNITO_WINDOW, u"New Incognito Window", true},
++      {IDC_CLOSE_TAB, u"Close Tab", true},
++      {IDC_BACK, u"Go Back in History", true},
++      {IDC_FORWARD, u"Go Forward in History", true},
++      {IDC_RELOAD, u"Reload Page", true},
++      {IDC_RELOAD_BYPASSING_CACHE, u"Hard Reload Page", true},
++      {IDC_FIND, u"Find in Page", true},
++      {IDC_SHOW_DOWNLOADS, u"Downloads", true},
++      {IDC_SHOW_HISTORY, u"View History", true},
++      {IDC_OPTIONS, u"Preferences", true},
++      {IDC_MANAGE_EXTENSIONS, u"Manage Extensions", true},
++      {IDC_DEV_TOOLS, u"Developer Tools", true},
++      {IDC_FULLSCREEN, u"Enter or Exit Full Screen", true},
++      {IDC_SAVE_PAGE, u"Save Page As", true},
++      {IDC_PRINT, u"Print Page", true},
++      {IDC_ZOOM_NORMAL, u"Zoom to Actual Size", true},
++      {IDC_ZOOM_PLUS, u"Zoom In", true},
++      {IDC_ZOOM_MINUS, u"Zoom Out", true},
++      {IDC_OPEN_FILE, u"Open File", true},
+   };
++  auto* library = browser_ ? CoveSpaceCloseHandler::Get(
++      browser_->GetUnownedUserDataHost()) : nullptr;
++  const auto spaces = library ? library->GetSpaces() : std::vector<CoveSpaceInfo>();
+   bool actions = explicit_actions;
++  if (!query.empty()) for (const auto& space : spaces)
++    if (Matches(u"Focus on " + space.name, query)) { actions = true; break; }
+   if (!actions && query.size() >= 2 && browser_) {
+     for (const auto& command : commands) {
+       if (command.enabled &&
+@@ -319,6 +365,12 @@
+     const auto words = explicit_actions ? query.substr(1) : query;
+     std::u16string action_query;
+     base::TrimWhitespace(words, base::TRIM_ALL, &action_query);
++    for (const auto& space : spaces) {
++      if (rows_.size() == max_rows) break;
++      if (!action_query.empty() && Matches(u"Focus on " + space.name, action_query))
++        rows_.push_back({Kind::kSpace, u"Focus on " + space.name, u"Space",
++                         u"Switch ↩", globe, 0, space.id});
++    }
+     for (const auto& command : commands) {
+       if (rows_.size() == max_rows) {
+         break;
+@@ -544,7 +596,10 @@
+   if (!browser) {
+     return;
+   }
+-  if (row.kind == Kind::kCommand) {
++  if (row.kind == Kind::kSpace) {
++    if (auto* library = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost()))
++      library->FocusSpace(row.space_id);
++  } else if (row.kind == Kind::kCommand) {
+     if (chrome::IsCommandEnabled(browser.get(), row.id)) {
+       chrome::ExecuteCommand(browser.get(), row.id);
+     }
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -29,6 +29,14 @@
+ 
+ DEFINE_USER_DATA(CoveSpaceCloseHandler);
+ 
++bool CoveSpaceCloseHandler::CanExecuteArcCommand(int command_id) const {
++  return false;
++}
++
++std::vector<CoveSpaceInfo> CoveSpaceCloseHandler::GetSpaces() const {
++  return {};
++}
++
+ void MarkCoveEmptyCanvas(content::WebContents* contents) {
+   if (!IsBareAboutBlank(contents)) {
+     return;

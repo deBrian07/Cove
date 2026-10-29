@@ -73,3 +73,5 @@
 0073-normalize-macos-space-swipe-phases.patch
 0074-cove-visible-product-branding.patch
 0075-native-wheel-fallback-and-input-diagnostics.patch
+0076-arc-space-pin-and-command-functions.patch
+0077-parked-navigation-page-action-guard.patch
