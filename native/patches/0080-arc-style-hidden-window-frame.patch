@@ -1,0 +1,152 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -348,6 +348,9 @@
+ 
+   // Returns whether the vertical tabstrip is collapsed.
+   bool IsVerticalTabStripCollapsed() const;
++
++  // Windowed Cove moves caption controls into the revealed sidebar.
++  bool ShouldShowCoveCaptionButtons() const;
+ 
+   // Returns true if the profile associated with this Browser window is
+   // incognito.
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1491,6 +1491,13 @@
+   return false;
+ }
+ 
++bool BrowserView::ShouldShowCoveCaptionButtons() const {
++  if (IsFullscreen() || !ShouldDrawVerticalTabStrip() ||
++      !vertical_tab_strip_region_view_) return true;
++  return !IsVerticalTabStripCollapsed() ||
++         vertical_tab_strip_region_view_->is_expanded_on_hover();
++}
++
+ bool BrowserView::GetIncognito() const {
+   return browser_->GetProfile()->IsIncognitoProfile();
+ }
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.h b/chrome/browser/ui/views/frame/browser_frame_view_mac.h
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.h
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.h
+@@ -94,6 +94,7 @@
+   void LayoutWindowControlsOverlay();
+ 
+   void UpdateCaptionButtonPlaceholderContainerBackground();
++  void UpdateCoveCaptionButtonsVisibility();
+ 
+   // Toggle the visibility of the web_app_frame_toolbar_view() for PWAs with
+   // window controls overlay display override when entering full screen or when
+@@ -131,6 +132,7 @@
+       current_toolbar_style_;
+ 
+   bool is_glass_frame_eligible_ = false;
++  bool cove_hid_caption_buttons_ = false;
+ 
+   base::CallbackListSubscription glass_frame_service_subscription_;
+ };
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+@@ -141,6 +141,8 @@
+ // BrowserFrameViewMac, BrowserFrameView implementation:
+ 
+ void BrowserFrameViewMac::OnFullscreenStateChanged() {
++  // Undo only Cove's windowed hiding before AppKit/immersive takes ownership.
++  UpdateCoveCaptionButtonsVisibility();
+   if (GetBrowserView()->IsFullscreen()) {
+     PictureInPictureWindowManager::GetInstance()
+         ->OnAnyBrowserEnteredFullscreen();
+@@ -458,6 +460,7 @@
+ BrowserFrameViewMac::BoundsAndMargins
+ BrowserFrameViewMac::GetCaptionButtonBounds() const {
+   BoundsAndMargins result;
++  if (!GetBrowserView()->ShouldShowCoveCaptionButtons()) return result;
+ 
+   // In popups, the titlebar is system-drawn and the caption buttons aren't part
+   // of the client area.
+@@ -516,7 +519,20 @@
+   }
+ }
+ 
++void BrowserFrameViewMac::UpdateCoveCaptionButtonsVisibility() {
++  NSWindow* window = GetWidget()->GetNativeWindow().GetNativeNSWindow();
++  if (!window) return;
++  const bool hide = !GetBrowserView()->ShouldShowCoveCaptionButtons();
++  if (hide == cove_hid_caption_buttons_) return;
++  for (NSWindowButton button : {NSWindowCloseButton, NSWindowMiniaturizeButton,
++                                NSWindowZoomButton}) {
++    [[window standardWindowButton:button] setHidden:hide];
++  }
++  cove_hid_caption_buttons_ = hide;
++}
++
+ void BrowserFrameViewMac::Layout(PassKey) {
++  UpdateCoveCaptionButtonsVisibility();
+   if (GetBrowserView()->IsWindowControlsOverlayEnabled()) {
+     LayoutWindowControlsOverlay();
+   }
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -69,7 +69,7 @@
+ 
+ // Cove keeps native page content inside a narrow frame in sidebar windows.
+ constexpr int kCovePageFrameInset = 6;
+-constexpr float kCovePageCornerRadius = 12;
++constexpr float kCovePageCornerRadius = 8;
+ 
+ // Maximum portion of the window a "size-restricted" contents-height side panel
+ // can take up. This is not the only limit on side panel size.
+@@ -686,6 +686,11 @@
+ 
+ int BrowserViewTabbedLayoutImpl::GetCollapsedVerticalTabStripRelativeTop()
+     const {
++  // The edge-revealed Cove sidebar includes its own caption row.
++  if (layout_data_->tab_strip_type == TabStripType::kVertical &&
++      views().browser_view->GetIsNormalType() && !views().browser_view->IsFullscreen())
++    return 0;
++
+   // When the top container isn't in the browser view, the exclusion won't apply
+   // and the tabstrip goes all the way to the top.
+   if (!IsParentedTo(views().top_container, views().browser_view)) {
+@@ -1153,13 +1158,12 @@
+   // Inset the native viewport after side panels and infobars have received
+   // their normal layout. This leaves their controls and hit regions intact.
+   if (cove_page_frame) {
+-    // With the sidebar hidden, keep native caption controls above the page.
+-    // The expanded sidebar normally supplies their reserved space.
++    gfx::Insets page_frame(kCovePageFrameInset);
++    // The hidden edge target already supplies the leading frame width.
+     if (horizontal_layout.vertical_tab_strip_width <= 6) {
+-      params.Inset(gfx::Insets::TLBR(36, 0, 0, 0));
+-      unclipped_contents_region.Inset(gfx::Insets::TLBR(36, 0, 0, 0));
+-    }
+-    const gfx::Insets page_frame(kCovePageFrameInset);
++      if (base::i18n::IsRTL()) page_frame.set_right(0);
++      else page_frame.set_left(0);
++    }
+     params.Inset(page_frame);
+     unclipped_contents_region.Inset(page_frame);
+   }
+diff --git a/chrome/browser/ui/color/chrome_color_mixers.cc b/chrome/browser/ui/color/chrome_color_mixers.cc
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -112,11 +112,11 @@
+                                 ui::ColorProviderKey::ThemeInitializerSupplier::
+                                     ThemeType::kExtension)) {
+     auto& cove = provider->AddMixer();
+-    cove[ui::kColorFrameActive] = {SkColorSetRGB(0x30, 0x2e, 0x41)};
+-    cove[ui::kColorFrameInactive] = {SkColorSetRGB(0x2b, 0x29, 0x3a)};
+-    cove[kColorLocationBarBackground] = {SkColorSetRGB(0x43, 0x40, 0x52)};
++    cove[ui::kColorFrameActive] = {SkColorSetRGB(0x17, 0x14, 0x28)};
++    cove[ui::kColorFrameInactive] = {SkColorSetRGB(0x14, 0x12, 0x22)};
++    cove[kColorLocationBarBackground] = {SkColorSetRGB(0x2b, 0x28, 0x3b)};
+     cove[kColorLocationBarBackgroundHovered] = {
+-        SkColorSetRGB(0x4d, 0x49, 0x5e)};
++        SkColorSetRGB(0x36, 0x32, 0x48)};
+     cove[kColorOmniboxText] = {SkColorSetRGB(0xe7, 0xe4, 0xf4)};
+     cove[kColorOmniboxTextDimmed] = {SkColorSetRGB(0xb9, 0xb5, 0xcc)};
+   }
