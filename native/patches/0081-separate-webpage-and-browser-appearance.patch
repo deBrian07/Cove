@@ -1,0 +1,181 @@
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -4044,6 +4044,28 @@
+ }
+ 
+ #if !BUILDFLAG(IS_ANDROID)
++bool ShouldDefaultCovePagesFollowSystemAppearance(Profile* profile) {
++  const PrefService* prefs = profile->GetPrefs();
++  // Cove's default dark chrome is independent of the ambient website theme.
++  // Explicit user or managed appearance choices retain Chromium's behavior.
++  for (const char* pref_name :
++       {prefs::kBrowserColorScheme, prefs::kUserColor,
++        prefs::kBrowserColorVariant, prefs::kGrayscaleThemeEnabled}) {
++    const auto* preference = prefs->FindPreference(pref_name);
++    if (!preference || !preference->IsDefaultValue()) {
++      return false;
++    }
++  }
++  const ThemeService* theme_service =
++      ThemeServiceFactory::GetForProfile(profile);
++  return theme_service && theme_service->UsingDefaultTheme() &&
++         !theme_service->UsingExtensionTheme() &&
++         !theme_service->UsingPolicyTheme() &&
++         theme_service->GetBrowserColorScheme() ==
++             ThemeService::BrowserColorScheme::kDark &&
++         theme_service->GetUserColor() == SkColorSetRGB(0x7E, 0x6C, 0xA8);
++}
++
+ blink::mojom::PreferredColorScheme ToBlinkPreferredColorScheme(
+     ui::NativeTheme::PreferredColorScheme native_theme_scheme) {
+   // Web content treats "no preference" as light mode.
+@@ -4075,10 +4097,18 @@
+ #else  // !BUILDFLAG(IS_ANDROID)
+   Profile* profile =
+       Profile::FromBrowserContext(web_contents->GetBrowserContext());
++  const bool default_cove_page_follows_system =
++      !security_principal.IsWebUI() &&
++      !profile->IsEnterpriseIsolatedModeProfile() &&
++      !profile->IsIncognitoProfile() &&
++      ShouldDefaultCovePagesFollowSystemAppearance(profile);
+   if (profile->IsEnterpriseIsolatedModeProfile() && !security_principal.IsWebUI()) {
+     preferred_color_scheme = blink::mojom::PreferredColorScheme::kLight;
+   } else if (profile->IsIncognitoProfile() && !security_principal.IsWebUI()) {
+     // Incognito contents follow the device color mode.
++    preferred_color_scheme = ToBlinkPreferredColorScheme(
++        ui::NativeTheme::GetInstanceForWeb()->preferred_color_scheme());
++  } else if (default_cove_page_follows_system) {
+     preferred_color_scheme = ToBlinkPreferredColorScheme(
+         ui::NativeTheme::GetInstanceForWeb()->preferred_color_scheme());
+   } else {
+@@ -4096,6 +4126,9 @@
+           web_contents->GetColorProvider().GetColor(kColorToolbar))
+           ? blink::mojom::PreferredColorScheme::kDark
+           : blink::mojom::PreferredColorScheme::kLight;
++  if (default_cove_page_follows_system) {
++    preferred_root_scrollbar_color_scheme = preferred_color_scheme;
++  }
+ #endif
+ 
+ #if BUILDFLAG(ENABLE_GUEST_VIEW)
+diff --git a/chrome/browser/chrome_content_browser_client_browsertest.cc b/chrome/browser/chrome_content_browser_client_browsertest.cc
+--- a/chrome/browser/chrome_content_browser_client_browsertest.cc
++++ b/chrome/browser/chrome_content_browser_client_browsertest.cc
+@@ -483,6 +483,13 @@
+   void SetUpOnMainThread() override {
+     PrefersColorSchemeTestBase::SetUpOnMainThread();
+ 
++    // Exercise explicit browser appearance choices here; Cove's untouched
++    // default follows the system for ordinary pages in the tests below.
++    ThemeServiceFactory::GetForProfile(GetBrowser()->GetProfile())
++        ->SetBrowserColorScheme(
++            DarkColorProvider() ? ThemeService::BrowserColorScheme::kDark
++                                : ThemeService::BrowserColorScheme::kLight);
++
+     os_settings_provider_.SetPreferredColorScheme(
+         DarkOs() ? ui::NativeTheme::PreferredColorScheme::kDark
+                  : ui::NativeTheme::PreferredColorScheme::kLight);
+@@ -659,6 +666,102 @@
+                            std::get<1>(info.param) ? "Dark" : "Light",
+                            "ColorProvider"});
+     });
++
++class CoveDefaultWebAppearanceTest : public InProcessBrowserTest {
++ public:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    os_settings_provider_.SetPreferredColorScheme(
++        ui::NativeTheme::PreferredColorScheme::kLight);
++  }
++
++ protected:
++  content::WebContents* contents() {
++    return browser()->tab_strip_model()->GetActiveWebContents();
++  }
++
++  ThemeService* theme_service() {
++    return ThemeServiceFactory::GetForProfile(browser()->GetProfile());
++  }
++
++  void ExpectPageScheme(blink::mojom::PreferredColorScheme scheme) {
++    ASSERT_TRUE(base::test::RunUntil([&]() {
++      const auto& preferences = contents()->GetOrCreateWebPreferences();
++      return preferences.preferred_color_scheme == scheme &&
++             preferences.preferred_root_scrollbar_color_scheme == scheme;
++    }));
++    EXPECT_EQ(scheme == blink::mojom::PreferredColorScheme::kDark,
++              EvalJs(contents(),
++                     "matchMedia('(prefers-color-scheme: dark)').matches"));
++  }
++
++  void ChangeSystemAppearance(ui::NativeTheme::PreferredColorScheme scheme) {
++    // Observe an actual renderer media-query change, not just cached browser
++    // preferences. No reload or explicit preference refresh should be needed.
++    ASSERT_TRUE(ExecJs(contents(), R"(
++      window.coveAppearanceChanged = new Promise(resolve => {
++        matchMedia('(prefers-color-scheme: dark)').addEventListener(
++            'change', event => resolve(event.matches), {once: true});
++      });
++    )"));
++    os_settings_provider_.SetPreferredColorScheme(scheme);
++    EXPECT_EQ(scheme == ui::NativeTheme::PreferredColorScheme::kDark,
++              EvalJs(contents(), "window.coveAppearanceChanged"));
++  }
++
++ private:
++  ui::MockOsSettingsProvider os_settings_provider_;
++};
++
++IN_PROC_BROWSER_TEST_F(CoveDefaultWebAppearanceTest,
++                       DefaultPagesFollowLiveSystemAppearance) {
++  const PrefService* prefs = browser()->GetProfile()->GetPrefs();
++  ASSERT_TRUE(
++      prefs->FindPreference(prefs::kBrowserColorScheme)->IsDefaultValue());
++  ASSERT_TRUE(prefs->FindPreference(prefs::kUserColor)->IsDefaultValue());
++  ASSERT_TRUE(theme_service()->UsingDefaultTheme());
++  ASSERT_EQ(ThemeService::BrowserColorScheme::kDark,
++            theme_service()->GetBrowserColorScheme());
++  ASSERT_TRUE(content::NavigateToURL(
++      contents(), chrome_test_utils::GetTestUrl(
++                      base::FilePath(base::FilePath::kCurrentDirectory),
++                      base::FilePath(FILE_PATH_LITERAL(
++                          "prefers-color-scheme.html")))));
++  ExpectPageScheme(blink::mojom::PreferredColorScheme::kLight);
++
++  ChangeSystemAppearance(ui::NativeTheme::PreferredColorScheme::kDark);
++  ExpectPageScheme(blink::mojom::PreferredColorScheme::kDark);
++  ChangeSystemAppearance(ui::NativeTheme::PreferredColorScheme::kLight);
++  ExpectPageScheme(blink::mojom::PreferredColorScheme::kLight);
++  EXPECT_EQ(ThemeService::BrowserColorScheme::kDark,
++            theme_service()->GetBrowserColorScheme());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveDefaultWebAppearanceTest,
++                       WebUIRetainsDarkBrowserAppearance) {
++  ASSERT_TRUE(content::NavigateToURL(
++      contents(), GURL(chrome::kChromeUIDownloadsURL)));
++  ASSERT_TRUE(contents()->GetPrimaryMainFrame()
++                  ->GetSiteInstance()
++                  ->GetSecurityPrincipal()
++                  .IsWebUI());
++  ExpectPageScheme(blink::mojom::PreferredColorScheme::kDark);
++}
++
++IN_PROC_BROWSER_TEST_F(CoveDefaultWebAppearanceTest,
++                       ExplicitDarkChoiceOverridesLightSystem) {
++  theme_service()->SetBrowserColorScheme(ThemeService::BrowserColorScheme::kDark);
++  // Selecting dark is explicit even though it equals Cove's registered default.
++  ASSERT_FALSE(browser()->GetProfile()->GetPrefs()
++                   ->FindPreference(prefs::kBrowserColorScheme)
++                   ->IsDefaultValue());
++  ASSERT_TRUE(content::NavigateToURL(
++      contents(), chrome_test_utils::GetTestUrl(
++                      base::FilePath(base::FilePath::kCurrentDirectory),
++                      base::FilePath(FILE_PATH_LITERAL(
++                          "prefers-color-scheme.html")))));
++  ExpectPageScheme(blink::mojom::PreferredColorScheme::kDark);
++}
+ 
+ class PrefersColorSchemeEnterpriseIsolatedTest : public InProcessBrowserTest {
+  public:
