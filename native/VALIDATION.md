@@ -1,6 +1,14 @@
 # Native validation — 2026-10-29
 
-## Current 81-patch build: automated checks passed, UI acceptance pending
+## Current 83-patch build: automated acceptance passed; manual UI limited
+
+The native app and bounded browser-test target compile and link. Final native renderer smoke passed. Both configuration records equal `6ed21115f2e1f16a4890e5ca46382f445f5191d52de228c634254f34696cb5ca`. All 83 patches passed original-file SHA/application verification. All 67 focused native tests and 36 tooling tests passed. Patch 0082 adds session ownership; 0083 preserves the real pending about:blank navigation of a newly marked canvas during an immediate journal reset.
+
+The first real browser run was 13/16 passing. After corrections, the next full run passed 16/17, with one split fixture crashing because it pumped navigation before organizing the intentional canvas. Correcting only that fixture's setup order made its focused rerun pass. All 17 distinct cases therefore passed after fixes, across these runs; the old full-run JSON is not a clean 17/17 artifact. Logs: `/tmp/cove-native83-browser-tests.log`, `/tmp/cove-native83-split-test.log`; summaries: `/tmp/cove-native83-browser-results.json`, `/tmp/cove-native83-split-results.json`.
+
+Executed passing cases include actual disk journal saving/readback with parked history, clean-close native session reconstruction with exact history, independent window Space metadata, malformed ownership retaining native collections, preserved navigated pin homes, foreground recently-closed selection, immediate marked canvases, live drafts/history, grouped splits and canceled-unload reparking. Full crash/process-restart and broader actual UI acceptance remain required. The isolated QA83 window was launched and both expanded/collapsed frames were captured, visibly confirming removal of the old hidden-sidebar caption strip. CUA then repeatedly refused input with its Cove.app-changed/get_app_state guard despite refreshed snapshots and app rebinding. No final native menu, repeated shortcut, caption hit-target or fullscreen acceptance is claimed. See HANDOFF for precise current logs and continuation commands.
+
+## Previous accepted 81-patch build: automated checks passed, UI acceptance pending
 
 The current versioned source extends through 0081: nested folders, the reference-frame correction and separate ambient website appearance. GN generation and the native application build passed. Both generated_config and built_config equal `4b18cf075b8f4eca2e03dc704a8e9019410fa33b6db2f0b64586dee38709529a`.
 

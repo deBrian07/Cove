@@ -1,6 +1,20 @@
 # Cove continuation — 2026-10-29
 
-## Latest state: reference-frame and folder pass
+## Current work: Space/session ownership and executed browser tests (0082–0083)
+
+Patch 0082 is committed as `38efda9`. It adds versioned/bounded tab ownership, per-window active Space metadata, read-only attached/parked journal snapshots, window-wide indices, group/split visuals and saved-group IDs, and deferred native partitioning after restore. It also preserves saved pin homes and Chromium's new foreground selection when reopening a formerly background tab.
+
+Patch 0083 is committed as `0e48b1d`. It fixes a real browser-regression finding: an immediate journal reset could omit a new marked blank canvas because its real pending about:blank entry was outside the committed history list. The fix serializes that real pending blank entry only for a marked canvas/current initial slot. Ordinary unmarked initial entries and unrelated pending URLs retain upstream handling.
+
+All 67 focused native tests and all 36 tooling tests passed. All 17 browser regression cases have passed after corrections: 16 passed in the full 17-case rerun, and the sole failing split fixture passed its focused rerun after organizing its intentional blank pane before waiting for navigation. The original full-run JSON still records that fixture crash; do not describe it as one clean 17/17 run. Native source/renderer changes were unchanged by that final fixture-only correction. Final native renderer smoke passed. Both generated_config and built_config equal `6ed21115f2e1f16a4890e5ca46382f445f5191d52de228c634254f34696cb5ca`. The running isolated QA profile is `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native83`. Expanded and collapsed screenshots were captured; the hidden frame has no old caption strip. Further input is blocked by automation’s repeated “The user changed ... Cove.app; re-query ... get_app_state” guard, even after refreshing AX, screenshots and the full app binding. Do not treat this as a reproduced Cove shortcut failure or claim completed keyboard/menu/fullscreen acceptance.
+
+The successful second run includes real disk SaveNow/rotate/readback after repeated Space switches, exact clean-close history restoration (count/index/every URL), two independent windows, malformed ownership preserving collections, navigated pin home/ID preservation, foreground reopen, immediate blank-canvas saving, live drafts/history, grouped/split pane retention and canceled-unload reparking. Full process-restart/PRE_ and actual process-kill crash recovery, saved-group sync and broader migration acceptance remain unfinished.
+
+Native CUA can read the current window but its app-change guard blocks further input. Folder menus, repeated shortcuts, caption hit testing and fullscreen acceptance remain pending. All test profiles are isolated; no saved normal/Arc/prototype profiles have been launched or migrated. Current logs: `/tmp/cove-native83-build.log`, `/tmp/cove-native83-browser-tests.log`, `/tmp/cove-native83-test-rebuild.log`, `/tmp/cove-native83-split-test.log`, `/tmp/cove-native83-gen-accepted.log`, `/tmp/cove-native83-build-accepted.log`, `/tmp/cove-native83-smoke.log` and `/tmp/cove-native83-ui.log`. Older 82 logs contain earlier compiler/linker and failing-test evidence, not final acceptance.
+
+The continuation status script now selects build logs for any native patch number rather than being stuck on 81. Use `python3 scripts/chromium/handoff.py`, verify live processes before Ninja, and never edit patch/config inputs during generation/build.
+
+## Previous accepted build: reference-frame and folder pass (0081)
 
 Continuation entrypoint: `python3 scripts/chromium/handoff.py`; copyable agent prompt: [NEXT_AGENT_PROMPT.md](NEXT_AGENT_PROMPT.md), also printed by `python3 scripts/chromium/handoff.py --prompt`. The status script is read-only.
 
@@ -183,8 +197,8 @@ The final 0078 native build and renderer smoke passed. All 55 focused native tes
 
 ## Next work, in order
 
-1. Persist per-Space ownership across native session restore. Current shutdown reunites inactive tabs for Chromium persistence, so restart can merge ownership; URL snapshots are only a fallback. BrowserLiveTabContext::GetExtraDataForTab and SessionService::AddTabExtraData can store a stable Space ID. Restore it in browser_tabrestore.cc before insertion. Persist the active Space per window via GetExtraDataForWindow too. Reconstruct detached ownership after bulk restore, preserving native groups/splits and respecting canceled unload. This was researched, not implemented.
-2. Validate the new pin-home commands, then complete pin-model unification, folder move/reorder coverage, nested folders and dragging between folders/Spaces. Favorites are global saved URLs; do not infer complete global live-tab ownership from that.
+1. Complete Space restore acceptance beyond patches 0082–0083: PRE_/separate-process restart, real process-kill crash recovery, saved-group sync and backward-compatible migration. Actual disk journal readback, clean-close native restore, pin homes, pending canvases, grouped splits and canceled-unload reparking already passed native browser regressions; do not reimplement the audited snapshot/metadata integration.
+2. Finish actual native-menu/shortcut acceptance of pin homes and nested folder move/reorder, then complete pin-model unification and dragging between folders/Spaces. Favorites are global saved URLs; do not infer complete global live-tab ownership from that.
 3. Add Arc-style pane-specific URL/navigation headers and joined split rows. Current native controls support two panes; exact reference layout, drag-to-split and more panes remain unfinished.
 4. Validate new Space shortcuts/name selection, then implement the recent-tab chooser, configurable keybindings, Peek, Little Arc and import.
 5. Measure focus/frame-time/memory behavior and validate reduced motion/accessibility. Finish branding/icons, standalone packaging, signing/notarization, updater and Chromium security maintenance before treating this as a production browser.

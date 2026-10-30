@@ -2,9 +2,9 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current source batch extends through patch 0081. Patch 0079 adds nested folder organization; 0080 revises the hidden-toolbar frame and violet surfaces; 0081 lets web pages follow the system appearance by default while Cove's chrome stays dark, preserving explicit appearance choices. The corrected 81-patch native build, renderer smoke, all 61 focused tests (including six folder-model regressions), all 36 tooling tests and full patch verification passed. Actual UI acceptance for this batch remains pending; this continuation session has no CUA tools. The three appearance browser regressions remain source-only.
+The current 83-patch app builds and passes renderer smoke, 67 focused native tests and 36 tooling tests. Seventeen distinct browser cases passed after fixes: 16 in the full rerun and one corrected fixture in a focused rerun. Patches 0082–0083 add Space ownership, complete parked-page journals and pending blank-canvas persistence. Disk readback, exact clean-close history, pin homes, collection retention and unload reparking passed. Full separate-process restart/crash and migration acceptance remain.
 
-The earlier 0078 native build, renderer startup smoke, 55 gesture/animation tests and 36 tooling/verifier tests passed. CUA attachment succeeded this turn, resolving the earlier cgWindowNotFound attachment blocker. The newest folder, appearance, Space, pin-home and split functions still need live acceptance. Existing validation is recorded in [VALIDATION.md](VALIDATION.md); continuation details are in [HANDOFF.md](HANDOFF.md).
+The running QA window was captured with the sidebar expanded and collapsed; the old hidden-sidebar caption strip is gone. CUA's repeated app-changed/get_app_state guard now refuses further input despite refresh/rebinding. Native menus, repeated shortcuts, caption hit testing, fullscreen and physical swipes still need actual UI acceptance. The three appearance browser regressions remain source-only. See [VALIDATION.md](VALIDATION.md) for precise evidence and [HANDOFF.md](HANDOFF.md) for continuation.
 
 ## Spaces and organization
 
@@ -19,7 +19,7 @@ The earlier 0078 native build, renderer startup smoke, 55 gesture/animation test
 | Independent Space themes and icons | Missing | Persist and apply each Space's appearance |
 | Profiles assigned to Spaces | Missing | Separate cookies, storage, credentials and profile-specific Favorites |
 | Tab moves and Space ordering | Missing | Move live tab/group/split ownership without reloading pages |
-| Restore Spaces after restart | Partial | Live parking works; shutdown reunites tabs and can merge ownership on restore |
+| Restore Spaces after restart | 0082–0083 add ownership, complete parked journals and pending canvases; native disk readback/clean-close tests pass | Full PRE_/process-kill recovery, saved-group sync and migration acceptance remain |
 | Air Traffic Control | Missing | URL rules, default destination and external-link routing |
 | Share/import Spaces | Missing | Export/import sidebar structure; shareable hosted views need a separate service |
 

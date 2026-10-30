@@ -10,7 +10,23 @@ That script is read-only. It prints Git state, patch count, live build processes
 
 The user wants native Cove to match Arc's functions and supplied screenshots, and requested a continuation handoff before the usage limit. They also authorized pushing the complete project history to `https://github.com/deBrian07/Cove.git`, branch `main`, without co-author trailers. Preserve existing history; do not reinitialize Git or replace README with a one-line stub. The requested remote was empty when checked, and GitHub authentication uses `deBrian07`.
 
-## First: actual UI acceptance of the built batch
+## First: inspect current 83-patch acceptance
+
+The native source now extends through 0083. 0082 (`38efda9`) adds per-tab/window Space metadata, complete parked/attached journals and deferred restore; 0083 (`0e48b1d`) preserves real pending marked blank canvases. All 67 focused native tests, all 36 tooling tests and all 17 distinct browser regression cases passed after fixes. Browser evidence is split: 16/17 in the full rerun, then the one corrected split fixture passed separately. Do not claim a single clean full-suite run. Final build records match `6ed21115f2e1f16a4890e5ca46382f445f5191d52de228c634254f34696cb5ca`; renderer smoke passed. QA83 is currently open; read-only CUA captured expanded/collapsed frames, but input is blocked by the repeated app-changed/get_app_state guard despite refresh/rebinding. Resolve that normal tool state before claiming manual UI acceptance; do not bypass it with AppleScript/CGEvent or alternate UI automation. Refresh live status with the handoff script.
+
+The bounded browser target is `cove_session_browsertests`. To rerun relevant native browser acceptance after future changes (isolated profiles are managed by Chromium's harness):
+
+```sh
+cd /Volumes/CoveBuild/checkout/chromium/src
+export PATH="/Volumes/CoveBuild/checkout/depot_tools:$PATH"
+export DEPOT_TOOLS_UPDATE=0 DEPOT_TOOLS_METRICS=0
+autoninja -C out/Cove -j2 cove_session_browsertests
+out/Cove/cove_session_browsertests --gtest_filter='CoveSessionBrowserTest.*:CoveSidebarLibraryBrowserTest.*' --test-launcher-jobs=1 --test-launcher-retry-limit=0 --use-mock-keychain
+```
+
+These cover actual disk journal readback, clean-close restore with every history URL/index, pending canvas serialization, pin homes/IDs, foreground reopen, grouped splits, live drafts/history and canceled-unload reparking. Full PRE_/process-kill crash recovery and saved-group sync acceptance remain unfinished. Never launch a normal saved profile to test migration.
+
+The following 81-patch notes are retained history, not the newest source/build identity.
 
 The corrected 81-patch app build, renderer smoke, all 61 focused native tests, all 36 tooling tests and original-file/SHA patch verification passed. Both generated_config and built_config equal `4b18cf075b8f4eca2e03dc704a8e9019410fa33b6db2f0b64586dee38709529a`. Refresh these records with the handoff script before acting; do not repeat an unchanged passing build just to resume. Actual UI acceptance is next.
 
@@ -52,13 +68,13 @@ Both `generated_config` and `built_config` in `/Volumes/CoveBuild/checkout/.cove
 
 ## Native UI acceptance
 
-Use CUA exclusively for UI input. The continuation session had no CUA tools and performed no UI acceptance or QA launch. Obtain a session with CUA before these checks; the earlier attachment success is historical. After context compaction, call `await cua.rewriteDocumentation()`. Binding `await cua.getApp('dev.cove.browser')` worked in the earlier session; the old blanket cgWindowNotFound blocker was resolved there. Observe fresh AX IDs before acting. CUA `getApp` can launch a default window if the app has quit, so launch the isolated QA profile deliberately first.
+Use CUA exclusively for UI input. Native CUA tooling is available again. Read current HANDOFF/VALIDATION for actual UI results before repeating checks; earlier sessions without tools did not validate the UI. After context compaction, call `await cua.rewriteDocumentation()`. Binding `await cua.getApp('dev.cove.browser')` worked in the earlier session; the old blanket cgWindowNotFound blocker was resolved there. Observe fresh AX IDs before acting. CUA `getApp` can launch a default window if the app has quit, so launch the isolated QA profile deliberately first.
 
 The user has authorized closing all Cove and reopening the QA profile. Quit through the Cove menu if held Cmd+Q does not quit. Preserve every profile. Use exactly one production-bundle QA instance rather than renamed app bundles, which previously caused long attachment stalls:
 
 ```sh
 open -na /Volumes/CoveBuild/checkout/chromium/src/out/Cove/Cove.app --args \
-  --user-data-dir=/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native81 \
+  --user-data-dir=/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native83 \
   --no-first-run --no-default-browser-check --use-mock-keychain \
   --disable-background-networking --disable-component-update \
   --enable-logging --log-file=/tmp/cove-native81-runtime.log \

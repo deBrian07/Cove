@@ -1,5 +1,7 @@
 # Durable Space restore: implementation constraints
 
+Current status: patches 0082–0083 implement the snapshot/metadata/restore integration below. Seventeen distinct native browser cases passed after fixes, including real disk readback, exact clean-close history, pending blank panes and canceled-unload reparking. The audit text below records the original constraints. Full process-restart/crash and saved-group sync acceptance remain outstanding; see VALIDATION for precise evidence.
+
 Source audit on 2026-10-29. This is a design for unfinished work, not an implemented restore feature.
 
 Live Space switches preserve native pages by parking inactive Tab/Group/Split collections. Shutdown currently rejoins those pages for Chromium's unload and session pipeline. That protects pages but does not preserve complete Space ownership after restart.

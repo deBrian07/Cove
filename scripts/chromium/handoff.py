@@ -58,7 +58,7 @@ def main():
                      ("autoninja -C out/Cove", "siso ninja", "cove_chromium.py build", "cove_chromium.py gen"))]
         print("\nCurrent native build processes:\n" + ("\n".join(builds) or "None observed."))
 
-    logs = sorted(Path("/tmp").glob("cove-native81*build*.log"), key=lambda p: p.stat().st_mtime)
+    logs = sorted(Path("/tmp").glob("cove-native[0-9]*build*.log"), key=lambda p: p.stat().st_mtime)
     if logs:
         log = logs[-1]
         print(f"\nLatest build log: {log}\n" + "\n".join(log.read_text(errors="replace").splitlines()[-12:]))

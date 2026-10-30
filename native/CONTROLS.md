@@ -2,7 +2,9 @@
 
 These controls use Chromium's real tab, split, navigation and session models. They do not use the retired Electron renderer.
 
-The native source series extends through patch 0081. The corrected 81-patch app build, renderer smoke, all 61 focused native tests, all 36 tooling tests and patch verification passed. The new folder/frame/appearance changes, plus the newest Space, pin-home and split commands, still need live acceptance. This continuation session has no CUA tools; appearance browser regressions remain source-only. See [VALIDATION.md](VALIDATION.md). The full Arc function set remains incomplete.
+The current native build extends through 0083. Renderer smoke, 67 focused tests, 36 tooling tests and 17 distinct browser cases passed after fixes. Space/session ownership has disk readback and exact clean-close coverage; full separate-process/crash and migration acceptance remain.
+
+Both sidebar states were inspected in QA, but CUA's repeated app-changed guard blocks further input. Final native-menu/shortcut acceptance and the three appearance browser regressions remain pending. See [VALIDATION.md](VALIDATION.md). The full Arc function set is incomplete.
 
 | macOS shortcut | Action |
 | --- | --- |
