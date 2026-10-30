@@ -1,0 +1,442 @@
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model.cc b/chrome/browser/ui/views/cove/cove_folder_model.cc
+--- a/chrome/browser/ui/views/cove/cove_folder_model.cc
++++ b/chrome/browser/ui/views/cove/cove_folder_model.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ #include <limits>
++#include <set>
+ #include <utility>
+ 
+ #include "base/strings/utf_string_conversions.h"
+@@ -237,4 +238,183 @@
+   return true;
+ }
+ 
++
++namespace {
++std::string OrderKey(const SidebarItem& item) {
++  return (item.kind == SidebarItemKind::kPin ? "pin:" : "folder:") + item.id;
++}
++const base::DictValue* UniqueItem(const base::DictValue& space,
++                                  const SidebarItem& item) {
++  if (item.kind != SidebarItemKind::kPin &&
++      item.kind != SidebarItemKind::kFolder)
++    return nullptr;
++  const auto* list =
++      space.FindList(item.kind == SidebarItemKind::kPin ? "pins" : "folders");
++  const base::DictValue* found = nullptr;
++  if (!list || item.id.empty())
++    return nullptr;
++  for (const auto& value : *list) {
++    const auto* dict = value.GetIfDict();
++    const auto* id = dict ? dict->FindString("id") : nullptr;
++    if (id && *id == item.id) {
++      if (found)
++        return nullptr;
++      found = dict;
++    }
++  }
++  return found;
++}
++}  // namespace
++
++std::vector<SidebarRow> SidebarOrder::Rows(const base::DictValue& space,
++                                           bool include_collapsed) {
++  const FolderTree folders(space.FindList("folders"));
++  std::vector<SidebarRow> items;
++  if (const auto* pins = space.FindList("pins")) {
++    for (const auto& value : *pins) {
++      const auto* pin = value.GetIfDict();
++      const auto* id = pin ? pin->FindString("id") : nullptr;
++      if (!id || id->empty())
++        continue;
++      SidebarRow row;
++      row.item = {SidebarItemKind::kPin, *id};
++      const auto* parent = pin->FindString("folder");
++      row.parent = parent && folders.Contains(*parent) ? *parent : "";
++      const auto* name = pin->FindString("title");
++      if (!name || name->empty())
++        name = pin->FindString("url");
++      if (name)
++        row.name = base::UTF8ToUTF16(*name);
++      items.push_back(std::move(row));
++    }
++  }
++  for (const auto& folder : folders.Rows(true)) {
++    items.push_back({{SidebarItemKind::kFolder, folder.id},
++                     folder.parent,
++                     folder.name,
++                     folder.collapsed,
++                     0});
++  }
++  std::map<std::string, size_t, std::less<>> ranks;
++  if (const auto* saved = space.FindList("sidebar_order")) {
++    for (size_t i = 0; i < saved->size(); ++i) {
++      if (const auto* key = (*saved)[i].GetIfString())
++        ranks.try_emplace(*key, i);
++    }
++  }
++  std::map<std::string, std::vector<size_t>, std::less<>> children;
++  for (size_t i = 0; i < items.size(); ++i)
++    children[items[i].parent].push_back(i);
++  const auto rank = [&](size_t index) {
++    const auto it = ranks.find(OrderKey(items[index].item));
++    return it == ranks.end() ? kNone : it->second;
++  };
++  for (auto& [parent, rows] : children) {
++    std::stable_sort(rows.begin(), rows.end(),
++                     [&](size_t a, size_t b) { return rank(a) < rank(b); });
++  }
++  std::vector<std::pair<size_t, size_t>> pending;
++  for (auto it = children[""].rbegin(); it != children[""].rend(); ++it)
++    pending.emplace_back(*it, 0);
++  std::vector<SidebarRow> rows;
++  while (!pending.empty()) {
++    const auto [index, depth] = pending.back();
++    pending.pop_back();
++    auto row = items[index];
++    row.depth = depth;
++    rows.push_back(row);
++    if (row.item.kind != SidebarItemKind::kFolder ||
++        (!include_collapsed && row.collapsed))
++      continue;
++    const auto found = children.find(row.item.id);
++    if (found == children.end())
++      continue;
++    for (auto it = found->second.rbegin(); it != found->second.rend(); ++it)
++      pending.emplace_back(*it, depth + 1);
++  }
++  return rows;
++}
++
++std::optional<std::string> SidebarOrder::Parent(const base::DictValue& space,
++                                                const SidebarItem& item) {
++  const auto* value = UniqueItem(space, item);
++  if (!value)
++    return std::nullopt;
++  const FolderTree folders(space.FindList("folders"));
++  if (item.kind == SidebarItemKind::kFolder)
++    return folders.Parent(item.id);
++  const auto* parent = value->FindString("folder");
++  return parent && folders.Contains(*parent) ? *parent : std::string();
++}
++
++bool SidebarOrder::CanMove(const base::DictValue& space,
++                           const SidebarItem& item,
++                           std::string_view parent,
++                           const std::optional<SidebarItem>& before) {
++  const auto old_parent = Parent(space, item);
++  if (!old_parent)
++    return false;
++  const FolderTree folders(space.FindList("folders"));
++  if (!parent.empty() && !folders.CanAddChild(parent))
++    return false;
++  if (item.kind == SidebarItemKind::kFolder &&
++      (!folders.CanAddChild(item.id) ||
++       (*old_parent != parent && !folders.CanMove(item.id, parent))))
++    return false;
++  if (before) {
++    if (*before == item)
++      return false;
++    const auto target_parent = Parent(space, *before);
++    if (!target_parent || *target_parent != parent)
++      return false;
++    if (before->kind == SidebarItemKind::kFolder &&
++        !folders.CanAddChild(before->id))
++      return false;
++  }
++  return true;
++}
++
++bool SidebarOrder::Move(base::DictValue& space,
++                        const SidebarItem& item,
++                        std::string_view parent,
++                        const std::optional<SidebarItem>& before) {
++  if (!CanMove(space, item, parent, before))
++    return false;
++  // Build the complete order first. The public item/parent may alias a value
++  // in the space; copy them before mutating any collections.
++  const auto source = item;
++  const std::string destination(parent);
++  const auto insertion = before;
++  std::vector<std::string> order;
++  std::set<std::string> seen;
++  const auto key = OrderKey(source);
++  for (const auto& row : Rows(space, true)) {
++    const auto token = OrderKey(row.item);
++    if (token != key && seen.insert(token).second)
++      order.push_back(token);
++  }
++  auto position = order.end();
++  if (insertion)
++    position = std::find(order.begin(), order.end(), OrderKey(*insertion));
++  order.insert(position, key);
++  if (source.kind == SidebarItemKind::kFolder) {
++    if (FolderTree(space.FindList("folders")).Parent(source.id) != destination)
++      FolderTree::Move(space, source.id, destination);
++  } else {
++    // Validation established a unique ID; retain every other saved field.
++    for (auto& value : *space.FindList("pins")) {
++      auto* pin = value.GetIfDict();
++      if (pin && pin->FindString("id") && *pin->FindString("id") == source.id) {
++        pin->Set("folder", destination);
++        break;
++      }
++    }
++  }
++  base::ListValue saved;
++  for (auto& token : order)
++    saved.Append(std::move(token));
++  space.Set("sidebar_order", std::move(saved));
++  return true;
++}
++
+ }  // namespace cove
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model.h b/chrome/browser/ui/views/cove/cove_folder_model.h
+--- a/chrome/browser/ui/views/cove/cove_folder_model.h
++++ b/chrome/browser/ui/views/cove/cove_folder_model.h
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+ 
+ #include <map>
++#include <optional>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -60,6 +61,41 @@
+   std::map<std::string, size_t, std::less<>> indices_;
+ };
+ 
++
++// Saved pins and folders share a sibling order without replacing either saved
++// collection. IDs are scoped by kind; no URL, title or live-tab ownership is
++// rewritten when a row moves.
++enum class SidebarItemKind { kPin, kFolder };
++struct SidebarItem {
++  SidebarItemKind kind = SidebarItemKind::kPin;
++  std::string id;
++  bool operator==(const SidebarItem&) const = default;
++};
++struct SidebarRow {
++  SidebarItem item;
++  std::string parent;
++  std::u16string name;
++  bool collapsed = false;
++  size_t depth = 0;
++};
++class SidebarOrder {
++ public:
++  static std::vector<SidebarRow> Rows(const base::DictValue& space,
++                                      bool include_collapsed = false);
++  static std::optional<std::string> Parent(const base::DictValue& space,
++                                           const SidebarItem& item);
++  // No before item means append to the destination's children. All identities
++  // are revalidated on commit, including target removal during a native drag.
++  static bool CanMove(const base::DictValue& space,
++                      const SidebarItem& item,
++                      std::string_view parent,
++                      const std::optional<SidebarItem>& before = std::nullopt);
++  static bool Move(base::DictValue& space,
++                   const SidebarItem& item,
++                   std::string_view parent,
++                   const std::optional<SidebarItem>& before = std::nullopt);
++};
++
+ }  // namespace cove
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_FOLDER_MODEL_H_
+diff --git a/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc b/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc
+--- a/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc
++++ b/chrome/browser/ui/views/cove/cove_folder_model_unittest.cc
+@@ -185,3 +185,190 @@
+ 
+ }  // namespace
+ }  // namespace cove
++
++namespace cove {
++namespace {
++std::vector<std::string> SidebarKeys(const base::DictValue& space,
++                                     bool all = false) {
++  std::vector<std::string> result;
++  for (const auto& row : SidebarOrder::Rows(space, all))
++    result.push_back((row.item.kind == SidebarItemKind::kPin ? "p:" : "f:") +
++                     row.item.id);
++  return result;
++}
++SidebarItem Pin(std::string id) {
++  return {SidebarItemKind::kPin, std::move(id)};
++}
++SidebarItem Folder(std::string id) {
++  return {SidebarItemKind::kFolder, std::move(id)};
++}
++
++TEST(CoveSidebarOrderTest, MixedRowsReparentAndRoundTripWithoutLosingPageData) {
++  auto space = Space(R"({"folders":[{"id":"a","name":"A"},
++      {"id":"b","name":"B","parent":"a"}],
++    "pins":[{"id":"p0","url":"https://zero.test/","home":"kept"},
++            {"id":"p1","folder":"a","url":"https://one.test/"},
++            {"id":"p2","url":"https://two.test/","history":[1,2,3]}],
++    "tabs":[{"draft":"unsent","history":["one","two"]}],"extension":{"keep":true}})");
++  const auto pages = space.Find("tabs")->Clone();
++  const auto extra = space.Find("extension")->Clone();
++  EXPECT_EQ((std::vector<std::string>{"p:p0", "p:p2", "f:a", "p:p1", "f:b"}),
++            SidebarKeys(space));
++  ASSERT_TRUE(SidebarOrder::Move(space, Folder("a"), "", Pin("p0")));
++  EXPECT_EQ((std::vector<std::string>{"f:a", "p:p1", "f:b", "p:p0", "p:p2"}),
++            SidebarKeys(space));
++  ASSERT_TRUE(SidebarOrder::Move(space, Pin("p2"), "a", Folder("b")));
++  EXPECT_EQ((std::vector<std::string>{"f:a", "p:p1", "p:p2", "f:b", "p:p0"}),
++            SidebarKeys(space));
++  ASSERT_TRUE(SidebarOrder::Move(space, Folder("b"), "", Pin("p0")));
++  EXPECT_EQ("", SidebarOrder::Parent(space, Folder("b")));
++  EXPECT_EQ("a", SidebarOrder::Parent(space, Pin("p2")));
++  EXPECT_EQ(pages, *space.Find("tabs"));
++  EXPECT_EQ(extra, *space.Find("extension"));
++  EXPECT_EQ("kept",
++            *space.FindList("pins")->front().GetDict().FindString("home"));
++  EXPECT_EQ(
++      3u, space.FindList("pins")->back().GetDict().FindList("history")->size());
++  ASSERT_TRUE(base::WriteJson(space));
++  auto restored = Space(*base::WriteJson(space));
++  EXPECT_EQ(space, restored);
++  EXPECT_EQ(SidebarKeys(space, true), SidebarKeys(restored, true));
++}
++
++TEST(CoveSidebarOrderTest, InvalidAndCyclicDropsAreAtomic) {
++  auto space = Space(R"({"folders":[{"id":"a"},{"id":"b","parent":"a"}],
++    "pins":[{"id":"p","folder":"a","url":"https://kept.test/"}]})");
++  const auto before = space.Clone();
++  EXPECT_FALSE(SidebarOrder::Move(space, Folder("a"), "b"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Folder("a"), "a"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("p"), "missing"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("missing"), ""));
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("p"), "", Pin("p")));
++  EXPECT_FALSE(SidebarOrder::Move(space, Folder("b"), "", Pin("p")));
++  EXPECT_FALSE(
++      SidebarOrder::Move(space, {static_cast<SidebarItemKind>(99), "a"}, ""));
++  EXPECT_EQ(before, space);
++}
++
++TEST(CoveSidebarOrderTest, AmbiguousIdentitiesDoNotMutateSavedCollections) {
++  auto space = Space(R"({"folders":[{"id":"dup"},{"id":"dup"},{"id":"ok"}],
++    "pins":[{"id":"p","url":"https://one.test/"},
++            {"id":"p","url":"https://two.test/"},{"id":"q"}]})");
++  const auto before = space.Clone();
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("p"), "ok"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("q"), "dup"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Folder("dup"), "ok"));
++  EXPECT_FALSE(SidebarOrder::Move(space, Folder("ok"), "", Folder("dup")));
++  EXPECT_EQ(before, space);
++  EXPECT_EQ((std::vector<std::string>{"p:p", "p:p", "p:q", "f:dup", "f:ok"}),
++            SidebarKeys(space));
++}
++
++TEST(CoveSidebarOrderTest, CollapsedDescendantsAndOrphansStaySaved) {
++  auto space = Space(R"({"folders":[{"id":"a","collapsed":true},
++    {"id":"b","parent":"a"}],"pins":[{"id":"p","folder":"a"},
++    {"id":"orphan","folder":"removed"}]})");
++  EXPECT_EQ((std::vector<std::string>{"p:orphan", "f:a"}), SidebarKeys(space));
++  EXPECT_EQ((std::vector<std::string>{"p:orphan", "f:a", "p:p", "f:b"}),
++            SidebarKeys(space, true));
++  ASSERT_TRUE(SidebarOrder::Move(space, Pin("orphan"), "a"));
++  EXPECT_EQ((std::vector<std::string>{"f:a"}), SidebarKeys(space));
++  EXPECT_EQ(4u, SidebarOrder::Rows(space, true).size());
++  EXPECT_EQ(2u, space.FindList("pins")->size());
++  EXPECT_TRUE(space.FindList("folders")
++                  ->front()
++                  .GetDict()
++                  .FindBool("collapsed")
++                  .value());
++}
++
++TEST(CoveSidebarOrderTest, DeletedTargetAndCanceledPreviewDoNotChangeData) {
++  auto space = Space(R"({"folders":[],"pins":[{"id":"p"},{"id":"q"}]})");
++  const auto before_preview = space.Clone();
++  EXPECT_TRUE(SidebarOrder::CanMove(space, Pin("p"), "", Pin("q")));
++  EXPECT_EQ(before_preview, space);
++  space.FindList("pins")->erase(space.FindList("pins")->begin() + 1);
++  const auto after_removal = space.Clone();
++  EXPECT_FALSE(SidebarOrder::Move(space, Pin("p"), "", Pin("q")));
++  EXPECT_EQ(after_removal, space);
++}
++
++TEST(CoveSidebarOrderTest, PinAndFolderIdsUseSeparateNamespaces) {
++  auto space = Space(R"({"folders":[{"id":"same"},{"id":"other"}],
++    "pins":[{"id":"same","url":"https://same.test/"}]})");
++  ASSERT_TRUE(SidebarOrder::Move(space, Folder("other"), "", Pin("same")));
++  EXPECT_EQ((std::vector<std::string>{"f:other", "p:same", "f:same"}),
++            SidebarKeys(space));
++  ASSERT_TRUE(SidebarOrder::Move(space, Pin("same"), "same"));
++  EXPECT_EQ((std::vector<std::string>{"f:other", "f:same", "p:same"}),
++            SidebarKeys(space));
++  EXPECT_EQ("same", SidebarOrder::Parent(space, Pin("same")));
++  EXPECT_EQ("", SidebarOrder::Parent(space, Folder("same")));
++}
++
++TEST(CoveSidebarOrderTest, DeepTreesAndMalformedOrderRemainReadable) {
++  base::DictValue space;
++  base::ListValue folders;
++  for (int i = 0; i < 10000; ++i) {
++    base::DictValue folder;
++    folder.Set("id", std::to_string(i));
++    if (i)
++      folder.Set("parent", std::to_string(i - 1));
++    folders.Append(std::move(folder));
++  }
++  space.Set("folders", std::move(folders));
++  base::DictValue pin;
++  pin.Set("id", "p");
++  pin.Set("folder", "9999");
++  base::ListValue pins;
++  pins.Append(std::move(pin));
++  space.Set("pins", std::move(pins));
++  base::ListValue order;
++  order.Append(7);
++  order.Append("unknown:item");
++  order.Append("folder:0");
++  order.Append("folder:0");
++  space.Set("sidebar_order", std::move(order));
++  const auto before = space.Clone();
++  auto rows = SidebarOrder::Rows(space);
++  ASSERT_EQ(10001u, rows.size());
++  EXPECT_EQ(Pin("p"), rows.back().item);
++  EXPECT_EQ(10000u, rows.back().depth);
++  EXPECT_EQ(before, space);
++  ASSERT_TRUE(SidebarOrder::Move(space, Pin("p"), "", Folder("0")));
++  EXPECT_EQ(Pin("p"), SidebarOrder::Rows(space).front().item);
++  EXPECT_EQ(10000u, space.FindList("folders")->size());
++}
++
++TEST(CoveSidebarOrderTest, RepeatedMovesConserveEveryIdentityAndSavedURL) {
++  base::DictValue space;
++  base::ListValue pins;
++  base::ListValue folders;
++  for (int i = 0; i < 4; ++i) {
++    base::DictValue f;
++    f.Set("id", "f" + std::to_string(i));
++    folders.Append(std::move(f));
++  }
++  for (int i = 0; i < 32; ++i) {
++    base::DictValue p;
++    p.Set("id", "p" + std::to_string(i));
++    p.Set("url", "https://kept.test/" + std::to_string(i));
++    pins.Append(std::move(p));
++  }
++  space.Set("pins", std::move(pins));
++  space.Set("folders", std::move(folders));
++  for (int i = 0; i < 160; ++i) {
++    ASSERT_TRUE(SidebarOrder::Move(
++        space, Pin("p" + std::to_string(i % 32)),
++        i % 5 == 4 ? std::string() : "f" + std::to_string(i % 4)));
++    EXPECT_EQ(36u, SidebarOrder::Rows(space, true).size());
++    EXPECT_EQ(32u, space.FindList("pins")->size());
++    for (size_t j = 0; j < space.FindList("pins")->size(); ++j)
++      EXPECT_EQ("https://kept.test/" + std::to_string(j),
++                *(*space.FindList("pins"))[j].GetDict().FindString("url"));
++  }
++  const auto restored = Space(*base::WriteJson(space));
++  EXPECT_EQ(SidebarKeys(space, true), SidebarKeys(restored, true));
++}
++}  // namespace
++}  // namespace cove

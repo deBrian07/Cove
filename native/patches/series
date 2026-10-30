@@ -86,3 +86,4 @@
 0086-keep-explicit-sidebar-collapse-closed.patch
 0087-add-native-cove-settings-window.patch
 0088-route-mac-application-menu-to-native-settings.patch
+0089-preserve-mixed-folder-and-pin-drag-order.patch
