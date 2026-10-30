@@ -1,0 +1,271 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "chrome/browser/ui/views/cove/cove_favorites_view.h"
+ 
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <string>
+@@ -185,6 +189,7 @@
+ }
+ 
+ CoveFavoritesView::~CoveFavoritesView() {
++  saved_drag_hover_lock_.reset();
+   tab_drag_destroy_callbacks_.Notify();
+ }
+ 
+@@ -397,11 +402,29 @@
+          views::View::ExceededDragThreshold(point - press_pt);
+ }
+ 
++void CoveFavoritesView::AcquireSavedDragHoverLock() {
++  if (saved_drag_hover_lock_ || !browser_) {
++    return;
++  }
++  const auto* state = tabs::VerticalTabStripStateController::From(browser_);
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
++  if (!state || !state->IsExpandOnHoverEnabled() || !browser_view ||
++      !browser_view->tab_strip_view()) {
++    return;
++  }
++  saved_drag_hover_lock_ = browser_view->tab_strip_view()->GetExpandOnHoverLock(
++      ExpandOnHoverLockType::kKeepExpanded);
++}
++
+ void CoveFavoritesView::OnWillStartDragForView(views::View* sender) {
+   source_drag_active_ = row_urls_.contains(sender);
++  if (source_drag_active_) {
++    AcquireSavedDragHoverLock();
++  }
+ }
+ 
+ void CoveFavoritesView::FinishSourceDrag() {
++  saved_drag_hover_lock_.reset();
+   source_drag_active_ = false;
+   if (!rebuild_after_drag_) return;
+   rebuild_after_drag_ = false;
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.h b/chrome/browser/ui/views/cove/cove_favorites_view.h
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.h
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.h
+@@ -27,6 +27,7 @@
+ #include "ui/views/view.h"
+ 
+ class BrowserWindowInterface;
++class ExpandOnHoverLock;
+ class GURL;
+ 
+ namespace favicon_base {
+@@ -78,6 +79,7 @@
+                            const gfx::Point& press_pt,
+                            const gfx::Point& point) override;
+   void OnWillStartDragForView(views::View* sender) override;
++  void FinishSavedDragHoverForTesting() { FinishSourceDrag(); }
+ 
+   // views::View:
+   bool GetDropFormats(int* formats,
+@@ -115,6 +117,8 @@
+                     ui::mojom::DragOperation& output,
+                     std::unique_ptr<ui::LayerTreeOwner> drag_image_layer);
+   void FinishSourceDrag();
++  void AcquireSavedDragHoverLock();
++  friend class CoveFavoritesDragBrowserTest;
+   void CommitLiveFavorite(tabs::TabHandle handle, FavoriteDrop drop);
+   void Rebuild();
+   void OpenFavorite(const GURL& url);
+@@ -127,6 +131,7 @@
+   base::CancelableTaskTracker favicon_task_tracker_;
+   bool collapsed_ = false;
+   bool source_drag_active_ = false;
++  std::unique_ptr<ExpandOnHoverLock> saved_drag_hover_lock_;
+   bool tab_drag_active_ = false;
+   std::optional<tabs::TabHandle> live_drag_handle_;
+   std::optional<FavoriteDrop> live_drop_;
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc
+@@ -8,7 +8,10 @@
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "base/test/run_until.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/prefs/pref_service.h"
+@@ -232,3 +235,38 @@
+                 favorites->children().front().get(), gfx::Point()));
+   EXPECT_FALSE(favorites->CanDrop(data));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveFavoritesDragBrowserTest,
++                       SourceDragKeepsHoverRevealUntilRelease) {
++  Seed();
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  controller->SetExpandOnHoverEnabled(true);
++  controller->RequestCollapse(true);
++  ASSERT_TRUE(base::test::RunUntil([&] { return controller->IsCollapsed(); }));
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* region = view->vertical_tab_strip_region_view_for_testing();
++  auto* favorites = Favorites();
++  ASSERT_TRUE(region);
++  ASSERT_TRUE(favorites);
++  const auto saved = Saved().Clone();
++  auto reveal =
++      region->GetExpandOnHoverLock(ExpandOnHoverLockType::kKeepExpanded);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return !favorites->children().empty();
++  }));
++  favorites->OnWillStartDragForView(favorites->children().front().get());
++  reveal.reset();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return region->is_expanded_on_hover() && favorites->IsDrawn();
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  favorites->FinishSavedDragHoverForTesting();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return !region->is_expanded_on_hover();
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  EXPECT_EQ(saved, Saved());
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -616,6 +616,41 @@
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SavedRowDragKeepsHoverRevealUntilRelease) {
++  Seed();
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  controller->SetExpandOnHoverEnabled(true);
++  controller->RequestCollapse(true);
++  ASSERT_TRUE(base::test::RunUntil([&] { return controller->IsCollapsed(); }));
++  Layout();
++  const auto pins = SavedSpace().FindList("pins")->Clone();
++  const auto folders = SavedSpace().FindList("folders")->Clone();
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* region = view->vertical_tab_strip_region_view_for_testing();
++  ASSERT_TRUE(region);
++  EXPECT_FALSE(library()->GetVisible());
++  library()->OnWillStartDragForView(nullptr);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return region->is_expanded_on_hover() && library()->IsDrawn();
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  library()->FinishSavedDragHoverForTesting();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return !region->is_expanded_on_hover() && !library()->GetVisible();
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  EXPECT_EQ(pins, *SavedSpace().FindList("pins"));
++  EXPECT_EQ(folders, *SavedSpace().FindList("folders"));
++  library()->OnWillStartDragForView(nullptr);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return region->is_expanded_on_hover();
++  }));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
+                        RightClickEmptySidebarCreatesNamedFolderRepeatedly) {
+   Seed();
+   {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -9,6 +9,10 @@
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++
+ #include <algorithm>
+ #include <optional>
+ #include <set>
+@@ -370,6 +374,7 @@
+ }
+ 
+ CoveSidebarLibraryView::~CoveSidebarLibraryView() {
++  saved_drag_hover_lock_.reset();
+   tab_drag_destroy_callbacks_.Notify();
+   TabStripModelObserver::StopObservingAll(this);
+ }
+@@ -2553,11 +2558,27 @@
+       views::View::ExceededDragThreshold(point - press);
+ }
+ 
++void CoveSidebarLibraryView::AcquireSavedDragHoverLock() {
++  if (saved_drag_hover_lock_ || !browser_) {
++    return;
++  }
++  const auto* state = tabs::VerticalTabStripStateController::From(browser_);
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
++  if (!state || !state->IsExpandOnHoverEnabled() || !browser_view ||
++      !browser_view->tab_strip_view()) {
++    return;
++  }
++  saved_drag_hover_lock_ = browser_view->tab_strip_view()->GetExpandOnHoverLock(
++      ExpandOnHoverLockType::kKeepExpanded);
++}
++
+ void CoveSidebarLibraryView::OnWillStartDragForView(views::View* sender) {
+   row_drag_active_ = true;
++  AcquireSavedDragHoverLock();
+ }
+ 
+ void CoveSidebarLibraryView::FinishRowDrag() {
++  saved_drag_hover_lock_.reset();
+   row_drag_active_ = false;
+   ClearDropIndicator();
+   if (rebuild_after_drag_) { rebuild_after_drag_ = false; Rebuild(); }
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -32,6 +32,7 @@
+ #include "ui/views/view_tracker.h"
+ 
+ class BrowserWindowInterface;
++class ExpandOnHoverLock;
+ class GURL;
+ namespace favicon_base {
+ struct FaviconImageResult;
+@@ -107,6 +108,7 @@
+   bool CanStartDragForView(views::View* sender, const gfx::Point& press,
+                            const gfx::Point& point) override;
+   void OnWillStartDragForView(views::View* sender) override;
++  void FinishSavedDragHoverForTesting() { FinishRowDrag(); }
+ 
+   void OnTabDragEntered() override;
+   TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
+@@ -157,6 +159,7 @@
+   void ShowDropIndicator(const DragLocation& location);
+   void ClearDropIndicator();
+   void FinishRowDrag();
++  void AcquireSavedDragHoverLock();
+   void PerformRowDrop(RowDragData source, DragLocation destination,
+                       const ui::DropTargetEvent& event,
+                       ui::mojom::DragOperation& operation,
+@@ -245,6 +248,7 @@
+   std::map<const views::View*, cove::SidebarItem> row_items_;
+   raw_ptr<views::View> drop_indicator_ = nullptr;
+   bool row_drag_active_ = false;
++  std::unique_ptr<ExpandOnHoverLock> saved_drag_hover_lock_;
+   bool rebuild_after_drag_ = false;
+   std::optional<tabs::TabHandle> live_drag_handle_;
+   std::optional<DragLocation> live_drop_;

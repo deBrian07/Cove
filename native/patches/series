@@ -93,3 +93,4 @@
 0093-cover-real-process-space-and-sidebar-restoration.patch
 0094-keep-long-saved-sidebars-and-live-tabs-scrollable.patch
 0095-polish-folder-rows-and-load-cached-pin-icons.patch
+0096-keep-sidebar-expanded-during-saved-drags.patch
