@@ -1,0 +1,568 @@
+diff --git a/chrome/app/cove_command_ids.h b/chrome/app/cove_command_ids.h
+--- a/chrome/app/cove_command_ids.h
++++ b/chrome/app/cove_command_ids.h
+@@ -25,12 +25,15 @@
+ #define IDC_COVE_SPLIT_STACKED 35085
+ #define IDC_COVE_SPLIT_SWAP 35086
+ #define IDC_COVE_SPLIT_RESET_RATIO 35087
++#define IDC_COVE_RECENT_TAB 35088
++#define IDC_COVE_RECENT_TAB_BACK 35089
+ #define IDC_COVE_SPACE_FIRST 35100
+ #define IDC_COVE_SPACE_LAST 35108
+ 
+ namespace cove {
+ constexpr bool IsLibraryCommand(int id) {
+   return (id >= IDC_COVE_NEXT_SPACE && id <= IDC_COVE_RENAME_SPACE) ||
++         id == IDC_COVE_RECENT_TAB || id == IDC_COVE_RECENT_TAB_BACK ||
+          (id >= IDC_COVE_SPACE_FIRST && id <= IDC_COVE_SPACE_LAST);
+ }
+ 
+diff --git a/chrome/browser/global_keyboard_shortcuts_mac.mm b/chrome/browser/global_keyboard_shortcuts_mac.mm
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -126,7 +126,11 @@
+ 
+         {false, true, true, false, kVK_ANSI_1, IDC_COVE_FOCUS_SPLIT_LEFT},
+       {false, true, true, false, kVK_ANSI_2, IDC_COVE_FOCUS_SPLIT_RIGHT},
+-    // Control-1..9 selects a Space; Command-1..9 continues selecting tabs.
++      // Control-Tab walks tabs in recently used order, as in Arc.
++      {false, false, true, false, kVK_Tab, IDC_COVE_RECENT_TAB},
++      {false, true, true, false, kVK_Tab, IDC_COVE_RECENT_TAB_BACK},
++
++      // Control-1..9 selects a Space; Command-1..9 continues selecting tabs.
+       {false, false, true, false, kVK_ANSI_1, IDC_COVE_SPACE_FIRST + 0},
+       {false, false, true, false, kVK_ANSI_2, IDC_COVE_SPACE_FIRST + 1},
+       {false, false, true, false, kVK_ANSI_3, IDC_COVE_SPACE_FIRST + 2},
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3575,6 +3575,12 @@
+       "views/frame/vertical_tab_strip_region_view.cc",
+       "views/frame/vertical_tab_strip_region_view.h",
+     ]
++    if (is_mac) {
++      sources += [
++        "views/cove/cove_modifier_keys.h",
++        "views/cove/cove_modifier_keys_mac.mm",
++      ]
++    }
+ 
+     sources += get_target_outputs(":webui_name_variants")
+ 
+diff --git a/chrome/browser/ui/cocoa/accelerators_cocoa.mm b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+--- a/chrome/browser/ui/cocoa/accelerators_cocoa.mm
++++ b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+@@ -113,9 +113,6 @@
+     {IDC_BOOKMARK_ALL_TABS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_D},
+     {IDC_MINIMIZE_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_M},
+-    {IDC_CYCLE_TO_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
+-    {IDC_CYCLE_TO_PREV_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+-     ui::VKEY_TAB},
+     {IDC_HELP_PAGE_VIA_MENU, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_OEM_2},
+     {IDC_TOGGLE_FULLSCREEN_TOOLBAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#import <Carbon/Carbon.h>
+ #import <Cocoa/Cocoa.h>
+ 
+ #include "base/command_line.h"
+@@ -12,6 +13,8 @@
+ #include "base/test/test_future.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
++#include "chrome/browser/global_keyboard_shortcuts_mac.h"
+ #import "chrome/browser/app_controller_mac.h"
+ #include "chrome/browser/prefs/session_startup_pref.h"
+ #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+@@ -378,3 +381,23 @@
+   EXPECT_TRUE(SettingsButton(window->GetContentsView(), u"General"));
+   window->CloseNow();
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       ControlTabMapsToRecentTabSwitcher) {
++  const auto command = [](NSEventModifierFlags flags) {
++    NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown
++                                      location:NSZeroPoint
++                                 modifierFlags:flags
++                                     timestamp:0
++                                  windowNumber:0
++                                       context:nil
++                                    characters:@"\t"
++                   charactersIgnoringModifiers:@"\t"
++                                     isARepeat:NO
++                                       keyCode:kVK_Tab];
++    return CommandForKeyEvent(event).chrome_command;
++  };
++  EXPECT_EQ(IDC_COVE_RECENT_TAB, command(NSEventModifierFlagControl));
++  EXPECT_EQ(IDC_COVE_RECENT_TAB_BACK,
++            command(NSEventModifierFlagControl | NSEventModifierFlagShift));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -32,6 +32,8 @@
+ #include "ui/gfx/image/image_skia_rep.h"
+ #include "ui/views/controls/label.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/app/cove_command_ids.h"
++#include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -1467,4 +1469,62 @@
+       EXPECT_FALSE(menu->IsEnabledAt(i));
+     }
+   }
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       ControlTabWalksTabsInRecentlyUsedOrder) {
++  Seed();
++  auto* model = browser()->GetTabStripModel();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Zero</title>")));
++  auto* zero = model->GetActiveWebContents();
++  auto* one = chrome::AddAndReturnTabAt(
++      browser(), GURL("data:text/html,<title>One</title>"), -1, true);
++  auto* two = chrome::AddAndReturnTabAt(
++      browser(), GURL("data:text/html,<title>Two</title>"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(two));
++  model->ActivateTabAt(model->GetIndexOfWebContents(zero));
++  ASSERT_EQ(zero, model->GetActiveWebContents());
++  ASSERT_TRUE(content::ExecJs(zero, "window.draft='zero'"));
++
++  bool held = true;
++  library()->SetControlKeyProbeForTesting(
++      base::BindLambdaForTesting([&] { return held; }));
++  // Recently used order is zero, two, one, not strip order.
++  EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB));
++  ASSERT_TRUE(library()->IsRecentTabSwitcherOpenForTesting());
++  EXPECT_TRUE(library()->RecentTabSwitcherForTesting()->IsVisible());
++  EXPECT_EQ(two, library()->RecentTabSwitcherSelectionForTesting());
++  EXPECT_EQ(zero, model->GetActiveWebContents());
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB);
++  EXPECT_EQ(one, library()->RecentTabSwitcherSelectionForTesting());
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB);
++  EXPECT_EQ(zero, library()->RecentTabSwitcherSelectionForTesting());
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB_BACK);
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB_BACK);
++  EXPECT_EQ(two, library()->RecentTabSwitcherSelectionForTesting());
++  library()->TickRecentTabSwitcherForTesting();
++  EXPECT_TRUE(library()->IsRecentTabSwitcherOpenForTesting());
++  Layout();
++
++  held = false;
++  library()->TickRecentTabSwitcherForTesting();
++  EXPECT_FALSE(library()->IsRecentTabSwitcherOpenForTesting());
++  EXPECT_EQ(two, model->GetActiveWebContents());
++
++  // A quick tap returns to the previous tab.
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return !library()->IsRecentTabSwitcherOpenForTesting(); }));
++  EXPECT_EQ(zero, model->GetActiveWebContents());
++  EXPECT_EQ("zero", content::EvalJs(zero, "window.draft"));
++
++  // Shift goes to the least recently used tab first; clicking a tab ends the
++  // switch there.
++  held = true;
++  chrome::ExecuteCommand(browser(), IDC_COVE_RECENT_TAB_BACK);
++  EXPECT_EQ(one, library()->RecentTabSwitcherSelectionForTesting());
++  model->ActivateTabAt(model->GetIndexOfWebContents(two));
++  EXPECT_FALSE(library()->IsRecentTabSwitcherOpenForTesting());
++  EXPECT_EQ(two, model->GetActiveWebContents());
+ }
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -63,6 +63,7 @@
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/cove/cove_name_dialog.h"
++#include "chrome/browser/ui/views/cove/cove_modifier_keys.h"
+ #include "chrome/browser/ui/views/cove/cove_folder_model.h"
+ #include "components/favicon/content/content_favicon_driver.h"
+ #include "chrome/browser/favicon/favicon_service_factory.h"
+@@ -101,6 +102,8 @@
+ #include "ui/views/controls/button/menu_button.h"
+ #include "ui/views/controls/button/menu_button_controller.h"
+ #include "ui/views/controls/label.h"
++#include "ui/views/controls/image_view.h"
++#include "ui/gfx/color_utils.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/layout/flex_layout.h"
+@@ -541,6 +544,7 @@
+ }
+ 
+ CoveSidebarLibraryView::~CoveSidebarLibraryView() {
++  CloseRecentTabSwitcher();
+   StopDragEdgeAutoscroll();
+   saved_drag_hover_lock_.reset();
+   tab_drag_destroy_callbacks_.Notify();
+@@ -572,7 +576,13 @@
+ void CoveSidebarLibraryView::OnTabStripModelChanged(
+     TabStripModel*,
+     const TabStripModelChange& change,
+-    const TabStripSelectionChange&) {
++    const TabStripSelectionChange& selection) {
++  if (selection.active_tab_changed() && !restoring_session_ &&
++      !switching_space_ && !closing_active_space_) {
++    // Clicking another tab while the switcher is open ends the switch there.
++    CloseRecentTabSwitcher();
++    NoteActiveTab();
++  }
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
+   }
+@@ -1632,6 +1642,9 @@
+ bool CoveSidebarLibraryView::CanExecuteArcCommand(int id) const {
+   if (!browser_ || browser_->GetProfile()->IsOffTheRecord() || switching_space_ ||
+       closing_active_space_) return false;
++  if (id == IDC_COVE_RECENT_TAB || id == IDC_COVE_RECENT_TAB_BACK) {
++    return browser_->GetTabStripModel()->count() > 1;
++  }
+   const auto spaces = GetSpaces();
+   if (id >= IDC_COVE_SPACE_FIRST && id <= IDC_COVE_SPACE_LAST)
+     return static_cast<size_t>(id - IDC_COVE_SPACE_FIRST) < spaces.size();
+@@ -1704,6 +1717,8 @@
+     return;
+   }
+   switch (id) {
++    case IDC_COVE_RECENT_TAB: StepRecentTab(true); break;
++    case IDC_COVE_RECENT_TAB_BACK: StepRecentTab(false); break;
+     case IDC_COVE_NEXT_SPACE: SelectAdjacentSpace(true); break;
+     case IDC_COVE_PREVIOUS_SPACE: SelectAdjacentSpace(false); break;
+     case IDC_COVE_NEW_SPACE:
+@@ -1760,6 +1775,7 @@
+       active_space_id_ == space_id) {
+     return;
+   }
++  CloseRecentTabSwitcher();
+   PrefService* prefs = browser_->GetProfile()->GetPrefs();
+   const auto* target = FindSpace(prefs->GetDict(kCoveSidebarPref), space_id);
+   if (!target) {
+@@ -3729,5 +3745,203 @@
+   if (folder_index >= 0 &&
+       folder_index < static_cast<int>(menu_folder_ids_.size())) {
+     MovePinToFolder(context_pin_id_, menu_folder_ids_[folder_index]);
++  }
++}
++
++namespace {
++constexpr size_t kRecentSwitcherRows = 8;
++constexpr int kRecentSwitcherWidth = 340;
++constexpr int kRecentSwitcherRowHeight = 34;
++constexpr base::TimeDelta kRecentSwitcherPoll = base::Milliseconds(16);
++}  // namespace
++
++void CoveSidebarLibraryView::NoteActiveTab() {
++  auto* tab = browser_ ? browser_->GetTabStripModel()->GetActiveTab() : nullptr;
++  if (!tab) {
++    return;
++  }
++  const auto handle = tab->GetHandle();
++  std::erase_if(recent_tabs_, [&](const tabs::TabHandle& item) {
++    return item == handle || !item.Get();
++  });
++  recent_tabs_.insert(recent_tabs_.begin(), handle);
++}
++
++std::vector<tabs::TabHandle> CoveSidebarLibraryView::RecentTabOrder() const {
++  TabStripModel* model = browser_->GetTabStripModel();
++  std::vector<tabs::TabHandle> order;
++  const auto add = [&](tabs::TabInterface* tab) {
++    if (tab && model->GetIndexOfTab(tab) != TabStripModel::kNoTab &&
++        !std::ranges::contains(order, tab->GetHandle())) {
++      order.push_back(tab->GetHandle());
++    }
++  };
++  // The shown tab leads even if it became active during a Space switch.
++  add(model->GetActiveTab());
++  for (const auto& handle : recent_tabs_) {
++    add(handle.Get());
++  }
++  for (auto* tab : *model) {
++    add(tab);
++  }
++  return order;
++}
++
++void CoveSidebarLibraryView::StepRecentTab(bool forward) {
++  if (!browser_ || switching_space_ || restoring_session_ ||
++      closing_active_space_) {
++    return;
++  }
++  if (!recent_switcher_) {
++    switcher_tabs_ = RecentTabOrder();
++    if (switcher_tabs_.size() < 2) {
++      return;
++    }
++    switcher_index_ = forward ? 1 : switcher_tabs_.size() - 1;
++    ShowRecentTabSwitcher();
++    return;
++  }
++  const size_t count = switcher_tabs_.size();
++  switcher_index_ = forward ? (switcher_index_ + 1) % count
++                            : (switcher_index_ + count - 1) % count;
++  UpdateRecentTabSwitcher();
++}
++
++content::WebContents*
++CoveSidebarLibraryView::RecentTabSwitcherSelectionForTesting() const {
++  if (!recent_switcher_ || switcher_index_ >= switcher_tabs_.size()) {
++    return nullptr;
++  }
++  auto* tab = switcher_tabs_.at(switcher_index_).Get();
++  return tab ? tab->GetContents() : nullptr;
++}
++
++void CoveSidebarLibraryView::ShowRecentTabSwitcher() {
++  views::Widget* parent = GetWidget() ? GetWidget()->GetTopLevelWidget()
++                                      : nullptr;
++  if (!parent) {
++    CommitRecentTab();
++    return;
++  }
++  views::Widget::InitParams params(
++      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
++      views::Widget::InitParams::TYPE_POPUP);
++  params.parent = parent->GetNativeView();
++  params.activatable = views::Widget::InitParams::Activatable::kNo;
++  params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
++  params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
++  params.name = "CoveRecentTabSwitcher";
++  recent_switcher_ = std::make_unique<views::Widget>(std::move(params));
++  recent_switcher_->SetContentsView(std::make_unique<views::View>());
++  UpdateRecentTabSwitcher();
++  recent_switcher_->ShowInactive();
++  // A quick Control-Tab tap is released before the first poll and switches
++  // straight to the previous tab, as in Arc.
++  switcher_release_timer_.Start(
++      FROM_HERE, kRecentSwitcherPoll,
++      base::BindRepeating(&CoveSidebarLibraryView::OnRecentTabSwitcherTick,
++                          base::Unretained(this)));
++}
++
++void CoveSidebarLibraryView::UpdateRecentTabSwitcher() {
++  if (!recent_switcher_) {
++    return;
+   }
++  auto* contents = recent_switcher_->GetContentsView();
++  contents->RemoveAllChildViews();
++  auto* layout = contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(8), 2));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++  const SkColor panel = MixColors(active_sidebar_, SK_ColorBLACK, 0.15f);
++  const SkColor text = color_utils::GetColorWithMaxContrast(panel);
++  contents->SetBackground(views::CreateRoundedRectBackground(panel, 12));
++
++  const size_t count = switcher_tabs_.size();
++  const size_t rows = std::min(count, kRecentSwitcherRows);
++  const size_t first =
++      switcher_index_ < rows ? 0 : switcher_index_ + 1 - rows;
++  for (size_t i = first; i < first + rows; ++i) {
++    auto* tab = switcher_tabs_.at(i).Get();
++    auto* row = contents->AddChildView(std::make_unique<views::View>());
++    auto* row_layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 10),
++        10));
++    row_layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    row->SetPreferredSize(
++        gfx::Size(kRecentSwitcherWidth - 16, kRecentSwitcherRowHeight));
++    if (i == switcher_index_) {
++      row->SetBackground(
++          views::CreateRoundedRectBackground(active_highlight_, 8));
++    }
++    auto* icon = row->AddChildView(std::make_unique<views::ImageView>());
++    icon->SetImageSize(gfx::Size(16, 16));
++    auto* driver = tab ? favicon::ContentFaviconDriver::FromWebContents(
++                             tab->GetContents())
++                       : nullptr;
++    if (driver && driver->FaviconIsValid() && !driver->GetFavicon().IsEmpty()) {
++      icon->SetImage(ui::ImageModel::FromImage(driver->GetFavicon()));
++    } else {
++      icon->SetImage(ui::ImageModel::FromVectorIcon(vector_icons::kGlobeIcon,
++                                                    text, 16));
++    }
++    std::u16string title = tab ? tab->GetContents()->GetTitle() : u"";
++    if (title.empty() && tab) {
++      title = base::UTF8ToUTF16(tab->GetContents()->GetVisibleURL().spec());
++    }
++    auto* label = row->AddChildView(std::make_unique<views::Label>(title));
++    // The panel is translucent, so text must use grayscale antialiasing.
++    label->SetSubpixelRenderingEnabled(false);
++    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    label->SetElideBehavior(gfx::ELIDE_TAIL);
++    label->SetEnabledColor(text);
++    label->SetAutoColorReadabilityEnabled(false);
++    row_layout->SetFlexForView(label, 1);
++  }
++
++  views::Widget* parent = recent_switcher_->parent();
++  const gfx::Rect window =
++      parent ? parent->GetWindowBoundsInScreen() : gfx::Rect();
++  const gfx::Size size(kRecentSwitcherWidth,
++                       contents->GetPreferredSize().height());
++  gfx::Rect bounds(size);
++  bounds.set_origin(gfx::Point(window.CenterPoint().x() - size.width() / 2,
++                               window.CenterPoint().y() - size.height() / 2));
++  recent_switcher_->SetBounds(bounds);
++  contents->InvalidateLayout();
++  contents->SchedulePaint();
+ }
++
++void CoveSidebarLibraryView::OnRecentTabSwitcherTick() {
++  const bool held =
++      control_key_probe_ ? control_key_probe_.Run() : CoveIsControlKeyDown();
++  if (!held) {
++    CommitRecentTab();
++  }
++}
++
++void CoveSidebarLibraryView::CommitRecentTab() {
++  tabs::TabInterface* tab = switcher_index_ < switcher_tabs_.size()
++                                ? switcher_tabs_.at(switcher_index_).Get()
++                                : nullptr;
++  CloseRecentTabSwitcher();
++  if (!tab || !browser_) {
++    return;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  const int index = model->GetIndexOfTab(tab);
++  if (index != TabStripModel::kNoTab) {
++    model->ActivateTabAt(index);
++  }
++}
++
++void CoveSidebarLibraryView::CloseRecentTabSwitcher() {
++  switcher_release_timer_.Stop();
++  switcher_tabs_.clear();
++  switcher_index_ = 0;
++  if (recent_switcher_) {
++    recent_switcher_->CloseNow();
++    recent_switcher_.reset();
++  }
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -23,6 +23,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/task/cancelable_task_tracker.h"
++#include "base/timer/timer.h"
+ #include "ui/base/models/image_model.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+@@ -40,9 +41,14 @@
+ struct FaviconImageResult;
+ }
+ 
++namespace content {
++class WebContents;
++}  // namespace content
++
+ namespace views {
+ class MenuRunner;
+ class LabelButton;
++class Widget;
+ }  // namespace views
+ 
+ // Sidebar library for the active Cove space: pinned pages, folders, and the
+@@ -134,6 +140,19 @@
+     return CommitExportSpace(source, target);
+   }
+   std::string ActivePinIdForTesting() const { return ActivePinId(); }
++  // Replaces the hardware Control-key probe so tests can "release" Control.
++  void SetControlKeyProbeForTesting(base::RepeatingCallback<bool()> probe) {
++    control_key_probe_ = std::move(probe);
++  }
++  void TickRecentTabSwitcherForTesting() { OnRecentTabSwitcherTick(); }
++  bool IsRecentTabSwitcherOpenForTesting() const {
++    return recent_switcher_ != nullptr;
++  }
++  views::Widget* RecentTabSwitcherForTesting() const {
++    return recent_switcher_.get();
++  }
++  // Highlighted tab while the switcher is open.
++  content::WebContents* RecentTabSwitcherSelectionForTesting() const;
+   bool HasParkedSpaceForTesting(const std::string& space_id) const {
+     return inactive_spaces_.contains(space_id);
+   }
+@@ -287,6 +306,17 @@
+   // its open tabs there and removes `source`. Other windows follow the saved
+   // redirect in ReconcileDeletedSpaces() instead of closing those tabs.
+   bool CommitExportSpace(std::string source, std::string target);
++  // Arc's Control-Tab: the first press opens the overlay on the previous tab;
++  // repeats move through tabs in recently used order. Releasing Control
++  // activates the highlighted tab.
++  void StepRecentTab(bool forward);
++  void NoteActiveTab();
++  std::vector<tabs::TabHandle> RecentTabOrder() const;
++  void ShowRecentTabSwitcher();
++  void UpdateRecentTabSwitcher();
++  void OnRecentTabSwitcherTick();
++  void CommitRecentTab();
++  void CloseRecentTabSwitcher();
+   // Resolves a removed Space to the Space it was exported into, if any.
+   std::string ExportedSpaceTarget(const std::string& space_id) const;
+   void EditSpaceIcon(std::string space_id);
+@@ -337,6 +367,13 @@
+   std::map<const views::View*, std::string> row_folder_ids_;
+   std::map<const views::View*, std::string> row_space_ids_;
+   bool reconcile_posted_ = false;
++  // Most recently active first. Includes parked tabs of other Spaces.
++  std::vector<tabs::TabHandle> recent_tabs_;
++  std::vector<tabs::TabHandle> switcher_tabs_;
++  size_t switcher_index_ = 0;
++  std::unique_ptr<views::Widget> recent_switcher_;
++  base::RepeatingTimer switcher_release_timer_;
++  base::RepeatingCallback<bool()> control_key_probe_;
+   std::string menu_space_id_;
+   std::map<int, std::string> menu_folder_moves_;
+   std::vector<std::string> menu_export_targets_;
+diff --git a/chrome/browser/ui/views/cove/cove_modifier_keys.h b/chrome/browser/ui/views/cove/cove_modifier_keys.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_modifier_keys.h
+@@ -0,0 +1,12 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_MODIFIER_KEYS_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_MODIFIER_KEYS_H_
++
++// True while the physical Control key is held. Reads the current hardware
++// modifier state, so it stays correct when a web page has keyboard focus.
++bool CoveIsControlKeyDown();
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_MODIFIER_KEYS_H_
+diff --git a/chrome/browser/ui/views/cove/cove_modifier_keys_mac.mm b/chrome/browser/ui/views/cove/cove_modifier_keys_mac.mm
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_modifier_keys_mac.mm
+@@ -0,0 +1,11 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_modifier_keys.h"
++
++#import <AppKit/AppKit.h>
++
++bool CoveIsControlKeyDown() {
++  return (NSEvent.modifierFlags & NSEventModifierFlagControl) != 0;
++}
