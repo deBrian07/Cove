@@ -1,0 +1,892 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3566,6 +3566,8 @@
+       "views/cove/cove_favorites_view.h",
+       "views/cove/cove_name_dialog.cc",
+       "views/cove/cove_name_dialog.h",
++      "views/cove/cove_settings_view.cc",
++      "views/cove/cove_settings_view.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/browser/ui/browser_actions.cc b/chrome/browser/ui/browser_actions.cc
+--- a/chrome/browser/ui/browser_actions.cc
++++ b/chrome/browser/ui/browser_actions.cc
+@@ -106,6 +106,7 @@
+ #include "chrome/browser/ui/browser_action_prefs_listener.h"
+ #include "chrome/browser/ui/browser_command_controller.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/views/cove/cove_settings_view.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -4031,7 +4032,7 @@
+                       profile_metrics::GetBrowserProfileType(
+                           bwi->GetProfile()));
+                 }
+-                chrome::ShowSettings(bwi);
++                ShowCoveSettings(webui::GetBrowserForOpeningWebUi(bwi));
+               },
+               bwi))
+           .SetActionId(kActionOptions)
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -62,6 +62,7 @@
+ #include "chrome/browser/ui/actions/command_action_updater.h"
+ #include "chrome/browser/ui/browser_actions.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/views/cove/cove_settings_view.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -1410,7 +1411,7 @@
+                           chrome::kPerformanceSubPage);
+       break;
+     case IDC_OPTIONS:
+-      ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
++      ShowCoveSettings(webui::GetBrowserForOpeningWebUi(browser_));
+       break;
+     case IDC_EDIT_SEARCH_ENGINES:
+       ShowSearchEngineSettings(webui::GetBrowserForOpeningWebUi(browser_));
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -6,22 +6,66 @@
+ 
+ #include "base/command_line.h"
+ #include "base/files/file_util.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/test/run_until.h"
+ #include "base/test/test_future.h"
++#include "base/threading/thread_restrictions.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/browser/prefs/session_startup_pref.h"
++#include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/cove/cove_settings_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tab_search_bubble_host.h"
++#include "chrome/common/pref_names.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "components/prefs/pref_service.h"
++#include "components/viz/common/frame_sinks/copy_output_request.h"
++#include "components/viz/common/frame_sinks/copy_output_result.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "ui/compositor/compositor.h"
++#include "ui/compositor/layer.h"
++#include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/scoped_animation_duration_scale_mode.h"
+-#include "ui/snapshot/snapshot.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/button/toggle_button.h"
++#include "ui/views/controls/textfield/textfield.h"
+ #include "ui/views/focus/focus_manager.h"
++#include "ui/views/test/button_test_api.h"
++#include "ui/views/view_utils.h"
+ #include "ui/views/widget/widget.h"
++
++namespace {
++// Copy only this test window's compositor. This includes layered Views without
++// reading the desktop or depending on macOS screen-recording permission.
++SkBitmap RenderWidget(views::Widget* widget) {
++  widget->LayoutRootViewIfNecessary();
++  base::test::TestFuture<std::unique_ptr<viz::CopyOutputResult>> captured;
++  auto request = std::make_unique<viz::CopyOutputRequest>(
++      viz::CopyOutputRequest::ResultFormat::RGBA,
++      viz::CopyOutputRequest::ResultDestination::kSystemMemory,
++      captured.GetCallback());
++  request->set_result_task_runner(
++      base::SequencedTaskRunner::GetCurrentDefault());
++  auto* compositor = widget->GetCompositor();
++  compositor->root_layer()->RequestCopyOfOutput(std::move(request));
++  compositor->ScheduleDraw();
++  auto result = captured.Take();
++  if (!result) {
++    return SkBitmap();
++  }
++  auto bitmap = result->ScopedAccessSkBitmap();
++  return bitmap.GetOutScopedBitmap();
++}
++}  // namespace
+ 
+ class CoveCaptionButtonsBrowserTest : public InProcessBrowserTest {
+  protected:
+@@ -101,15 +145,12 @@
+       base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+           "cove-palette-snapshot");
+   if (!image.empty()) {
+-    base::test::TestFuture<scoped_refptr<base::RefCountedMemory>> snapshot;
+-    ui::GrabWindowSnapshotAsPNG(
+-        palette->GetNativeWindow(),
+-        gfx::Rect(palette->GetWindowBoundsInScreen().size()),
+-        snapshot.GetCallback());
+-    auto data = snapshot.Take();
++    base::ScopedAllowBlockingForTesting allow_artifact_write;
++    palette->LayoutRootViewIfNecessary();
++    auto data = gfx::PNGCodec::EncodeBGRASkBitmap(RenderWidget(palette), false);
+     ASSERT_TRUE(data);
+-    ASSERT_FALSE(base::span(*data).empty());
+-    ASSERT_TRUE(base::WriteFile(image, base::span(*data)));
++    ASSERT_FALSE(data->empty());
++    ASSERT_TRUE(base::WriteFile(image, *data));
+   }
+ 
+   chrome::ToggleCollapseVerticalTabs(browser());
+@@ -152,3 +193,127 @@
+   EXPECT_TRUE(region->Contains(view->GetFocusManager()->GetFocusedView()));
+   ExpectHidden(false);
+ }
++
++namespace {
++views::LabelButton* SettingsButton(views::View* view,
++                                   std::u16string_view text) {
++  if (auto* button = views::AsViewClass<views::LabelButton>(view);
++      button && button->GetText() == text) {
++    return button;
++  }
++  for (const auto& child : view->children()) {
++    if (auto* button = SettingsButton(child.get(), text)) {
++      return button;
++    }
++  }
++  return nullptr;
++}
++views::ToggleButton* SettingsToggle(views::View* view,
++                                    std::u16string_view name) {
++  if (auto* toggle = views::AsViewClass<views::ToggleButton>(view);
++      toggle && toggle->GetViewAccessibility().GetCachedName() == name) {
++    return toggle;
++  }
++  for (const auto& child : view->children()) {
++    if (auto* toggle = SettingsToggle(child.get(), name)) {
++      return toggle;
++    }
++  }
++  return nullptr;
++}
++}  // namespace
++
++class CoveSettingsBrowserTest : public InProcessBrowserTest {};
++
++IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
++                       StartupTogglePreservesCustomURLs) {
++  SessionStartupPref original(SessionStartupPref::URLS);
++  original.urls = {GURL("https://example.test/one"),
++                   GURL("https://example.test/two")};
++  SessionStartupPref::SetStartupPref(browser()->GetProfile(), original);
++  auto* window = ShowCoveSettings(browser());
++  ASSERT_TRUE(window);
++  EXPECT_EQ(window, ShowCoveSettings(browser()));
++  auto* toggle = SettingsToggle(window->GetContentsView(),
++                                u"Restore windows from the previous session");
++  ASSERT_TRUE(toggle);
++  EXPECT_FALSE(toggle->GetIsOn());
++  views::test::ButtonTestApi(toggle).NotifyDefaultMouseClick();
++  auto enabled = SessionStartupPref::GetStartupPref(browser()->GetProfile());
++  EXPECT_EQ(SessionStartupPref::LAST_AND_URLS, enabled.type);
++  EXPECT_EQ(original.urls, enabled.urls);
++  views::test::ButtonTestApi(toggle).NotifyDefaultMouseClick();
++  auto disabled = SessionStartupPref::GetStartupPref(browser()->GetProfile());
++  EXPECT_EQ(SessionStartupPref::URLS, disabled.type);
++  EXPECT_EQ(original.urls, disabled.urls);
++  window->CloseNow();
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
++                       NativeSectionsAndProfilePreference) {
++  auto* window = ShowCoveSettings(browser());
++  ASSERT_TRUE(window);
++  auto* prefs = browser()->GetProfile()->GetPrefs();
++  const bool old_prompt = prefs->GetBoolean(prefs::kPromptForDownload);
++  auto* prompt = SettingsToggle(window->GetContentsView(),
++                                u"Ask where to save each download");
++  ASSERT_TRUE(prompt);
++  EXPECT_TRUE(prompt->IsDrawn());
++  EXPECT_GT(prompt->height(), 0);
++  views::test::ButtonTestApi(prompt).NotifyDefaultMouseClick();
++  EXPECT_EQ(!old_prompt, prefs->GetBoolean(prefs::kPromptForDownload));
++
++  const auto folder =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
++          "cove-settings-snapshots");
++  if (!folder.empty()) {
++    base::ScopedAllowBlockingForTesting allow_artifact_write;
++    ASSERT_TRUE(base::CreateDirectory(folder));
++  }
++  for (const auto* tab : {u"General", u"Profiles", u"Appearance", u"Links",
++                          u"Shortcuts", u"Advanced"}) {
++    auto* button = SettingsButton(window->GetContentsView(), tab);
++    ASSERT_TRUE(button);
++    views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
++    window->LayoutRootViewIfNecessary();
++    if (std::u16string_view(tab) == u"Profiles") {
++      EXPECT_TRUE(
++          SettingsButton(window->GetContentsView(), u"Open Google account…"));
++      EXPECT_TRUE(
++          SettingsButton(window->GetContentsView(), u"Manage profiles…"));
++    }
++    if (!folder.empty()) {
++      base::ScopedAllowBlockingForTesting allow_artifact_write;
++      auto image =
++          gfx::PNGCodec::EncodeBGRASkBitmap(RenderWidget(window), false);
++      ASSERT_TRUE(image);
++      ASSERT_TRUE(base::WriteFile(
++          folder.Append(base::UTF16ToUTF8(tab) + ".png"), *image));
++    }
++  }
++  window->CloseNow();
++  auto* reopened = ShowCoveSettings(browser());
++  ASSERT_TRUE(reopened);
++  prompt = SettingsToggle(reopened->GetContentsView(),
++                          u"Ask where to save each download");
++  ASSERT_TRUE(prompt);
++  EXPECT_EQ(!old_prompt, prompt->GetIsOn());
++  reopened->CloseNow();
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
++                       SettingsCommandOpensNativeWindowAndActionsReleaseIt) {
++  ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_OPTIONS));
++  auto* window = ShowCoveSettings(browser());
++  ASSERT_TRUE(window);
++  auto weak_window = window->GetWeakPtr();
++  auto* button = SettingsButton(window->GetContentsView(), u"Search settings…");
++  ASSERT_TRUE(button);
++  views::test::ButtonTestApi(button).NotifyDefaultMouseClick();
++  EXPECT_FALSE(weak_window);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++    return contents &&
++           contents->GetVisibleURL() == GURL("chrome://settings/search");
++  }));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_settings_view.cc b/chrome/browser/ui/views/cove/cove_settings_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_settings_view.cc
+@@ -0,0 +1,576 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/views/cove/cove_settings_view.h"
++
++#include <array>
++#include <iterator>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/no_destructor.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "build/build_config.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/app/cove_command_ids.h"
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/prefs/session_startup_pref.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/themes/theme_service.h"
++#include "chrome/browser/themes/theme_service_factory.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/chrome_pages.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/profiles/profile_picker.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++#include "ui/base/accelerators/accelerator.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/mojom/dialog_button.mojom.h"
++#include "ui/base/window_open_disposition.h"
++#include "ui/gfx/font_list.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/button/toggle_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/controls/scroll_view.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/controls/textfield/textfield_controller.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/window/dialog_delegate.h"
++
++namespace {
++constexpr SkColor kSurface = SkColorSetRGB(24, 25, 28);
++constexpr SkColor kCard = SkColorSetRGB(30, 31, 35);
++constexpr SkColor kLine = SkColorSetRGB(53, 54, 59);
++constexpr SkColor kText = SkColorSetRGB(230, 231, 236);
++constexpr SkColor kMuted = SkColorSetRGB(151, 153, 165);
++constexpr SkColor kBlue = SkColorSetRGB(92, 125, 245);
++constexpr SkColor kSelected = SkColorSetRGB(43, 54, 86);
++constexpr std::array<const char*, 6> kPages = {
++    "General", "Profiles", "Appearance", "Links", "Shortcuts", "Advanced"};
++
++views::BoxLayout* Column(views::View* view, int gap = 12) {
++  auto* layout = view->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), gap));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++  return layout;
++}
++views::Label* Label(views::View* parent,
++                    std::u16string text,
++                    SkColor color = kText) {
++  auto* label = parent->AddChildView(std::make_unique<views::Label>(text));
++  label->SetEnabledColor(color);
++  label->SetAutoColorReadabilityEnabled(false);
++  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  return label;
++}
++views::LabelButton* Button(views::View* parent,
++                           std::u16string text,
++                           views::Button::PressedCallback callback) {
++  auto* button = parent->AddChildView(
++      std::make_unique<views::LabelButton>(std::move(callback), text));
++  button->SetEnabledTextColors(kText);
++  button->SetBackground(views::CreateRoundedRectBackground(kLine, 6));
++  button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(7, 12)));
++  button->GetViewAccessibility().SetName(text);
++  return button;
++}
++
++class CoveSettingsView : public views::View, public views::TextfieldController {
++  METADATA_HEADER(CoveSettingsView, views::View)
++ public:
++  explicit CoveSettingsView(BrowserWindowInterface* browser)
++      : browser_(browser->GetWeakPtr()) {
++    SetBackground(views::CreateSolidBackground(kSurface));
++    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(20, 24)));
++    auto* layout = Column(this, 18);
++    auto* navigation = AddChildView(std::make_unique<views::View>());
++    navigation->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
++    for (size_t i = 0; i < std::size(kPages); ++i) {
++      tabs_.push_back(Button(navigation, base::ASCIIToUTF16(kPages[i]),
++                             base::BindRepeating(&CoveSettingsView::ShowPage,
++                                                 base::Unretained(this), i)));
++    }
++    auto* scroll = AddChildView(std::make_unique<views::ScrollView>());
++    scroll->SetBackgroundColor(kSurface);
++    scroll->ClipHeightTo(320, 520);
++    auto body = std::make_unique<views::View>();
++    body_ = body.get();
++    Column(body_, 16);
++    scroll->SetContents(std::move(body));
++    layout->SetFlexForView(scroll, 1);
++    SetPreferredSize(gfx::Size(720, 640));
++    ShowPage(0);
++  }
++  ~CoveSettingsView() override = default;
++
++ private:
++  PrefService* Prefs() const {
++    return browser_ ? browser_->GetProfile()->GetPrefs() : nullptr;
++  }
++  views::View* Card(std::u16string title) {
++    auto* card = body_->AddChildView(std::make_unique<views::View>());
++    card->SetBackground(views::CreateRoundedRectBackground(kCard, 8));
++    card->SetBorder(views::CreateRoundedRectBorder(1, 8, kLine));
++    auto* contents = card->AddChildView(std::make_unique<views::View>());
++    card->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kVertical, gfx::Insets(14), 0));
++    Column(contents, 8);
++    auto* heading = Label(contents, std::move(title), kMuted);
++    heading->SetFontList(gfx::FontList().DeriveWithSizeDelta(-1));
++    return contents;
++  }
++  views::View* Row(views::View* card, std::u16string title) {
++    auto* row = card->AddChildView(std::make_unique<views::View>());
++    auto* layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(5, 0), 12));
++    layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    layout->SetFlexForView(Label(row, std::move(title)), 1);
++    return row;
++  }
++  void Description(std::u16string text) {
++    auto* label = Label(body_, std::move(text), kMuted);
++    label->SetMultiLine(true);
++  }
++  void Action(views::View* card,
++              std::u16string title,
++              std::u16string action,
++              base::RepeatingClosure callback) {
++    Button(Row(card, std::move(title)), std::move(action),
++           base::BindRepeating(&CoveSettingsView::RunAction,
++                               base::Unretained(this), std::move(callback)));
++  }
++  void RunAction(base::RepeatingClosure callback) {
++    // Closing can destroy this View. Keep the action on the stack and access
++    // no members after Close(), so the destination opens unobscured.
++    if (auto* window = GetWidget()) {
++      window->Close();
++    }
++    callback.Run();
++  }
++  base::RepeatingClosure Settings(std::string page) {
++    return base::BindRepeating(
++        [](base::WeakPtr<BrowserWindowInterface> browser, std::string page) {
++          if (browser) {
++            chrome::ShowSettingsSubPage(browser.get(), page);
++          }
++        },
++        browser_, std::move(page));
++  }
++  views::ToggleButton* Toggle(views::View* card,
++                              std::u16string title,
++                              bool value,
++                              base::RepeatingClosure callback,
++                              bool enabled = true) {
++    auto name = title;
++    auto* toggle = Row(card, std::move(title))
++                       ->AddChildView(std::make_unique<views::ToggleButton>(
++                           std::move(callback)));
++    toggle->SetIsOn(value);
++    toggle->SetEnabled(enabled);
++    toggle->SetTrackOnColor(kBlue);
++    toggle->GetViewAccessibility().SetName(name);
++    return toggle;
++  }
++  void PrefToggle(views::View* card,
++                  std::u16string title,
++                  const char* name,
++                  bool local = false) {
++    auto* prefs = local ? g_browser_process->local_state() : Prefs();
++    const auto* pref = prefs ? prefs->FindPreference(name) : nullptr;
++    if (!pref) {
++      return;
++    }
++    Toggle(
++        card, std::move(title), prefs->GetBoolean(name),
++        base::BindRepeating(
++            [](base::WeakPtr<BrowserWindowInterface> browser,
++               const char* pref_name, bool local_state) {
++              if (!browser) {
++                return;
++              }
++              auto* service = local_state ? g_browser_process->local_state()
++                                          : browser->GetProfile()->GetPrefs();
++              const auto* preference = service->FindPreference(pref_name);
++              if (preference && preference->IsUserModifiable()) {
++                service->SetBoolean(pref_name, !service->GetBoolean(pref_name));
++              }
++            },
++            browser_, name, local),
++        pref->IsUserModifiable());
++  }
++  void ShowPage(size_t page) {
++    if (!browser_) {
++      return;
++    }
++    shortcut_rows_ = nullptr;
++    search_ = nullptr;
++    theme_buttons_.clear();
++    body_->RemoveAllChildViews();
++    for (size_t i = 0; i < tabs_.size(); ++i) {
++      tabs_[i]->SetBackground(views::CreateRoundedRectBackground(
++          i == page ? kSelected : kSurface, 7));
++      tabs_[i]->SetEnabledTextColors(i == page ? kBlue : kMuted);
++    }
++    switch (page) {
++      case 0:
++        General();
++        break;
++      case 1:
++        Profiles();
++        break;
++      case 2:
++        Appearance();
++        break;
++      case 3:
++        Links();
++        break;
++      case 4:
++        Shortcuts();
++        break;
++      case 5:
++        Advanced();
++        break;
++    }
++    InvalidateLayout();
++  }
++  void General() {
++    Description(u"Make Cove feel at home.");
++    auto* startup = Card(u"STARTUP");
++    auto pref = SessionStartupPref::GetStartupPref(browser_->GetProfile());
++    Toggle(startup, u"Restore windows from the previous session",
++           pref.type == SessionStartupPref::LAST ||
++               pref.type == SessionStartupPref::LAST_AND_URLS,
++           base::BindRepeating(
++               [](base::WeakPtr<BrowserWindowInterface> browser) {
++                 if (!browser) {
++                   return;
++                 }
++                 auto* profile = browser->GetProfile();
++                 if (SessionStartupPref::TypeIsManaged(profile->GetPrefs())) {
++                   return;
++                 }
++                 auto pref = SessionStartupPref::GetStartupPref(profile);
++                 switch (pref.type) {
++                   case SessionStartupPref::LAST:
++                     pref.type = SessionStartupPref::DEFAULT;
++                     break;
++                   case SessionStartupPref::LAST_AND_URLS:
++                     pref.type = SessionStartupPref::URLS;
++                     break;
++                   case SessionStartupPref::URLS:
++                     pref.type = SessionStartupPref::LAST_AND_URLS;
++                     break;
++                   default:
++                     pref.type = SessionStartupPref::LAST;
++                     break;
++                 }
++                 SessionStartupPref::SetStartupPref(profile, pref);
++               },
++               browser_),
++           !SessionStartupPref::TypeIsManaged(Prefs()));
++#if BUILDFLAG(IS_MAC)
++    PrefToggle(startup, u"Ask before quitting", prefs::kConfirmToQuitEnabled,
++               true);
++#endif
++    auto* browsing = Card(u"BROWSING");
++    Action(browsing, u"Default search engine", u"Search settings…",
++           Settings("search"));
++    Action(browsing, u"Default browser", u"Manage…",
++           Settings("defaultBrowser"));
++    auto* downloads = Card(u"DOWNLOADS");
++    PrefToggle(downloads, u"Ask where to save each download",
++               prefs::kPromptForDownload);
++    Action(downloads, u"Download location", u"Choose…", Settings("downloads"));
++  }
++  void Profiles() {
++    Description(
++        u"Profiles keep history, cookies, passwords and extensions separate.");
++    auto* account = Card(u"CURRENT PROFILE");
++    auto name = base::UTF8ToUTF16(Prefs()->GetString(prefs::kProfileName));
++    // Present the upstream automatic placeholder using Cove's vocabulary.
++    // Never rename the stored profile or mask a name chosen by the user.
++    if (Prefs()->GetBoolean(prefs::kProfileUsingDefaultName) &&
++        name == u"Your Chromium") {
++      name = u"Personal";
++    }
++    Label(account, name)->SetFontList(gfx::FontList().DeriveWithSizeDelta(4));
++    Action(account, u"Google account", u"Open Google account…",
++           base::BindRepeating(
++               [](base::WeakPtr<BrowserWindowInterface> browser) {
++                 if (!browser) {
++                   return;
++                 }
++                 NavigateParams params(browser.get(),
++                                       GURL("https://myaccount.google.com/"),
++                                       ui::PAGE_TRANSITION_AUTO_BOOKMARK);
++                 params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++                 Navigate(&params);
++               },
++               browser_));
++    Action(account, u"Browser profiles", u"Manage profiles…",
++           base::BindRepeating([] {
++             ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
++                 ProfilePicker::EntryPoint::kProfileMenuManageProfiles));
++           }));
++    auto* data = Card(u"YOUR DATA");
++    Action(data, u"Passwords", u"Open…",
++           base::BindRepeating(
++               [](base::WeakPtr<BrowserWindowInterface> browser) {
++                 if (browser) {
++                   chrome::ShowPasswordManager(browser.get());
++                 }
++               },
++               browser_));
++    Action(data, u"Payment methods", u"Manage…", Settings("payments"));
++    Action(data, u"Privacy and security", u"Open…", Settings("privacy"));
++  }
++  void SetScheme(ThemeService::BrowserColorScheme scheme) {
++    if (!browser_ || !Prefs()
++                          ->FindPreference(prefs::kBrowserColorScheme)
++                          ->IsUserModifiable()) {
++      return;
++    }
++    ThemeServiceFactory::GetForProfile(browser_->GetProfile())
++        ->SetBrowserColorScheme(scheme);
++    RefreshThemeButtons();
++  }
++  void RefreshThemeButtons() {
++    if (!browser_) {
++      return;
++    }
++    auto scheme = ThemeServiceFactory::GetForProfile(browser_->GetProfile())
++                      ->GetBrowserColorScheme();
++    for (size_t i = 0; i < theme_buttons_.size(); ++i) {
++      theme_buttons_[i]->SetBackground(views::CreateRoundedRectBackground(
++          static_cast<size_t>(scheme) == i ? kSelected : kLine, 6));
++    }
++  }
++  void Appearance() {
++    Description(
++        u"Choose your browser appearance and how the sidebar reveals itself.");
++    auto* theme = Card(u"APPEARANCE");
++    auto* row = Row(theme, u"Color scheme");
++    const std::array<const char*, 3> names = {"System", "Light", "Dark"};
++    for (size_t i = 0; i < std::size(names); ++i) {
++      theme_buttons_.push_back(
++          Button(row, base::ASCIIToUTF16(names[i]),
++                 base::BindRepeating(
++                     &CoveSettingsView::SetScheme, base::Unretained(this),
++                     static_cast<ThemeService::BrowserColorScheme>(i))));
++    }
++    RefreshThemeButtons();
++    Action(theme, u"Colors, fonts and page zoom", u"Customize…",
++           Settings("appearance"));
++    if (auto* state =
++            tabs::VerticalTabStripStateController::From(browser_.get())) {
++      auto* sidebar = Card(u"SIDEBAR");
++      Toggle(
++          sidebar, u"Reveal the hidden sidebar on hover",
++          state->IsExpandOnHoverEnabled(),
++          base::BindRepeating(
++              [](base::WeakPtr<BrowserWindowInterface> browser) {
++                if (browser) {
++                  if (auto* state = tabs::VerticalTabStripStateController::From(
++                          browser.get())) {
++                    state->SetExpandOnHoverEnabled(
++                        !state->IsExpandOnHoverEnabled());
++                  }
++                }
++              },
++              browser_));
++    }
++  }
++  void Links() {
++    Description(
++        u"Control how websites open new windows and handle external links.");
++    auto* links = Card(u"LINKS AND WINDOWS");
++    Action(links, u"Pop-ups and redirects", u"Manage…",
++           Settings("content/popups"));
++    Action(links, u"Protocol handlers", u"Manage…", Settings("handlers"));
++    Action(links, u"Default browser", u"Manage…", Settings("defaultBrowser"));
++    Action(links, u"Site permissions", u"Open…", Settings("content"));
++  }
++  void Shortcuts() {
++    Description(u"Find the shortcuts currently assigned to Cove commands.");
++    search_ = body_->AddChildView(std::make_unique<views::Textfield>());
++    search_->SetPlaceholderText(u"Search commands or shortcuts");
++    search_->GetViewAccessibility().SetName(u"Search shortcuts");
++    search_->set_controller(this);
++    search_->SetBackgroundColor(kCard);
++    search_->SetColor(kText);
++    search_->SetBorder(views::CreatePaddedBorder(
++        views::CreateRoundedRectBorder(1, 6, kLine), gfx::Insets::VH(10, 12)));
++    shortcut_rows_ = Card(u"KEYBOARD SHORTCUTS");
++    RebuildShortcuts();
++  }
++  void RebuildShortcuts() {
++    if (!browser_ || !shortcut_rows_ || !search_) {
++      return;
++    }
++    shortcut_rows_->RemoveAllChildViews();
++    struct Shortcut {
++      int id;
++      const char* name;
++    };
++    constexpr Shortcut entries[] = {
++        {IDC_NEW_TAB, "New tab / command bar"},
++        {IDC_FOCUS_LOCATION, "Address and search"},
++        {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, "Show or hide sidebar"},
++        {IDC_NEW_WINDOW, "New window"},
++        {IDC_NEW_INCOGNITO_WINDOW, "New incognito window"},
++        {IDC_CLOSE_TAB, "Close tab"},
++        {IDC_RESTORE_TAB, "Reopen closed tab"},
++        {IDC_COVE_NEW_SPACE, "New Space"},
++        {IDC_COVE_NEXT_SPACE, "Next Space"},
++        {IDC_COVE_PREVIOUS_SPACE, "Previous Space"},
++        {IDC_COVE_NEW_FOLDER, "New folder"},
++        {IDC_COVE_TOGGLE_FAVORITE, "Favorite tab"},
++        {IDC_COVE_CLEAR_TODAY, "Clear Today"},
++        {IDC_COVE_RESET_PIN, "Reset tab to saved URL"},
++        {IDC_COVE_RESET_SPACE, "Reset Space"},
++        {IDC_COVE_FOCUS_SPLIT_LEFT, "Focus first split pane"},
++        {IDC_COVE_FOCUS_SPLIT_RIGHT, "Focus second split pane"},
++        {IDC_BACK, "Back"},
++        {IDC_FORWARD, "Forward"},
++        {IDC_RELOAD, "Reload"},
++        {IDC_FIND, "Find in page"},
++        {IDC_FULLSCREEN, "Full screen"},
++        {IDC_OPTIONS, "Settings"},
++        {IDC_PRINT, "Print"},
++        {IDC_SHOW_DOWNLOADS, "Downloads"},
++        {IDC_SHOW_HISTORY, "History"},
++    };
++    const auto query = base::ToLowerASCII(search_->GetText());
++    size_t matches = 0;
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser_.get());
++    for (const auto& entry : entries) {
++      const auto title = base::ASCIIToUTF16(entry.name);
++      ui::Accelerator accelerator;
++      const auto key = view && view->GetAccelerator(entry.id, &accelerator)
++                           ? accelerator.GetShortcutText()
++                           : u"Unassigned";
++      if (!query.empty() &&
++          base::ToLowerASCII(title + u" " + key).find(query) ==
++              std::u16string::npos) {
++        continue;
++      }
++      Label(Row(shortcut_rows_, title), key, kMuted);
++      ++matches;
++    }
++    if (!matches) {
++      Label(shortcut_rows_, u"No matching shortcuts", kMuted);
++    }
++  }
++  void ContentsChanged(views::Textfield* sender,
++                       const std::u16string&) override {
++    if (sender == search_) {
++      RebuildShortcuts();
++    }
++  }
++  void Advanced() {
++    Description(u"Review privacy, performance and browser data controls.");
++    auto* privacy = Card(u"PRIVACY");
++    PrefToggle(privacy, u"Send a Do Not Track request",
++               prefs::kEnableDoNotTrack);
++    Action(privacy, u"Security", u"Manage…", Settings("security"));
++    Action(privacy, u"Cookies and site data", u"Manage…", Settings("cookies"));
++    auto* browser = Card(u"BROWSER");
++    Action(browser, u"Performance", u"Open…", Settings("performance"));
++    Action(browser, u"Accessibility", u"Open…", Settings("accessibility"));
++    Action(browser, u"All browser settings", u"More settings…", Settings(""));
++    Action(browser, u"Import browser data", u"Import…",
++           base::BindRepeating(
++               [](base::WeakPtr<BrowserWindowInterface> browser) {
++                 if (browser) {
++                   chrome::ShowImportDialog(browser.get());
++                 }
++               },
++               browser_));
++  }
++  base::WeakPtr<BrowserWindowInterface> browser_;
++  raw_ptr<views::View> body_ = nullptr;
++  raw_ptr<views::View> shortcut_rows_ = nullptr;
++  raw_ptr<views::Textfield> search_ = nullptr;
++  std::vector<raw_ptr<views::LabelButton>> tabs_;
++  std::vector<raw_ptr<views::LabelButton>> theme_buttons_;
++};
++BEGIN_METADATA(CoveSettingsView)
++END_METADATA
++
++// The native window owns no profile data. Its callbacks use the originating
++// browser's weak pointer, and the Widget is destroyed before its delegate.
++class CoveSettingsWindow {
++ public:
++  views::Widget* Show(BrowserWindowInterface* browser) {
++    if (widget_ && !widget_->IsClosed() && browser_.get() == browser) {
++      widget_->Show();
++      widget_->Activate();
++      return widget_.get();
++    }
++    Reset();
++    browser_ = browser->GetWeakPtr();
++    delegate_ = std::make_unique<views::DialogDelegate>();
++    delegate_->SetTitle(u"Cove Settings");
++    delegate_->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
++    delegate_->SetCanResize(true);
++    delegate_->set_margins(gfx::Insets());
++    delegate_->SetContentsView(std::make_unique<CoveSettingsView>(browser));
++    widget_ = std::make_unique<views::Widget>();
++    widget_->set_frame_type(views::Widget::FrameType::kForceNative);
++    views::Widget::InitParams params(
++        views::Widget::InitParams::CLIENT_OWNS_WIDGET);
++    params.delegate = delegate_.get();
++    params.name = "CoveSettings";
++    params.parent = BrowserView::GetBrowserViewForBrowser(browser)
++                        ->GetWidget()
++                        ->GetNativeView();
++    widget_->Init(std::move(params));
++    widget_->MakeCloseSynchronous(
++        base::BindOnce([](CoveSettingsWindow* owner,
++                          views::Widget::ClosedReason) { owner->Reset(); },
++                       base::Unretained(this)));
++    widget_->CenterWindow(gfx::Size(720, 640));
++    widget_->Show();
++    return widget_.get();
++  }
++
++ private:
++  void Reset() {
++    // Disarm the close callback before deletion to avoid reentering Reset when
++    // a parent window or a different profile replaces this native window.
++    if (widget_) {
++      widget_->MakeCloseSynchronous({});
++    }
++    widget_.reset();
++    delegate_.reset();
++    browser_.reset();
++  }
++  base::WeakPtr<BrowserWindowInterface> browser_;
++  std::unique_ptr<views::DialogDelegate> delegate_;
++  std::unique_ptr<views::Widget> widget_;
++};
++}  // namespace
++
++views::Widget* ShowCoveSettings(BrowserWindowInterface* browser) {
++  if (!browser || !BrowserView::GetBrowserViewForBrowser(browser)) {
++    return nullptr;
++  }
++  static base::NoDestructor<CoveSettingsWindow> window;
++  return window->Show(browser);
++}
+diff --git a/chrome/browser/ui/views/cove/cove_settings_view.h b/chrome/browser/ui/views/cove/cove_settings_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_settings_view.h
+@@ -0,0 +1,12 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_SETTINGS_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_SETTINGS_VIEW_H_
++class BrowserWindowInterface;
++namespace views {
++class Widget;
++}
++// Opens the native settings window for this browser's profile.
++views::Widget* ShowCoveSettings(BrowserWindowInterface* browser);
++#endif
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -436,7 +436,7 @@
+       "//components/ukm:ukm_test_helper",
+       "//components/web_modal",
+       "//ui/compositor:test_support",
+-      "//ui/snapshot",
++      "//ui/gfx/codec",
+     ]
+ 
+     # Non-android deps for "test_support" target.
+@@ -1673,7 +1673,8 @@
+       "//testing/gtest",
+       "//ui/base",
+       "//ui/compositor",
+-      "//ui/snapshot",
++      "//ui/gfx/codec",
++      "//components/viz/common",
+     ]
+     data_deps = [ "//chrome:packed_resources" ]
+   }
