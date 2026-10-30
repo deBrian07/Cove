@@ -69,6 +69,8 @@
   "chrome/browser/ui/views/tabs/common/tab_strip_view.cc": "c517b80c8d476f912efc7b464af02e9f3895d1259df9fd5283073f29684a05b0",
   "chrome/browser/ui/views/tabs/common/tab_strip_view.h": "00da4fe11c6b1dc69cfd892df347bebfb38316ac1652947fa0edc2e10cf2bc96",
   "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc": "6843d99c6479957395f123a17cb14f51ddfec8acc108e9770f9e21edfc4388e2",
+  "chrome/browser/ui/views/tabs/dragging/BUILD.gn": "66da3701ad7644e3d26a10ae32e4426679f71f467d015da9d4c74495e5eb3d6f",
+  "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc": "5fbb87739ce91a1c2e7e90b618ecc1419c85f3694d29ed7a03e849aa721a47f5",
   "chrome/browser/ui/views/tabs/vertical/BUILD.gn": "3dacf6bd5c1d36fae7ee3190ece83f114c62ea872edd6bf02a56153cd553292a",
   "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc": "6fe96a85d7c9492b0830032f30b025498a5b934480e0e71851447eec78b63f92",
   "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.cc": "99806a76138532235db88917a67b303f1e37d855ba1eb189b78fadf5996ac2f5",

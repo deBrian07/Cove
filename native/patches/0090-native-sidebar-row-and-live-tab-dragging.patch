@@ -1,0 +1,1689 @@
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -0,0 +1,232 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++
++#include <memory>
++#include <string>
++
++#include "base/run_loop.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
++#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
++#include "chrome/browser/ui/views/tabs/tab_slot_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "components/tabs/public/tab_interface.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "net/test/embedded_test_server/embedded_test_server.h"
++#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++constexpr char kFolderId[] = "live-tab-drop-folder";
++constexpr char16_t kFolderName[] = u"Live drag destination";
++
++views::View* FindFolderRow(views::View* root) {
++  if (auto* button = views::AsViewClass<views::LabelButton>(root);
++      button && button->GetText().find(kFolderName) != std::u16string::npos) {
++    return button;
++  }
++  for (const auto& child : root->children()) {
++    if (auto* result = FindFolderRow(child.get())) {
++      return result;
++    }
++  }
++  return nullptr;
++}
++
++const base::DictValue* PersonalSpace(Profile* profile) {
++  const auto* spaces = profile->GetPrefs()->GetDict("cove.sidebar").FindList("spaces");
++  if (!spaces) {
++    return nullptr;
++  }
++  for (const auto& value : *spaces) {
++    const auto* space = value.GetIfDict();
++    const auto* id = space ? space->FindString("id") : nullptr;
++    if (id && *id == "personal") {
++      return space;
++    }
++  }
++  return nullptr;
++}
++
++class CoveLiveTabDragBrowserTest : public InProcessBrowserTest {
++ protected:
++  void TearDownOnMainThread() override {
++    // A failed assertion must not leave an owned drag/capture session alive
++    // while the browser test harness tears its native window down.
++    if (browser()) {
++      if (auto* view = BrowserView::GetBrowserViewForBrowser(browser())) {
++        if (auto* context = view->tab_strip_view()->GetDragContext();
++            context && context->GetDragController()) {
++          context->GetDragController()->EndDrag(EndDragReason::kCancel);
++        }
++      }
++    }
++    InProcessBrowserTest::TearDownOnMainThread();
++  }
++
++  CoveSidebarLibraryView* library() {
++    return static_cast<CoveSidebarLibraryView*>(
++        CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost()));
++  }
++
++  BrowserView* browser_view() {
++    return BrowserView::GetBrowserViewForBrowser(browser());
++  }
++
++  void PreparePageAndFolder() {
++    ASSERT_TRUE(embedded_test_server()->Start());
++    ASSERT_TRUE(ui_test_utils::NavigateToURL(
++        browser(), embedded_test_server()->GetURL("/title1.html")));
++    ASSERT_TRUE(library());
++    ASSERT_TRUE(content::ExecJs(
++        browser()->GetTabStripModel()->GetActiveWebContents(),
++        "window.coveLiveDragDraft = 'unsent live drag draft'; "
++        "history.pushState({}, '', '#same-page-instance');"));
++    {
++      ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                  "cove.sidebar");
++      auto* spaces = update->FindList("spaces");
++      ASSERT_TRUE(spaces);
++      bool inserted = false;
++      for (auto& value : *spaces) {
++        auto* space = value.GetIfDict();
++        const auto* id = space ? space->FindString("id") : nullptr;
++        if (id && *id == "personal") {
++          base::DictValue folder;
++          folder.Set("id", kFolderId);
++          folder.Set("name", "Live drag destination");
++          folder.Set("parent", "");
++          folder.Set("collapsed", false);
++          space->EnsureList("folders")->Append(std::move(folder));
++          inserted = true;
++          break;
++        }
++      }
++      ASSERT_TRUE(inserted);
++    }
++    base::RunLoop().RunUntilIdle();
++    browser_view()->GetWidget()->Show();
++    browser_view()->GetWidget()->Activate();
++    browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    ASSERT_TRUE(FindFolderRow(library()));
++    ASSERT_TRUE(browser_view()->ShouldDrawVerticalTabStrip());
++    ASSERT_EQ(1, browser()->GetTabStripModel()->count());
++  }
++
++  void BeginRealDrag(TabDragContext* context,
++                     TabSlotView* source,
++                     const gfx::Point& destination) {
++    ASSERT_FALSE(context->GetDragController());
++    auto controller = std::make_unique<TabDragController>();
++    auto* raw = controller.get();
++    context->OwnDragController(std::move(controller));
++    ASSERT_EQ(TabDragController::Liveness::kAlive,
++              raw->Init(context, source, {source}, gfx::Point(4, 4),
++                        browser()->GetTabStripModel()
++                            ->selection_model().GetListSelectionModel(),
++                        ui::mojom::DragEventSource::kMouse));
++    ASSERT_EQ(TabDragController::Liveness::kAlive, raw->Drag(destination));
++    ASSERT_TRUE(context->GetDragController());
++    ASSERT_TRUE(raw->started_drag());
++    ASSERT_EQ(context, raw->GetAttachedContext());
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       OnlyTabFolderDropKeepsPageAndWindow) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto handle = model->GetActiveTab()->GetHandle();
++  const int entries = contents->GetController().GetEntryCount();
++  const GURL original_url = contents->GetVisibleURL();
++  auto* widget = browser_view()->GetWidget();
++  const gfx::Rect original_bounds = widget->GetWindowBoundsInScreen();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  ASSERT_TRUE(context);
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  const auto point = FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
++  ASSERT_EQ(static_cast<TabDragTarget*>(library()),
++            browser_view()->GetTabDragTarget(point));
++
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(context, source, point));
++  EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
++  EXPECT_TRUE(library()->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++
++  ASSERT_EQ(1, model->count());
++  ASSERT_TRUE(handle.Get());
++  EXPECT_EQ(handle.Get(), model->GetActiveTab());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_TRUE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
++  EXPECT_EQ(entries, contents->GetController().GetEntryCount());
++  EXPECT_EQ(original_url, contents->GetVisibleURL());
++  EXPECT_EQ("unsent live drag draft", content::EvalJs(contents, "window.coveLiveDragDraft"));
++  const auto* space = PersonalSpace(browser()->GetProfile());
++  ASSERT_TRUE(space);
++  const auto* pins = space->FindList("pins");
++  ASSERT_TRUE(pins);
++  ASSERT_EQ(1u, pins->size());
++  const auto* folder = pins->front().GetDict().FindString("folder");
++  const auto* saved_url = pins->front().GetDict().FindString("url");
++  ASSERT_TRUE(folder);
++  ASSERT_TRUE(saved_url);
++  EXPECT_EQ(kFolderId, *folder);
++  EXPECT_EQ(original_url.spec(), *saved_url);
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       CancelOnlyTabFolderDragLeavesPinsAndPageUntouched) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto handle = model->GetActiveTab()->GetHandle();
++  const int entries = contents->GetController().GetEntryCount();
++  const auto before = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
++  auto* widget = browser_view()->GetWidget();
++  const gfx::Rect original_bounds = widget->GetWindowBoundsInScreen();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  ASSERT_TRUE(context);
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  const auto point = FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
++
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(context, source, point));
++  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
++  context->GetDragController()->EndDrag(EndDragReason::kCancel);
++  base::RunLoop().RunUntilIdle();
++
++  ASSERT_EQ(1, model->count());
++  ASSERT_TRUE(handle.Get());
++  EXPECT_EQ(handle.Get(), model->GetActiveTab());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_FALSE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  EXPECT_EQ(entries, contents->GetController().GetEntryCount());
++  EXPECT_EQ("unsent live drag draft", content::EvalJs(contents, "window.coveLiveDragDraft"));
++  EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
++}
++}  // namespace
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -0,0 +1,466 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <string>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/files/file_util.h"
++#include "base/run_loop.h"
++#include "base/test/run_until.h"
++#include "base/test/test_future.h"
++#include "base/threading/thread_restrictions.h"
++#include "base/values.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "components/viz/common/frame_sinks/copy_output_request.h"
++#include "components/viz/common/frame_sinks/copy_output_result.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "third_party/skia/include/core/SkBitmap.h"
++#include "ui/base/dragdrop/drag_drop_types.h"
++#include "ui/base/dragdrop/drop_target_event.h"
++#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "ui/base/dragdrop/os_exchange_data.h"
++#include "ui/compositor/compositor.h"
++#include "ui/compositor/layer.h"
++#include "ui/compositor/layer_tree_owner.h"
++#include "ui/gfx/codec/png_codec.h"
++#include "ui/gfx/geometry/rect_conversions.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/view_tracker.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++constexpr char kSidebarPref[] = "cove.sidebar";
++constexpr int kMoveFolderUpCommand = 13;
++constexpr int kMoveFolderDownCommand = 14;
++
++base::DictValue* FindSpace(base::DictValue& root, const std::string& id) {
++  auto* spaces = root.FindList("spaces");
++  if (!spaces) {
++    return nullptr;
++  }
++  for (auto& value : *spaces) {
++    auto* space = value.GetIfDict();
++    const auto* found = space ? space->FindString("id") : nullptr;
++    if (found && *found == id) {
++      return space;
++    }
++  }
++  return nullptr;
++}
++
++views::LabelButton* FindRow(views::View* root, std::u16string_view text) {
++  if (auto* row = views::AsViewClass<views::LabelButton>(root);
++      row && row->GetText().find(text) != std::u16string::npos) {
++    return row;
++  }
++  for (const auto& child : root->children()) {
++    if (auto* row = FindRow(child.get(), text)) {
++      return row;
++    }
++  }
++  return nullptr;
++}
++
++base::DictValue Pin(const char* id, const char* title, const char* url) {
++  return base::DictValue()
++      .Set("id", id)
++      .Set("title", title)
++      .Set("url", url)
++      .Set("folder", "")
++      .Set("kept", id);
++}
++
++base::DictValue Folder(const char* id, const char* name, const char* parent) {
++  return base::DictValue()
++      .Set("id", id)
++      .Set("name", name)
++      .Set("parent", parent)
++      .Set("collapsed", false);
++}
++}  // namespace
++
++// The friend fixture only selects the context row for the existing menu
++// delegate. No public test-only browser control is added, and no native menu
++// tracking loop or OS input injection is needed to exercise its commands.
++class CoveSidebarDragBrowserTest : public InProcessBrowserTest {
++ protected:
++  CoveSidebarLibraryView* library() {
++    return static_cast<CoveSidebarLibraryView*>(
++        CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost()));
++  }
++
++  void Layout() {
++    base::RunLoop().RunUntilIdle();
++    BrowserView::GetBrowserViewForBrowser(browser())
++        ->GetWidget()
++        ->LayoutRootViewIfNecessary();
++  }
++
++  void Seed() {
++    auto* controller = tabs::VerticalTabStripStateController::From(browser());
++    ASSERT_TRUE(controller);
++    controller->RequestCollapse(false);
++    ASSERT_TRUE(
++        base::test::RunUntil([&] { return !controller->IsCollapsed(); }));
++    {
++      ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                  kSidebarPref);
++      auto* personal = FindSpace(*update, "personal");
++      ASSERT_TRUE(personal);
++      base::ListValue pins;
++      pins.Append(Pin("p", "Pin P", "https://pin-p.example/"));
++      pins.Append(Pin("q", "Pin Q", "https://pin-q.example/"));
++      personal->Set("pins", std::move(pins));
++      base::ListValue folders;
++      folders.Append(Folder("a", "Folder A", ""));
++      folders.Append(Folder("b", "Folder B", ""));
++      folders.Append(Folder("child", "Child folder", "a"));
++      personal->Set("folders", std::move(folders));
++      personal->Remove("sidebar_order");
++    }
++    Layout();
++    ASSERT_TRUE(library());
++    ASSERT_TRUE(library()->GetVisible());
++    ASSERT_TRUE(FindRow(library(), u"Pin P"));
++    ASSERT_TRUE(FindRow(library(), u"Child folder"));
++  }
++
++  const base::DictValue& SavedSpace() {
++    const auto& root =
++        browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref);
++    for (const auto& value : *root.FindList("spaces")) {
++      const auto& space = value.GetDict();
++      if (space.FindString("id") && *space.FindString("id") == "personal") {
++        return space;
++      }
++    }
++    ADD_FAILURE() << "Personal Space missing";
++    return root;
++  }
++
++  std::vector<std::string> Keys() {
++    std::vector<std::string> keys;
++    for (const auto& row : cove::SidebarOrder::Rows(SavedSpace(), true)) {
++      keys.push_back(
++          (row.item.kind == cove::SidebarItemKind::kPin ? "p:" : "f:") +
++          row.item.id);
++    }
++    return keys;
++  }
++
++  gfx::Point Before(views::View* row) {
++    const auto bounds = row->bounds();
++    return gfx::Point(bounds.CenterPoint().x(), bounds.y() + 1);
++  }
++
++  gfx::Point Inside(views::View* row) { return row->bounds().CenterPoint(); }
++
++  void Write(views::View* source, ui::OSExchangeData* data) {
++    library()->WriteDragDataForView(source, gfx::Point(), data);
++  }
++
++  ui::mojom::DragOperation Drop(views::View* source, const gfx::Point& point) {
++    if (!source) {
++      ADD_FAILURE() << "Drag source row missing";
++      return ui::mojom::DragOperation::kNone;
++    }
++    ui::OSExchangeData data;
++    Write(source, &data);
++    views::ViewTracker source_tracker(source);
++    library()->OnWillStartDragForView(source);
++    ui::DropTargetEvent event(data, gfx::PointF(point), gfx::PointF(point),
++                              ui::DragDropTypes::DRAG_MOVE);
++    EXPECT_TRUE(library()->CanDrop(data));
++    EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, library()->OnDragUpdated(event));
++    auto callback = library()->GetDropCallback(event);
++    EXPECT_TRUE(callback);
++    auto operation = ui::mojom::DragOperation::kNone;
++    if (callback) {
++      std::move(callback).Run(event, operation, nullptr);
++    }
++    // Committing preferences must not destroy the native source before
++    // Views delivers OnDragDone at the end of the OS drag session.
++    EXPECT_EQ(source, source_tracker.view());
++    if (source_tracker.view()) {
++      source_tracker.view()->OnDragDone();
++    }
++    Layout();
++    return operation;
++  }
++
++  void SelectFolderMenu(const std::string& id) {
++    library()->context_folder_id_ = id;
++    library()->menu_space_id_ = "personal";
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SavedRowsReorderAndNestWithoutNavigatingLivePage) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(),
++      GURL("data:text/html,<input id=draft><title>Live drag page</title>")));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(
++      contents,
++      "window.coveSavedDragIdentity = 91; "
++      "document.getElementById('draft').value = 'unsent sidebar draft'; "
++      "history.pushState({}, '', '#kept');"));
++  const int history = contents->GetController().GetEntryCount();
++  const int tabs = browser()->GetTabStripModel()->count();
++  const GURL url = contents->GetVisibleURL();
++  Seed();
++  ASSERT_EQ(
++      ui::mojom::DragOperation::kMove,
++      Drop(FindRow(library(), u"Pin Q"), Before(FindRow(library(), u"Pin P"))));
++  EXPECT_EQ((std::vector<std::string>{"p:q", "p:p", "f:a", "f:child", "f:b"}),
++            Keys());
++  ASSERT_EQ(ui::mojom::DragOperation::kMove,
++            Drop(FindRow(library(), u"Pin P"),
++                 Inside(FindRow(library(), u"Folder A"))));
++  EXPECT_EQ("a", cove::SidebarOrder::Parent(
++                     SavedSpace(), {cove::SidebarItemKind::kPin, "p"}));
++  ASSERT_EQ(ui::mojom::DragOperation::kMove,
++            Drop(FindRow(library(), u"Folder A"),
++                 Inside(FindRow(library(), u"Folder B"))));
++  EXPECT_EQ("b", cove::SidebarOrder::Parent(
++                     SavedSpace(), {cove::SidebarItemKind::kFolder, "a"}));
++  EXPECT_EQ("a", cove::SidebarOrder::Parent(
++                     SavedSpace(), {cove::SidebarItemKind::kFolder, "child"}));
++  ASSERT_EQ(2u, SavedSpace().FindList("pins")->size());
++  EXPECT_EQ("p", *SavedSpace().FindList("pins")->front().GetDict().FindString(
++                     "kept"));
++  EXPECT_EQ(
++      "https://pin-p.example/",
++      *SavedSpace().FindList("pins")->front().GetDict().FindString("url"));
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(tabs, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(url, contents->GetVisibleURL());
++  EXPECT_EQ(history, contents->GetController().GetEntryCount());
++  EXPECT_EQ(91, content::EvalJs(contents, "window.coveSavedDragIdentity"));
++  EXPECT_EQ(
++      "unsent sidebar draft",
++      content::EvalJs(contents, "document.getElementById('draft').value"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       CanceledPreviewAndDescendantFolderDropDoNotMutatePrefs) {
++  Seed();
++  const auto saved = SavedSpace().Clone();
++  ui::OSExchangeData folder_data;
++  Write(FindRow(library(), u"Folder A"), &folder_data);
++  const auto child_point = Inside(FindRow(library(), u"Child folder"));
++  ui::DropTargetEvent cycle(folder_data, gfx::PointF(child_point),
++                            gfx::PointF(child_point),
++                            ui::DragDropTypes::DRAG_MOVE);
++  EXPECT_EQ(0, library()->OnDragUpdated(cycle));
++  EXPECT_FALSE(library()->GetDropCallback(cycle));
++  EXPECT_EQ(saved, SavedSpace());
++
++  auto* source = FindRow(library(), u"Pin P");
++  views::ViewTracker source_tracker(source);
++  ui::OSExchangeData pin_data;
++  Write(source, &pin_data);
++  library()->OnWillStartDragForView(source);
++  const auto destination = Inside(FindRow(library(), u"Folder A"));
++  ui::DropTargetEvent preview(pin_data, gfx::PointF(destination),
++                              gfx::PointF(destination),
++                              ui::DragDropTypes::DRAG_MOVE);
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, library()->OnDragUpdated(preview));
++  EXPECT_EQ(saved, SavedSpace());
++  library()->OnDragExited();
++  EXPECT_EQ(saved, SavedSpace());
++  ASSERT_TRUE(source_tracker.view());
++  source_tracker.view()->OnDragDone();
++  Layout();
++  EXPECT_EQ(saved, SavedSpace());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       DropCallbacksRevalidateRemovedSourceAndDestination) {
++  Seed();
++  ui::OSExchangeData source_data;
++  Write(FindRow(library(), u"Pin P"), &source_data);
++  auto point = Inside(FindRow(library(), u"Folder A"));
++  ui::DropTargetEvent source_event(source_data, gfx::PointF(point),
++                                   gfx::PointF(point),
++                                   ui::DragDropTypes::DRAG_MOVE);
++  auto source_callback = library()->GetDropCallback(source_event);
++  ASSERT_TRUE(source_callback);
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("pins")->erase(space->FindList("pins")->begin());
++  }
++  const auto after_source_removal = SavedSpace().Clone();
++  auto operation = ui::mojom::DragOperation::kMove;
++  std::move(source_callback).Run(source_event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(after_source_removal, SavedSpace());
++
++  Seed();
++  ui::OSExchangeData destination_data;
++  Write(FindRow(library(), u"Pin P"), &destination_data);
++  point = Inside(FindRow(library(), u"Folder A"));
++  ui::DropTargetEvent destination_event(destination_data, gfx::PointF(point),
++                                        gfx::PointF(point),
++                                        ui::DragDropTypes::DRAG_MOVE);
++  auto destination_callback = library()->GetDropCallback(destination_event);
++  ASSERT_TRUE(destination_callback);
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("folders")->erase(space->FindList("folders")->begin());
++  }
++  const auto after_destination_removal = SavedSpace().Clone();
++  operation = ui::mojom::DragOperation::kMove;
++  std::move(destination_callback).Run(destination_event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(after_destination_removal, SavedSpace());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       CallbackFromPreviousSpaceCannotChangeEitherSpace) {
++  Seed();
++  ui::OSExchangeData data;
++  Write(FindRow(library(), u"Pin P"), &data);
++  const auto point = Inside(FindRow(library(), u"Folder A"));
++  ui::DropTargetEvent event(data, gfx::PointF(point), gfx::PointF(point),
++                            ui::DragDropTypes::DRAG_MOVE);
++  auto callback = library()->GetDropCallback(event);
++  ASSERT_TRUE(callback);
++  library()->FocusSpace("work");
++  Layout();
++  const auto after_switch =
++      browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref).Clone();
++  auto operation = ui::mojom::DragOperation::kMove;
++  std::move(callback).Run(event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(after_switch,
++            browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref));
++  library()->FocusSpace("personal");
++  Layout();
++  EXPECT_EQ((std::vector<std::string>{"p:p", "p:q", "f:a", "f:child", "f:b"}),
++            Keys());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MenuReorderUsesTheSameMixedOrderAfterDragging) {
++  Seed();
++  ASSERT_EQ(ui::mojom::DragOperation::kMove,
++            Drop(FindRow(library(), u"Folder B"),
++                 Before(FindRow(library(), u"Pin P"))));
++  EXPECT_EQ((std::vector<std::string>{"f:b", "p:p", "p:q", "f:a", "f:child"}),
++            Keys());
++  SelectFolderMenu("b");
++  EXPECT_FALSE(library()->IsCommandIdEnabled(kMoveFolderUpCommand));
++  ASSERT_TRUE(library()->IsCommandIdEnabled(kMoveFolderDownCommand));
++  library()->ExecuteCommand(kMoveFolderDownCommand, 0);
++  Layout();
++  EXPECT_EQ((std::vector<std::string>{"p:p", "f:b", "p:q", "f:a", "f:child"}),
++            Keys());
++  SelectFolderMenu("b");
++  ASSERT_TRUE(library()->IsCommandIdEnabled(kMoveFolderUpCommand));
++  library()->ExecuteCommand(kMoveFolderUpCommand, 0);
++  Layout();
++  EXPECT_EQ((std::vector<std::string>{"f:b", "p:p", "p:q", "f:a", "f:child"}),
++            Keys());
++  SelectFolderMenu("a");
++  EXPECT_FALSE(library()->IsCommandIdEnabled(kMoveFolderDownCommand));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       HoverRevealShowsSavedRowsWithoutChangingCollapseState) {
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    base::ListValue favorites;
++    for (const auto* name : {"Mail", "Calendar", "Docs"}) {
++      base::DictValue favorite;
++      favorite.Set("title", name);
++      favorite.Set("url", std::string("https://example.test/") + name);
++      favorites.Append(std::move(favorite));
++    }
++    update->Set("favorites", std::move(favorites));
++  }
++  Layout();
++  const auto pins = SavedSpace().FindList("pins")->Clone();
++  const auto folders = SavedSpace().FindList("folders")->Clone();
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* region = view->vertical_tab_strip_region_view_for_testing();
++  ASSERT_TRUE(region);
++  controller->RequestCollapse(true);
++  ASSERT_TRUE(base::test::RunUntil([&] { return controller->IsCollapsed(); }));
++  Layout();
++  EXPECT_FALSE(library()->GetVisible());
++  auto reveal =
++      region->GetExpandOnHoverLock(ExpandOnHoverLockType::kKeepExpanded);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return region->is_expanded_on_hover() && library()->IsDrawn() &&
++           library()->width() > 120;
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  ASSERT_TRUE(FindRow(library(), u"Pin P"));
++  EXPECT_TRUE(FindRow(library(), u"Pin P")->IsDrawn());
++  ASSERT_TRUE(FindRow(library(), u"Folder A"));
++  EXPECT_TRUE(FindRow(library(), u"Folder A")->IsDrawn());
++  const auto path = base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
++      "cove-sidebar-snapshot");
++  if (!path.empty()) {
++    auto* widget = view->GetWidget();
++    auto* compositor = widget->GetCompositor();
++    gfx::Rect area = region->GetBoundsInScreen();
++    const auto root_bounds = widget->GetRootView()->GetBoundsInScreen();
++    area.Offset(-root_bounds.x(), -root_bounds.y());
++    base::test::TestFuture<std::unique_ptr<viz::CopyOutputResult>> captured;
++    auto request = std::make_unique<viz::CopyOutputRequest>(
++        viz::CopyOutputRequest::ResultFormat::RGBA,
++        viz::CopyOutputRequest::ResultDestination::kSystemMemory,
++        captured.GetCallback());
++    request->set_area(
++        gfx::ScaleToEnclosedRect(area, compositor->device_scale_factor()));
++    compositor->root_layer()->RequestCopyOfOutput(std::move(request));
++    compositor->ScheduleDraw();
++    auto result = captured.Take();
++    ASSERT_TRUE(result);
++    auto access = result->ScopedAccessSkBitmap();
++    auto png =
++        gfx::PNGCodec::EncodeBGRASkBitmap(access.GetOutScopedBitmap(), false);
++    ASSERT_TRUE(png);
++    base::ScopedAllowBlockingForTesting allow_artifact;
++    ASSERT_TRUE(base::WriteFile(path, *png));
++  }
++  reveal.reset();
++  auto hide =
++      region->GetExpandOnHoverLock(ExpandOnHoverLockType::kForceCollapse);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    view->GetWidget()->LayoutRootViewIfNecessary();
++    return !region->is_expanded_on_hover() && !library()->GetVisible();
++  }));
++  EXPECT_TRUE(controller->IsCollapsed());
++  EXPECT_EQ(pins, *SavedSpace().FindList("pins"));
++  EXPECT_EQ(folders, *SavedSpace().FindList("folders"));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -14,6 +14,21 @@
+ #include <set>
+ #include <utility>
+ #include <variant>
++#include "base/no_destructor.h"
++#include "base/pickle.h"
++#include "base/supports_user_data.h"
++#include "base/unguessable_token.h"
++#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
++#include "ui/base/clipboard/clipboard_format_type.h"
++#include "ui/base/dragdrop/drag_drop_types.h"
++#include "ui/base/dragdrop/drop_target_event.h"
++#include "ui/base/dragdrop/os_exchange_data.h"
++#include "ui/compositor/layer.h"
++#include "ui/compositor/layer_tree_owner.h"
++#include "ui/views/view_class_properties.h"
++
+ 
+ #include "base/auto_reset.h"
+ #include "base/functional/bind.h"
+@@ -219,11 +234,58 @@
+   return label;
+ }
+ 
++class SidebarProfileToken : public base::SupportsUserData::Data {
++ public:
++  SidebarProfileToken();
++  ~SidebarProfileToken() override;
++  const std::string value;
++};
++SidebarProfileToken::SidebarProfileToken()
++    : value(base::UnguessableToken::Create().ToString()) {}
++SidebarProfileToken::~SidebarProfileToken() = default;
++
++const std::string& SidebarProfileIdentity(Profile* profile) {
++  static int key;
++  auto* value = static_cast<SidebarProfileToken*>(profile->GetUserData(&key));
++  if (!value) {
++    auto token = std::make_unique<SidebarProfileToken>();
++    value = token.get();
++    profile->SetUserData(&key, std::move(token));
++  }
++  return value->value;
++}
++
++const ui::ClipboardFormatType& SidebarDragFormat() {
++  static const base::NoDestructor<ui::ClipboardFormatType> format(
++      ui::ClipboardFormatType::CustomPlatformType("CoveSidebarRow.v1"));
++  return *format;
++}
++
++class SidebarDragRow : public views::LabelButton {
++  METADATA_HEADER(SidebarDragRow, views::LabelButton)
++ public:
++  SidebarDragRow(PressedCallback callback, const std::u16string& text,
++                 base::RepeatingClosure finished)
++      : LabelButton(std::move(callback), text), finished_(std::move(finished)) {}
++  ~SidebarDragRow() override;
++  void OnDragDone() override {
++    LabelButton::OnDragDone();
++    if (finished_) finished_.Run();
++  }
++ private:
++  base::RepeatingClosure finished_;
++};
++SidebarDragRow::~SidebarDragRow() = default;
++BEGIN_METADATA(SidebarDragRow)
++END_METADATA
++
+ views::LabelButton* MakeRow(views::View* parent,
+                             const std::u16string& text,
+-                            views::Button::PressedCallback callback) {
++                            views::Button::PressedCallback callback,
++                            base::RepeatingClosure finished = {}) {
+   auto* button = parent->AddChildView(
+-      std::make_unique<views::LabelButton>(std::move(callback), text));
++      std::make_unique<SidebarDragRow>(std::move(callback), text,
++                                       std::move(finished)));
+   button->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+   button->SetTextSubpixelRenderingEnabled(false);
+   button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
+@@ -274,6 +336,7 @@
+ }
+ 
+ CoveSidebarLibraryView::~CoveSidebarLibraryView() {
++  tab_drag_destroy_callbacks_.Notify();
+   TabStripModelObserver::StopObservingAll(this);
+ }
+ 
+@@ -425,11 +488,33 @@
+     return;
+   }
+   base::ListValue* pins = space->EnsureList("pins");
++  if (const auto bound = tab_pin_ids_.find(handle);
++      bound != tab_pin_ids_.end() && bound->second.first == active_space_id_) {
++    for (const auto& value : *pins) {
++      const auto* record = value.GetIfDict();
++      const auto* id = record ? record->FindString("id") : nullptr;
++      if (id && *id == bound->second.second) {
++        // Re-pinning a navigated live pin retains its saved home and identity.
++        UpdatePinRowAppearance();
++        return;
++      }
++    }
++  }
+   for (const base::Value& value : *pins) {
+     const auto* pin = value.GetIfDict();
+     const auto* existing = pin ? pin->FindString("url") : nullptr;
+     const auto* id = pin ? pin->FindString("id") : nullptr;
+     if (existing && id && *existing == url.spec()) {
++      bool bound_elsewhere = false;
++      for (auto* other : *browser_->GetTabStripModel()) {
++        if (other == tab || !other->IsPinned()) continue;
++        const auto bound = tab_pin_ids_.find(other->GetHandle().raw_value());
++        if (bound != tab_pin_ids_.end() && bound->second.first == active_space_id_ &&
++            bound->second.second == *id) { bound_elsewhere = true; break; }
++      }
++      // Two live pages with the same URL can hold different drafts/history.
++      // Give them separate saved identities instead of merging their rows.
++      if (bound_elsewhere) continue;
+       tab_pin_ids_[handle] = {active_space_id_, *id};
+       UpdatePinRowAppearance();
+       return;
+@@ -478,6 +563,13 @@
+ }
+ 
+ void CoveSidebarLibraryView::Rebuild() {
++  if (row_drag_active_) {
++    rebuild_after_drag_ = true;
++    return;
++  }
++  drop_indicator_ = nullptr;
++  pin_current_button_.SetView(nullptr);
++  row_items_.clear();
+   QueueSessionSync();
+   row_pin_ids_.clear();
+   row_folder_ids_.clear();
+@@ -493,54 +585,74 @@
+   }
+ 
+   if (const auto* name = space->FindString("name")) {
+-    MakeHeader(this, base::UTF8ToUTF16(*name));
++    auto* header = AddChildView(std::make_unique<views::View>());
++    auto* layout = header->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
++    layout->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
++    layout->SetFlexForView(MakeHeader(header, base::UTF8ToUTF16(*name)), 1);
++    auto* pin = MakeRow(header, u"Pin", base::BindRepeating(
++        &CoveSidebarLibraryView::PinActivePage, weak_factory_.GetWeakPtr()));
++    pin->SetPreferredSize(gfx::Size(40, 28));
++    pin->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    pin->SetTooltipText(u"Pin current tab");
++    pin->GetViewAccessibility().SetName(u"Pin current tab");
++    pin_current_button_.SetView(pin);
++    auto* add_folder = MakeRow(header, u"+", base::BindRepeating(
++        &CoveSidebarLibraryView::ExecuteArcCommand, weak_factory_.GetWeakPtr(),
++        IDC_COVE_NEW_FOLDER));
++    add_folder->SetPreferredSize(gfx::Size(28, 28));
++    add_folder->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    add_folder->SetTooltipText(u"New folder");
++    add_folder->GetViewAccessibility().SetName(u"New folder");
+   }
+   const auto* pins = space->FindList("pins");
+-  const cove::FolderTree tree(space->FindList("folders"));
+-  const auto add_pins = [&](const std::string& parent, size_t depth) {
+-    if (!pins) return;
+-    for (const auto& value : *pins) {
+-      const auto* pin = value.GetIfDict();
+-      if (!pin) continue;
+-      const auto* folder = pin->FindString("folder");
+-      // An orphaned association must not make a saved pin disappear.
+-      const std::string owner = folder && tree.Contains(*folder) ? *folder : "";
+-      if (owner != parent) continue;
+-      const auto* url = pin->FindString("url");
+-      const auto* title = pin->FindString("title");
+-      const auto* id = pin->FindString("id");
+-      if (!url || !id) continue;
+-      auto* row = MakeRow(this,
+-          base::UTF8ToUTF16(title && !title->empty() ? *title : *url),
++  if (cove::SidebarOrder::Rows(*space).empty()) {
++    auto* hint = MakeHeader(this, u"Drag a tab here to pin");
++    hint->SetPreferredSize(gfx::Size(120, 36));
++  }
++  for (const auto& saved : cove::SidebarOrder::Rows(*space)) {
++    views::LabelButton* row = nullptr;
++    const auto finished = base::BindRepeating(
++        [](base::WeakPtr<CoveSidebarLibraryView> library) {
++          if (library) base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++              FROM_HERE, base::BindOnce(&CoveSidebarLibraryView::FinishRowDrag,
++                                        library));
++        }, weak_factory_.GetWeakPtr());
++    if (saved.item.kind == cove::SidebarItemKind::kPin) {
++      if (!pins) continue;
++      const base::DictValue* pin = nullptr;
++      for (const auto& value : *pins) {
++        const auto* candidate = value.GetIfDict();
++        if (candidate && candidate->FindString("id") &&
++            *candidate->FindString("id") == saved.item.id) { pin = candidate; break; }
++      }
++      const auto* url = pin ? pin->FindString("url") : nullptr;
++      if (!url) continue;
++      row = MakeRow(this, saved.name,
+           base::BindRepeating(&CoveSidebarLibraryView::OpenPin,
+-                              weak_factory_.GetWeakPtr(), *id, GURL(*url)));
+-      row->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
+-          4, 8 + 14 * static_cast<int>(std::min<size_t>(depth, 8)), 4, 8)));
+-      row->set_context_menu_controller(this);
++              weak_factory_.GetWeakPtr(), saved.item.id, GURL(*url)), finished);
+       row->SetTooltipText(base::UTF8ToUTF16(*url));
+-      row_pin_ids_[row] = *id;
+-    }
+-  };
+-  add_pins("", 0);
+-  for (const auto& folder : tree.Rows()) {
+-    const auto name = folder.name.empty() ? u"Folder" : folder.name;
+-    auto* row = MakeRow(this, (folder.collapsed ? u"▸ " : u"▾ ") + name,
+-        base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
+-                            weak_factory_.GetWeakPtr(), folder.id));
++      row_pin_ids_[row] = saved.item.id;
++    } else {
++      const auto name = saved.name.empty() ? u"Folder" : saved.name;
++      row = MakeRow(this, (saved.collapsed ? u"▸ " : u"▾ ") + name,
++          base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
++              weak_factory_.GetWeakPtr(), saved.item.id), finished);
++      row->SetImageModel(views::Button::STATE_NORMAL,
++          ui::ImageModel::FromVectorIcon(saved.collapsed
++              ? vector_icons::kFolderFlippableIcon : vector_icons::kFolderOpenIcon,
++              ui::kColorIcon, 16));
++      row->SetImageLabelSpacing(8);
++      if (saved.collapsed) row->GetViewAccessibility().SetIsCollapsed();
++      else row->GetViewAccessibility().SetIsExpanded();
++      row->SetTooltipText(saved.collapsed ? u"Expand folder" : u"Collapse folder");
++      row_folder_ids_[row] = saved.item.id;
++    }
+     row->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
+-        4, 8 + 14 * static_cast<int>(std::min<size_t>(folder.depth, 8)), 4, 8)));
+-    row->SetImageModel(views::Button::STATE_NORMAL,
+-        ui::ImageModel::FromVectorIcon(
+-            folder.collapsed ? vector_icons::kFolderFlippableIcon
+-                             : vector_icons::kFolderOpenIcon,
+-            ui::kColorIcon, 16));
+-    row->SetImageLabelSpacing(8);
+-    if (folder.collapsed) row->GetViewAccessibility().SetIsCollapsed();
+-    else row->GetViewAccessibility().SetIsExpanded();
++        4, 8 + 14 * static_cast<int>(std::min<size_t>(saved.depth, 8)), 4, 8)));
+     row->set_context_menu_controller(this);
+-    row->SetTooltipText(folder.collapsed ? u"Expand folder" : u"Collapse folder");
+-    row_folder_ids_[row] = folder.id;
+-    if (!folder.collapsed) add_pins(folder.id, folder.depth + 1);
++    row->set_drag_controller(this);
++    row_items_[row] = saved.item;
+   }
+ 
+   UpdatePinRowAppearance();
+@@ -553,6 +665,14 @@
+ 
+ void CoveSidebarLibraryView::UpdatePinRowAppearance() {
+   TabStripModel* model = browser_->GetTabStripModel();
++  if (auto* pin = pin_current_button_.view()) {
++    auto* active = model->GetActiveTab();
++    auto* contents = active ? active->GetContents() : nullptr;
++    pin->SetEnabled(active && !active->IsPinned() && !active->GetGroup() &&
++        !active->GetSplit() && contents &&
++        (contents->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
++         contents->GetVisibleURL().SchemeIsFile()));
++  }
+   std::map<std::string, content::WebContents*> bound_contents;
+   std::string active_pin_id;
+   for (int index = 0; index < model->count(); ++index) {
+@@ -913,14 +1033,42 @@
+ void CoveSidebarLibraryView::MoveFolder(std::string id, std::string parent) {
+   ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
+   if (auto* space = FindSpace(*update, active_space_id_);
+-      space && cove::FolderTree::Move(*space, id, parent))
++      space && cove::SidebarOrder::Move(*space,
++          {cove::SidebarItemKind::kFolder, id}, parent))
+     ExpandFolderPath(*space, parent);
+ }
+ 
++bool CoveSidebarLibraryView::FolderReorderTarget(
++    std::string_view id, bool down,
++    std::optional<cove::SidebarItem>* before) const {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space) return false;
++  const cove::SidebarItem item{cove::SidebarItemKind::kFolder, std::string(id)};
++  const auto parent = cove::SidebarOrder::Parent(*space, item);
++  if (!parent) return false;
++  std::vector<cove::SidebarItem> siblings;
++  for (const auto& row : cove::SidebarOrder::Rows(*space, true))
++    if (row.parent == *parent) siblings.push_back(row.item);
++  auto found = std::find(siblings.begin(), siblings.end(), item);
++  if (found == siblings.end()) return false;
++  const size_t index = found - siblings.begin();
++  if ((!down && !index) || (down && index + 1 >= siblings.size())) return false;
++  *before = down ? (index + 2 < siblings.size()
++      ? std::make_optional(siblings[index + 2]) : std::nullopt)
++      : std::make_optional(siblings[index - 1]);
++  return cove::SidebarOrder::CanMove(*space, item, *parent, *before);
++}
++
+ void CoveSidebarLibraryView::ReorderFolder(std::string id, bool down) {
++  std::optional<cove::SidebarItem> before;
++  if (!FolderReorderTarget(id, down, &before)) return;
+   ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
+-  if (auto* space = FindSpace(*update, active_space_id_))
+-    cove::FolderTree::Reorder(*space, id, down);
++  if (auto* space = FindSpace(*update, active_space_id_)) {
++    const cove::SidebarItem item{cove::SidebarItemKind::kFolder, id};
++    if (auto parent = cove::SidebarOrder::Parent(*space, item))
++      cove::SidebarOrder::Move(*space, item, *parent, before);
++  }
+ }
+ 
+ void CoveSidebarLibraryView::ToggleFolder(std::string folder_id) {
+@@ -1584,25 +1732,12 @@
+ }
+ 
+ void CoveSidebarLibraryView::MovePinToFolder(const std::string& pin_id,
+-                                             const std::string& folder_id) {
+-  PrefService* prefs = browser_->GetProfile()->GetPrefs();
+-  ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
+-  base::DictValue* space = FindSpace(*update, active_space_id_);
+-  base::ListValue* pins = space ? space->FindList("pins") : nullptr;
+-  if (!pins) {
+-    return;
+-  }
+-  if (!folder_id.empty() &&
+-      !cove::FolderTree(space->FindList("folders")).CanAddChild(folder_id)) return;
+-  for (base::Value& pin_value : *pins) {
+-    auto* pin = pin_value.GetIfDict();
+-    const auto* id = pin ? pin->FindString("id") : nullptr;
+-    if (id && *id == pin_id) {
+-      pin->Set("folder", folder_id);
+-      ExpandFolderPath(*space, folder_id);
+-      break;
+-    }
+-  }
++                                              const std::string& folder_id) {
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_);
++      space && cove::SidebarOrder::Move(*space,
++          {cove::SidebarItemKind::kPin, pin_id}, folder_id))
++    ExpandFolderPath(*space, folder_id);
+ }
+ 
+ void CoveSidebarLibraryView::BeginRename(int kind, std::string id) {
+@@ -1676,20 +1811,12 @@
+ 
+ bool CoveSidebarLibraryView::CanMovePinToFolder(std::string_view destination) const {
+   const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
+-                                   ->GetDict(kCoveSidebarPref), active_space_id_);
+-  if (!space || (!destination.empty() &&
+-      !cove::FolderTree(space->FindList("folders")).CanAddChild(destination))) return false;
+-  const auto* pins = space->FindList("pins");
+-  if (!pins) return false;
+-  for (const auto& value : *pins) {
+-    const auto* pin = value.GetIfDict();
+-    const auto* id = pin ? pin->FindString("id") : nullptr;
+-    if (id && *id == context_pin_id_) {
+-      const auto* folder = pin->FindString("folder");
+-      return (folder ? *folder : "") != destination;
+-    }
+-  }
+-  return false;
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space) return false;
++  const cove::SidebarItem item{cove::SidebarItemKind::kPin, context_pin_id_};
++  const auto parent = cove::SidebarOrder::Parent(*space, item);
++  return parent && *parent != destination &&
++      cove::SidebarOrder::CanMove(*space, item, destination);
+ }
+ 
+ void CoveSidebarLibraryView::AppendFolderDestinations(bool moving_folder) {
+@@ -2048,6 +2175,363 @@
+   QueueSessionSync();
+ }
+ 
++std::optional<CoveSidebarLibraryView::RowDragData>
++CoveSidebarLibraryView::ReadRowDrag(const ui::OSExchangeData& data) const {
++  auto pickle = data.GetPickledData(SidebarDragFormat());
++  if (!pickle || pickle->size() > 8192) return std::nullopt;
++  base::PickleIterator reader(*pickle);
++  std::string profile;
++  int kind = -1;
++  RowDragData source;
++  if (!reader.ReadString(&profile) || !reader.ReadString(&source.space) ||
++      !reader.ReadInt(&kind) || !reader.ReadString(&source.item.id) ||
++      !reader.ReachedEnd() || (kind != 0 && kind != 1) ||
++      source.space != active_space_id_ ||
++      profile != SidebarProfileIdentity(browser_->GetProfile()) ||
++      !IsValidCoveSessionId(source.item.id)) return std::nullopt;
++  source.item.kind = kind == 0 ? cove::SidebarItemKind::kPin
++                               : cove::SidebarItemKind::kFolder;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  return space && cove::SidebarOrder::Parent(*space, source.item)
++      ? std::make_optional(source) : std::nullopt;
++}
++
++bool CoveSidebarLibraryView::GetDropFormats(
++    int* formats, std::set<ui::ClipboardFormatType>* types) {
++  *formats = ui::OSExchangeData::URL;
++  types->insert(SidebarDragFormat());
++  return true;
++}
++
++bool CoveSidebarLibraryView::AreDropTypesRequired() { return true; }
++
++bool CoveSidebarLibraryView::CanDrop(const ui::OSExchangeData& data) {
++  if (!GetVisible() || IsSessionMutationInProgress()) return false;
++  if (data.HasCustomFormat(SidebarDragFormat())) return ReadRowDrag(data).has_value();
++  const auto urls = data.GetURLs(ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
++  return urls.size() == 1 && urls.front().url.SchemeIsHTTPOrHTTPS();
++}
++
++std::optional<CoveSidebarLibraryView::DragLocation>
++CoveSidebarLibraryView::LocateDrop(const gfx::Point& point) const {
++  if (!GetVisibleBounds().Contains(point) || IsSessionMutationInProgress())
++    return std::nullopt;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space) return std::nullopt;
++  const auto all_rows = cove::SidebarOrder::Rows(*space, true);
++  DragLocation destination;
++  destination.space = active_space_id_;
++  int last_bottom = 0;
++  for (const auto& child : children()) {
++    const auto found = row_items_.find(child.get());
++    if (found == row_items_.end() || !child->GetVisible()) continue;
++    const auto bounds = child->bounds();
++    last_bottom = std::max(last_bottom, bounds.bottom());
++    if (point.y() > bounds.bottom()) continue;
++    const auto parent = cove::SidebarOrder::Parent(*space, found->second);
++    if (!parent) return std::nullopt;
++    const bool in_middle = point.y() >= bounds.y() + bounds.height() / 4 &&
++        point.y() < bounds.bottom() - bounds.height() / 4;
++    if (found->second.kind == cove::SidebarItemKind::kFolder && in_middle) {
++      destination.parent = found->second.id;
++      destination.inside = true;
++      destination.indicator = bounds;
++    } else {
++      destination.parent = *parent;
++      const bool after = point.y() >= bounds.CenterPoint().y();
++      if (!after) destination.before = found->second;
++      else {
++        auto it = std::find_if(all_rows.begin(), all_rows.end(),
++            [&](const auto& row) { return row.item == found->second; });
++        if (it != all_rows.end()) for (++it; it != all_rows.end(); ++it) {
++          if (it->parent == *parent) { destination.before = it->item; break; }
++        }
++      }
++      int line = after ? bounds.bottom() - 1 : bounds.y();
++      if (after && found->second.kind == cove::SidebarItemKind::kFolder) {
++        bool following = false;
++        size_t depth = 0;
++        for (const auto& row : cove::SidebarOrder::Rows(*space)) {
++          if (row.item == found->second) { following = true; depth = row.depth; continue; }
++          if (!following) continue;
++          if (row.depth <= depth) break;
++          for (const auto& [view, item] : row_items_) {
++            if (item == row.item) line = std::max(line, view->bounds().bottom() - 1);
++          }
++        }
++      }
++      destination.indicator = gfx::Rect(
++          8, line, std::max(0, width() - 16), 2);
++    }
++    return IsDropLocationValid(destination) ? std::make_optional(destination)
++                                             : std::nullopt;
++  }
++  destination.indicator = gfx::Rect(8, std::max(0, last_bottom - 1),
++                                     std::max(0, width() - 16), 2);
++  if (row_items_.empty()) {
++    destination.inside = true;
++    destination.indicator = GetLocalBounds();
++    destination.indicator.Inset(2);
++  }
++  return IsDropLocationValid(destination) ? std::make_optional(destination)
++                                         : std::nullopt;
++}
++
++bool CoveSidebarLibraryView::IsDropLocationValid(const DragLocation& destination) const {
++  if (destination.space != active_space_id_ || IsSessionMutationInProgress()) return false;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (!space) return false;
++  if (!destination.parent.empty() &&
++      !cove::FolderTree(space->FindList("folders")).CanAddChild(destination.parent))
++    return false;
++  if (destination.before) {
++    const auto parent = cove::SidebarOrder::Parent(*space, *destination.before);
++    if (!parent || *parent != destination.parent) return false;
++  }
++  return true;
++}
++
++void CoveSidebarLibraryView::ShowDropIndicator(const DragLocation& destination) {
++  if (!drop_indicator_) {
++    drop_indicator_ = AddChildView(std::make_unique<views::View>());
++    drop_indicator_->SetProperty(views::kViewIgnoredByLayoutKey, true);
++    drop_indicator_->SetCanProcessEventsWithinSubtree(false);
++    drop_indicator_->SetPaintToLayer();
++    drop_indicator_->layer()->SetFillsBoundsOpaquely(false);
++  }
++  drop_indicator_->SetBoundsRect(destination.indicator);
++  if (destination.inside) {
++    drop_indicator_->SetBackground(nullptr);
++    drop_indicator_->SetBorder(views::CreateRoundedRectBorder(2, 6, ui::kColorSysPrimary));
++  } else {
++    drop_indicator_->SetBorder(nullptr);
++    drop_indicator_->SetBackground(views::CreateSolidBackground(ui::kColorSysPrimary));
++  }
++  drop_indicator_->SetVisible(true);
++}
++
++void CoveSidebarLibraryView::ClearDropIndicator() {
++  if (drop_indicator_) drop_indicator_->SetVisible(false);
++}
++
++int CoveSidebarLibraryView::OnDragUpdated(const ui::DropTargetEvent& event) {
++  auto destination = LocateDrop(event.location());
++  if (!destination || !CanDrop(event.data())) { ClearDropIndicator(); return 0; }
++  const bool moving = event.data().HasCustomFormat(SidebarDragFormat());
++  if (moving) {
++    const auto source = ReadRowDrag(event.data());
++    const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++        ->GetDict(kCoveSidebarPref), active_space_id_);
++    if (!source || !space || !cove::SidebarOrder::CanMove(*space, source->item,
++        destination->parent, destination->before)) { ClearDropIndicator(); return 0; }
++  }
++  const int operation = moving ? ui::DragDropTypes::DRAG_MOVE : ui::DragDropTypes::DRAG_COPY;
++  if (!(event.source_operations() & operation)) { ClearDropIndicator(); return 0; }
++  ShowDropIndicator(*destination);
++  return operation;
++}
++
++void CoveSidebarLibraryView::OnDragExited() { ClearDropIndicator(); }
++
++views::View::DropCallback CoveSidebarLibraryView::GetDropCallback(
++    const ui::DropTargetEvent& event) {
++  auto destination = LocateDrop(event.location());
++  if (!destination || !OnDragUpdated(event)) return base::NullCallback();
++  ClearDropIndicator();
++  if (event.data().HasCustomFormat(SidebarDragFormat())) {
++    auto source = ReadRowDrag(event.data());
++    if (!source) return base::NullCallback();
++    return base::BindOnce(&CoveSidebarLibraryView::PerformRowDrop,
++        weak_factory_.GetWeakPtr(), *source, *destination);
++  }
++  const auto urls = event.data().GetURLs(ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
++  if (urls.size() != 1) return base::NullCallback();
++  return base::BindOnce(&CoveSidebarLibraryView::PerformUrlDrop,
++      weak_factory_.GetWeakPtr(), urls[0].url, urls[0].title, *destination);
++}
++
++void CoveSidebarLibraryView::PerformRowDrop(
++    RowDragData source, DragLocation destination, const ui::DropTargetEvent& event,
++    ui::mojom::DragOperation& operation, std::unique_ptr<ui::LayerTreeOwner> image) {
++  operation = ui::mojom::DragOperation::kNone;
++  if (source.space != active_space_id_ || !IsDropLocationValid(destination) ||
++      !(event.source_operations() & ui::DragDropTypes::DRAG_MOVE)) return;
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_);
++      space && cove::SidebarOrder::Move(*space, source.item,
++          destination.parent, destination.before)) {
++    ExpandFolderPath(*space, destination.parent);
++    operation = ui::mojom::DragOperation::kMove;
++  }
++}
++
++void CoveSidebarLibraryView::PerformUrlDrop(
++    GURL url, std::u16string title, DragLocation destination,
++    const ui::DropTargetEvent& event, ui::mojom::DragOperation& operation,
++    std::unique_ptr<ui::LayerTreeOwner> image) {
++  operation = ui::mojom::DragOperation::kNone;
++  if (!url.SchemeIsHTTPOrHTTPS() || !IsDropLocationValid(destination) ||
++      !(event.source_operations() & ui::DragDropTypes::DRAG_COPY)) return;
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  auto* space = FindSpace(*update, active_space_id_);
++  if (!space) return;
++  if (const auto* pins = space->FindList("pins")) for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    if (pin && pin->FindString("url") && *pin->FindString("url") == url.spec()) return;
++  }
++  auto candidate = space->Clone();
++  const auto id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++  base::DictValue pin;
++  pin.Set("id", id);
++  pin.Set("url", url.spec());
++  pin.Set("title", base::UTF16ToUTF8(title.empty() ? base::UTF8ToUTF16(url.host()) : title));
++  pin.Set("folder", "");
++  candidate.EnsureList("pins")->Append(std::move(pin));
++  if (cove::SidebarOrder::Move(candidate, {cove::SidebarItemKind::kPin, id},
++      destination.parent, destination.before)) {
++    ExpandFolderPath(candidate, destination.parent);
++    *space = std::move(candidate);
++    operation = ui::mojom::DragOperation::kCopy;
++  }
++}
++
++void CoveSidebarLibraryView::WriteDragDataForView(
++    views::View* sender, const gfx::Point& press, ui::OSExchangeData* data) {
++  const auto found = row_items_.find(sender);
++  if (found == row_items_.end() || !GetDragOperationsForView(sender, press)) return;
++  base::Pickle pickle;
++  pickle.WriteString(SidebarProfileIdentity(browser_->GetProfile()));
++  pickle.WriteString(active_space_id_);
++  pickle.WriteInt(found->second.kind == cove::SidebarItemKind::kPin ? 0 : 1);
++  pickle.WriteString(found->second.id);
++  data->SetPickledData(SidebarDragFormat(), pickle);
++  if (found->second.kind == cove::SidebarItemKind::kPin) {
++    const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++        ->GetDict(kCoveSidebarPref), active_space_id_);
++    if (const auto* pins = space ? space->FindList("pins") : nullptr)
++      for (const auto& value : *pins) {
++        const auto* pin = value.GetIfDict();
++        if (pin && pin->FindString("id") && *pin->FindString("id") == found->second.id &&
++            pin->FindString("url")) {
++          const GURL url(*pin->FindString("url"));
++          if (url.SchemeIsHTTPOrHTTPS()) data->SetURL(url, sender->GetViewAccessibility().GetCachedName());
++          break;
++        }
++      }
++  }
++}
++
++int CoveSidebarLibraryView::GetDragOperationsForView(views::View* sender,
++                                                     const gfx::Point& point) {
++  const auto found = row_items_.find(sender);
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  if (found == row_items_.end() || !space || IsSessionMutationInProgress() ||
++      !cove::SidebarOrder::Parent(*space, found->second)) return 0;
++  return ui::DragDropTypes::DRAG_MOVE | (found->second.kind == cove::SidebarItemKind::kPin
++      ? ui::DragDropTypes::DRAG_COPY : 0);
++}
++
++bool CoveSidebarLibraryView::CanStartDragForView(
++    views::View* sender, const gfx::Point& press, const gfx::Point& point) {
++  return GetDragOperationsForView(sender, point) &&
++      views::View::ExceededDragThreshold(point - press);
++}
++
++void CoveSidebarLibraryView::OnWillStartDragForView(views::View* sender) {
++  row_drag_active_ = true;
++}
++
++void CoveSidebarLibraryView::FinishRowDrag() {
++  row_drag_active_ = false;
++  ClearDropIndicator();
++  if (rebuild_after_drag_) { rebuild_after_drag_ = false; Rebuild(); }
++}
++
++TabDragTarget* CoveSidebarLibraryView::GetTabDragTarget(const gfx::Point& point_in_screen) {
++  if (!GetWidget() || !GetVisible()) return nullptr;
++  const auto point = views::View::ConvertPointFromScreen(this, point_in_screen);
++  return GetVisibleBounds().Contains(point) ? this : nullptr;
++}
++
++void CoveSidebarLibraryView::OnTabDragEntered() { ClearDropIndicator(); }
++
++TabDragContext* CoveSidebarLibraryView::OnTabDragUpdated(
++    TabDragTarget::DragController& controller, const gfx::Point& point_in_screen) {
++  live_drag_handle_.reset();
++  live_drop_.reset();
++  ClearDropIndicator();
++  const auto* attached = controller.GetAttachedContext();
++  if (!attached || attached->GetWidget() != GetWidget()) return nullptr;
++  auto* context = const_cast<TabDragContext*>(attached);
++  const auto& data = controller.GetSessionData();
++  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
++      data.group_header_drag_data_) return context;
++  content::WebContents* contents = nullptr;
++  for (const auto& entry : data.tab_drag_data_)
++    if (entry.contents) contents = entry.contents;
++  auto* tab = contents ? tabs::TabInterface::GetFromContents(contents) : nullptr;
++  if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
++      tab->GetSplit() || !contents->GetVisibleURL().is_valid() ||
++      (!contents->GetVisibleURL().SchemeIsHTTPOrHTTPS() &&
++       !contents->GetVisibleURL().SchemeIsFile())) return context;
++  auto destination = LocateDrop(views::View::ConvertPointFromScreen(this, point_in_screen));
++  if (!destination) return context;
++  live_drag_handle_ = tab->GetHandle();
++  live_drop_ = destination;
++  ShowDropIndicator(*destination);
++  return context;
++}
++
++void CoveSidebarLibraryView::OnTabDragExited(const gfx::Point& point_in_screen) {
++  OnTabDragEnded();
++}
++void CoveSidebarLibraryView::OnTabDragEnded() {
++  live_drag_handle_.reset();
++  live_drop_.reset();
++  ClearDropIndicator();
++}
++bool CoveSidebarLibraryView::CanDropTab() {
++  auto* tab = live_drag_handle_ ? live_drag_handle_->Get() : nullptr;
++  return tab && live_drop_ && tab->GetBrowserWindowInterface() == browser_ &&
++      !tab->GetGroup() && !tab->GetSplit() && IsDropLocationValid(*live_drop_);
++}
++void CoveSidebarLibraryView::HandleTabDrop(TabDragTarget::DragController& controller) {
++  if (CanDropTab()) base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&CoveSidebarLibraryView::CommitLiveTabDrop,
++          weak_factory_.GetWeakPtr(), *live_drag_handle_, *live_drop_));
++  OnTabDragEnded();
++}
++void CoveSidebarLibraryView::CommitLiveTabDrop(tabs::TabHandle handle,
++                                               DragLocation destination) {
++  auto* tab = handle.Get();
++  if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
++      tab->GetSplit() || !IsDropLocationValid(destination)) return;
++  auto* model = browser_->GetTabStripModel();
++  int index = model->GetIndexOfTab(tab);
++  if (index == TabStripModel::kNoTab) return;
++  const auto& url = tab->GetContents()->GetVisibleURL();
++  if (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIsFile()) return;
++  if (!tab->IsPinned()) model->SetTabPinned(index, true);
++  tab = handle.Get();
++  if (!tab || !tab->IsPinned() || !IsDropLocationValid(destination)) return;
++  const auto binding = tab_pin_ids_.find(handle.raw_value());
++  if (binding == tab_pin_ids_.end() || binding->second.first != active_space_id_) return;
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  if (auto* space = FindSpace(*update, active_space_id_);
++      space && cove::SidebarOrder::Move(*space,
++          {cove::SidebarItemKind::kPin, binding->second.second},
++          destination.parent, destination.before)) ExpandFolderPath(*space, destination.parent);
++  QueueSessionSync();
++}
++base::CallbackListSubscription CoveSidebarLibraryView::RegisterWillDestroyCallback(
++    base::OnceClosure callback) {
++  return tab_drag_destroy_callbacks_.Add(std::move(callback));
++}
++
+ BEGIN_METADATA(CoveSidebarLibraryView)
+ END_METADATA
+ 
+@@ -2062,8 +2546,11 @@
+   if (command_id == kNewSubfolderCommand) return tree.CanAddChild(context_folder_id_);
+   if (command_id == kRemoveFolderCommand) return tree.CanRemove(context_folder_id_);
+   if (command_id == kRenameFolderCommand) return tree.Contains(context_folder_id_);
+-  if (command_id == kMoveFolderUpCommand || command_id == kMoveFolderDownCommand)
+-    return tree.CanReorder(context_folder_id_, command_id == kMoveFolderDownCommand);
++  if (command_id == kMoveFolderUpCommand || command_id == kMoveFolderDownCommand) {
++    std::optional<cove::SidebarItem> before;
++    return FolderReorderTarget(context_folder_id_,
++        command_id == kMoveFolderDownCommand, &before);
++  }
+   if (command_id == kMovePinToRootCommand) return CanMovePinToFolder("");
+   const int destination = command_id - kMovePinCommandBase;
+   if (destination >= 0 && destination < static_cast<int>(menu_folder_ids_.size()))
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -6,12 +6,18 @@
+ #define CHROME_BROWSER_UI_VIEWS_COVE_COVE_SIDEBAR_LIBRARY_VIEW_H_
+ 
+ #include <map>
++#include <optional>
++#include <set>
+ #include <memory>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
++#include "base/callback_list.h"
++#include "chrome/browser/ui/views/cove/cove_folder_model.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
++#include "ui/views/drag_controller.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+@@ -37,7 +43,9 @@
+                                public CoveSpaceCloseHandler,
+                                public TabStripModelObserver,
+                                public views::ContextMenuController,
+-                               public ui::SimpleMenuModel::Delegate {
++                               public ui::SimpleMenuModel::Delegate,
++                               public views::DragController,
++                               public TabDragTarget {
+  public:
+   METADATA_HEADER(CoveSidebarLibraryView, views::View)
+ 
+@@ -77,6 +85,33 @@
+   void AddedToWidget() override;
+   void RemovedFromWidget() override;
+ 
++  // Native saved-row and live-tab drop paths share stable destinations.
++  TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
++  bool GetDropFormats(int* formats,
++                      std::set<ui::ClipboardFormatType>* types) override;
++  bool AreDropTypesRequired() override;
++  bool CanDrop(const ui::OSExchangeData& data) override;
++  int OnDragUpdated(const ui::DropTargetEvent& event) override;
++  void OnDragExited() override;
++  DropCallback GetDropCallback(const ui::DropTargetEvent& event) override;
++  void WriteDragDataForView(views::View* sender, const gfx::Point& press,
++                            ui::OSExchangeData* data) override;
++  int GetDragOperationsForView(views::View* sender,
++                               const gfx::Point& point) override;
++  bool CanStartDragForView(views::View* sender, const gfx::Point& press,
++                           const gfx::Point& point) override;
++  void OnWillStartDragForView(views::View* sender) override;
++
++  void OnTabDragEntered() override;
++  TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
++                                   const gfx::Point& point_in_screen) override;
++  void OnTabDragExited(const gfx::Point& point_in_screen) override;
++  void OnTabDragEnded() override;
++  bool CanDropTab() override;
++  void HandleTabDrop(TabDragTarget::DragController& controller) override;
++  base::CallbackListSubscription RegisterWillDestroyCallback(
++      base::OnceClosure callback) override;
++
+   // TabStripModelObserver:
+   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+   void OnTabStripModelChanged(
+@@ -98,6 +133,35 @@
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
++  friend class CoveSidebarDragBrowserTest;
++  struct RowDragData {
++    std::string space;
++    cove::SidebarItem item;
++  };
++  struct DragLocation {
++    std::string space;
++    std::string parent;
++    std::optional<cove::SidebarItem> before;
++    gfx::Rect indicator;
++    bool inside = false;
++  };
++  std::optional<RowDragData> ReadRowDrag(const ui::OSExchangeData& data) const;
++  std::optional<DragLocation> LocateDrop(const gfx::Point& point) const;
++  bool IsDropLocationValid(const DragLocation& location) const;
++  void ShowDropIndicator(const DragLocation& location);
++  void ClearDropIndicator();
++  void FinishRowDrag();
++  void PerformRowDrop(RowDragData source, DragLocation destination,
++                      const ui::DropTargetEvent& event,
++                      ui::mojom::DragOperation& operation,
++                      std::unique_ptr<ui::LayerTreeOwner> image);
++  void PerformUrlDrop(GURL url, std::u16string title, DragLocation destination,
++                      const ui::DropTargetEvent& event,
++                      ui::mojom::DragOperation& operation,
++                      std::unique_ptr<ui::LayerTreeOwner> image);
++  void CommitLiveTabDrop(tabs::TabHandle handle, DragLocation destination);
++  bool FolderReorderTarget(std::string_view id, bool down,
++                            std::optional<cove::SidebarItem>* before) const;
+   void StampCurrentSessionTabs() const;
+   void QueueSessionSync();
+   void SyncSession();
+@@ -167,10 +231,18 @@
+   base::RepeatingClosure finish_space_transition_;
+   mutable std::map<tab_groups::TabGroupId, std::string> saved_group_ids_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
++  std::map<const views::View*, cove::SidebarItem> row_items_;
++  raw_ptr<views::View> drop_indicator_ = nullptr;
++  bool row_drag_active_ = false;
++  bool rebuild_after_drag_ = false;
++  std::optional<tabs::TabHandle> live_drag_handle_;
++  std::optional<DragLocation> live_drop_;
++  base::OnceClosureList tab_drag_destroy_callbacks_;
+   std::map<views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
+   views::ViewTracker menu_button_;
++  views::ViewTracker pin_current_button_;
+   base::RepeatingClosure toggle_favorite_;
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -1198,6 +1198,18 @@
+       .value_or(false);
+ }
+ 
++TabDragTarget* VerticalTabStripRegionView::GetTabDragTarget(
++    const gfx::Point& point_in_screen) {
++  // Saved folders are outside the native tab container, but live tabs must
++  // remain in Chromium's drag session rather than becoming URL-copy drags.
++  if (library_view_) {
++    if (auto* target = library_view_->GetTabDragTarget(point_in_screen)) {
++      return target;
++    }
++  }
++  return BaseTabStripRegionView::GetTabDragTarget(point_in_screen);
++}
++
+ gfx::Rect VerticalTabStripRegionView::GetTabStripDraggableBounds() const {
+   // Tabs should be draggable from the top of the tab strip to the bottom of the
+   // tab strip's max size, saving space for the bottom button container and
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -94,6 +94,9 @@
+ 
+   void FocusLocation();
+ 
++  TabDragTarget* GetTabDragTarget(
++      const gfx::Point& point_in_screen) override;
++
+   VerticalTabStripTopContainer* GetTopContainer() {
+     return top_button_container_;
+   }
+diff --git a/chrome/browser/ui/views/tabs/dragging/BUILD.gn b/chrome/browser/ui/views/tabs/dragging/BUILD.gn
+--- a/chrome/browser/ui/views/tabs/dragging/BUILD.gn
++++ b/chrome/browser/ui/views/tabs/dragging/BUILD.gn
+@@ -57,6 +57,7 @@
+   ]
+ 
+   deps = [
++    "//chrome/browser/ui:cove_space_close_handler",
+     ":dragging",
+     "//base",
+     "//chrome/browser/tab_group_sync:factories",
+diff --git a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+--- a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
++++ b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+@@ -30,6 +30,7 @@
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_init_state.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+ #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+@@ -815,7 +816,24 @@
+         model->GetFocusedGroup().has_value() &&
+         drag_data_.group_header_id() == model->GetFocusedGroup();
+ 
+-    if (is_dragging_all_tabs || is_dragging_focused_group_header) {
++    BrowserView* source_browser_view = GetBrowserViewForContext(source_context_);
++    const bool cove_single_loose_tab =
++        is_dragging_all_tabs && model->count() == 1 &&
++        !model->GetTabAtIndex(0)->IsPinned() &&
++        (model->GetWebContentsAt(0)->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
++         model->GetWebContentsAt(0)->GetVisibleURL().SchemeIsFile()) &&
++        !model->GetTabAtIndex(0)->GetGroup() &&
++        !model->GetTabAtIndex(0)->GetSplit() && source_browser_view &&
++        source_browser_view->ShouldDrawVerticalTabStrip() &&
++        CoveSpaceCloseHandler::Get(
++            source_browser_view->browser()->GetUnownedUserDataHost());
++
++    // Cove's only loose tab can be dragged into an existing saved folder.
++    // Keep a normal tab drag while still inside this window. If it leaves the
++    // strip/sidebar, the existing all-tabs branch in
++    // DetachIntoNewBrowserAndRunMoveLoop still moves this same window.
++    if ((is_dragging_all_tabs && !cove_single_loose_tab) ||
++        is_dragging_focused_group_header) {
+       if (ShouldDragWindowUsingSystemDnD()) {
+         return StartSystemDnDSessionIfNecessary(attached_context_,
+                                                 point_in_screen);
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1622,9 +1622,15 @@
+       "../browser/ui/cove/cove_session_browsertest.cc",
+       "../browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc",
+       "../browser/ui/views/cove/cove_caption_buttons_browsertest.mm",
++      "../browser/ui/views/cove/cove_live_tab_drag_browsertest.cc",
++      "../browser/ui/views/cove/cove_sidebar_drag_browsertest.cc",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     deps = [
++      "//chrome/browser/ui/views/frame:frame",
++      "//chrome/browser/ui/views/tabs:base",
++      "//chrome/browser/ui/views/tabs/dragging:dragging",
++      "//net:test_support",
+       "//base",
+       "//base/test:test_support",
+       "//chrome:packed_resources",
