@@ -94,3 +94,4 @@
 0094-keep-long-saved-sidebars-and-live-tabs-scrollable.patch
 0095-polish-folder-rows-and-load-cached-pin-icons.patch
 0096-keep-sidebar-expanded-during-saved-drags.patch
+0097-autoscroll-shared-sidebar-while-dragging.patch

@@ -1,0 +1,829 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -7,6 +7,8 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++#include "ui/views/view_utils.h"
+ 
+ #include <algorithm>
+ #include <memory>
+@@ -188,7 +190,20 @@
+                           weak_factory_.GetWeakPtr()));
+ }
+ 
++namespace {
++VerticalTabStripRegionView* RegionForFavorites(BrowserWindowInterface* browser) {
++  auto* browser_view =
++      browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  return browser_view ? views::AsViewClass<VerticalTabStripRegionView>(
++                            browser_view->tab_strip_view())
++                      : nullptr;
++}
++}  // namespace
++
+ CoveFavoritesView::~CoveFavoritesView() {
++  if (auto* region = RegionForFavorites(browser_)) {
++    region->StopDragEdgeAutoscroll();
++  }
+   saved_drag_hover_lock_.reset();
+   tab_drag_destroy_callbacks_.Notify();
+ }
+@@ -424,6 +439,9 @@
+ }
+ 
+ void CoveFavoritesView::FinishSourceDrag() {
++  if (auto* region = RegionForFavorites(browser_)) {
++    region->StopDragEdgeAutoscroll();
++  }
+   saved_drag_hover_lock_.reset();
+   source_drag_active_ = false;
+   if (!rebuild_after_drag_) return;
+@@ -562,6 +580,12 @@
+ }
+ 
+ int CoveFavoritesView::OnDragUpdated(const ui::DropTargetEvent& event) {
++  // Favorites sit outside the shared viewport. A pointer here must not keep
++  // the saved list scrolling.
++  if (auto* region = RegionForFavorites(browser_)) {
++    region->NoteDragScreenPoint(
++        views::View::ConvertPointToScreen(this, event.location()));
++  }
+   auto drop = ReadDrop(event.data());
+   if (!drop) { ClearDropIndicator(); return ui::DragDropTypes::DRAG_NONE; }
+   const int operation = drop->move ? ui::DragDropTypes::DRAG_MOVE
+@@ -576,6 +600,9 @@
+ }
+ 
+ void CoveFavoritesView::OnDragExited() {
++  if (auto* region = RegionForFavorites(browser_)) {
++    region->StopDragEdgeAutoscroll();
++  }
+   ClearDropIndicator();
+ }
+ 
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -2,7 +2,9 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <cstdlib>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "build/build_config.h"
+@@ -72,6 +74,7 @@
+ #include "ui/views/window/dialog_delegate.h"
+ #include "ui/views/view_tracker.h"
+ #include "ui/views/view_utils.h"
++#include "ui/views/controls/scroll_view.h"
+ #include "ui/views/widget/widget.h"
+ 
+ namespace {
+@@ -967,4 +970,171 @@
+   EXPECT_EQ(home.spec(),
+       *SavedSpace().FindList("pins")->front().GetDict().FindString("url"));
+   EXPECT_EQ("live pin draft", content::EvalJs(contents, "window.iconDraft"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       DragEdgeAutoscrollFollowsStationaryPointer) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(),
++      GURL("data:text/html,<input id=draft><title>Edge scroll page</title>")));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(
++      contents, "window.edgeDraft = 'kept'; history.pushState({}, '', '#edge');"));
++  const int history = contents->GetController().GetEntryCount();
++  const int tabs = browser()->GetTabStripModel()->count();
++  const GURL url = contents->GetVisibleURL();
++  Seed();
++  std::vector<std::string> folder_ids;
++  std::vector<std::string> folder_names;
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    auto* personal = FindSpace(*update, "personal");
++    ASSERT_TRUE(personal);
++    base::ListValue folders;
++    for (int i = 0; i < 40; ++i) {
++      folder_ids.push_back("edge-" + std::to_string(i));
++      folder_names.push_back("Edge " + std::to_string(i));
++      folders.Append(Folder(folder_ids.back().c_str(),
++                            folder_names.back().c_str(), ""));
++    }
++    personal->Set("folders", std::move(folders));
++    personal->Remove("sidebar_order");
++  }
++  Layout();
++  auto* region = views::AsViewClass<VerticalTabStripRegionView>(
++      BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view());
++  ASSERT_TRUE(region);
++  views::ScrollView* scroll = nullptr;
++  for (views::View* view = library(); view; view = view->parent()) {
++    if (auto* found = views::ScrollView::GetScrollViewForContents(view)) {
++      scroll = found;
++      break;
++    }
++  }
++  ASSERT_TRUE(scroll);
++  ASSERT_GT(scroll->contents()->height(), scroll->GetVisibleRect().height());
++
++  auto* source = FindRow(library(), u"Pin Q");
++  ASSERT_TRUE(source);
++  ui::OSExchangeData data;
++  Write(source, &data);
++  library()->OnWillStartDragForView(source);
++
++  auto screen_at = [&](int y) {
++    return views::View::ConvertPointToScreen(scroll,
++                                             gfx::Point(scroll->width() / 2, y));
++  };
++  auto drag_at = [&](const gfx::Point& screen) {
++    const gfx::Point local =
++        views::View::ConvertPointFromScreen(library(), screen);
++    ui::DropTargetEvent event(data, gfx::PointF(local), gfx::PointF(local),
++                              ui::DragDropTypes::DRAG_MOVE);
++    return library()->OnDragUpdated(event);
++  };
++  auto drag_in_band = [&](int y_start, int y_end, int step) {
++    gfx::Point chosen;
++    int operation = ui::DragDropTypes::DRAG_NONE;
++    for (int y = y_start; step > 0 ? y <= y_end : y >= y_end; y += step) {
++      chosen = screen_at(y);
++      operation = drag_at(chosen);
++      if (operation == ui::DragDropTypes::DRAG_MOVE) {
++        return std::make_pair(chosen, operation);
++      }
++    }
++    return std::make_pair(chosen, operation);
++  };
++
++  const auto [bottom, bottom_operation] =
++      drag_in_band(scroll->height() - 2, scroll->height() - 24, -2);
++  ASSERT_EQ(ui::DragDropTypes::DRAG_MOVE, bottom_operation);
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++  ASSERT_TRUE(library()->DropIndicatorForTesting());
++  ASSERT_TRUE(library()->DropIndicatorForTesting()->GetVisible());
++  const int bottom_indicator_y =
++      library()->DropIndicatorForTesting()->GetBoundsInScreen().CenterPoint().y();
++  const float start_offset = scroll->CurrentOffset().y();
++  for (int i = 0; i < 16; ++i) {
++    region->FireDragEdgeAutoscrollForTesting();
++  }
++  EXPECT_GT(scroll->CurrentOffset().y(), start_offset + 70.0f);
++  EXPECT_TRUE(library()->DropIndicatorForTesting()->GetVisible());
++  EXPECT_LT(std::abs(library()->DropIndicatorForTesting()->GetBoundsInScreen()
++                         .CenterPoint()
++                         .y() -
++                     bottom_indicator_y),
++            44);
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++
++  const float scrolled_down = scroll->CurrentOffset().y();
++  const auto [top, top_operation] = drag_in_band(2, 24, 2);
++  ASSERT_EQ(ui::DragDropTypes::DRAG_MOVE, top_operation);
++  const int top_indicator_y =
++      library()->DropIndicatorForTesting()->GetBoundsInScreen().CenterPoint().y();
++  for (int i = 0; i < 8; ++i) {
++    region->FireDragEdgeAutoscrollForTesting();
++  }
++  EXPECT_LT(scroll->CurrentOffset().y(), scrolled_down - 30.0f);
++  EXPECT_TRUE(library()->DropIndicatorForTesting()->GetVisible());
++  EXPECT_LT(std::abs(library()->DropIndicatorForTesting()->GetBoundsInScreen()
++                         .CenterPoint()
++                         .y() -
++                     top_indicator_y),
++            44);
++
++  const float parked = scroll->CurrentOffset().y();
++  const gfx::Point center = screen_at(scroll->height() / 2);
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, drag_at(center));
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  region->FireDragEdgeAutoscrollForTesting();
++  EXPECT_EQ(parked, scroll->CurrentOffset().y());
++
++  region->NoteDragScreenPoint(screen_at(-30));
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  region->FireDragEdgeAutoscrollForTesting();
++  EXPECT_EQ(parked, scroll->CurrentOffset().y());
++
++  const gfx::Rect region_bounds = region->GetBoundsInScreen();
++  const gfx::Point footer(region_bounds.CenterPoint().x(),
++                          region_bounds.bottom() - 2);
++  ASSERT_FALSE(scroll->GetBoundsInScreen().Contains(footer));
++  region->NoteDragScreenPoint(footer);
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  region->FireDragEdgeAutoscrollForTesting();
++  EXPECT_EQ(parked, scroll->CurrentOffset().y());
++
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, drag_at(bottom));
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++  library()->OnDragExited();
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  region->FireDragEdgeAutoscrollForTesting();
++  EXPECT_EQ(parked, scroll->CurrentOffset().y());
++
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, drag_at(bottom));
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++  library()->FinishSavedDragHoverForTesting();
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++
++  EXPECT_EQ(history, contents->GetController().GetEntryCount());
++  EXPECT_EQ(tabs, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(url, contents->GetVisibleURL());
++  EXPECT_EQ("kept", content::EvalJs(contents, "window.edgeDraft"));
++  EXPECT_EQ(2u, SavedSpace().FindList("pins")->size());
++  EXPECT_EQ(40u, SavedSpace().FindList("folders")->size());
++
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, drag_at(bottom));
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  ASSERT_TRUE(controller);
++  controller->RequestCollapse(true);
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  controller->RequestCollapse(false);
++  ASSERT_TRUE(base::test::RunUntil([&] { return !controller->IsCollapsed(); }));
++  Layout();
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, drag_at(bottom));
++  EXPECT_TRUE(region->IsDragEdgeAutoscrollingForTesting());
++  library()->BeginSpaceTransitionForTesting();
++  EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
++  EXPECT_EQ(url, contents->GetVisibleURL());
++  EXPECT_EQ("kept", content::EvalJs(contents, "window.edgeDraft"));
+ }
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -12,6 +12,7 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ 
+ #include <algorithm>
+ #include <optional>
+@@ -374,6 +375,7 @@
+ }
+ 
+ CoveSidebarLibraryView::~CoveSidebarLibraryView() {
++  StopDragEdgeAutoscroll();
+   saved_drag_hover_lock_.reset();
+   tab_drag_destroy_callbacks_.Notify();
+   TabStripModelObserver::StopObservingAll(this);
+@@ -2435,6 +2437,9 @@
+ }
+ 
+ int CoveSidebarLibraryView::OnDragUpdated(const ui::DropTargetEvent& event) {
++  RememberOsDrag(event);
++  NoteDragEdgeAutoscroll(
++      views::View::ConvertPointToScreen(this, event.location()));
+   auto destination = LocateDrop(event.location());
+   if (!destination || !CanDrop(event.data())) { ClearDropIndicator(); return 0; }
+   const bool moving = event.data().HasCustomFormat(SidebarDragFormat());
+@@ -2451,7 +2456,11 @@
+   return operation;
+ }
+ 
+-void CoveSidebarLibraryView::OnDragExited() { ClearDropIndicator(); }
++void CoveSidebarLibraryView::OnDragExited() {
++  active_os_drag_.reset();
++  StopDragEdgeAutoscroll();
++  ClearDropIndicator();
++}
+ 
+ views::View::DropCallback CoveSidebarLibraryView::GetDropCallback(
+     const ui::DropTargetEvent& event) {
+@@ -2556,6 +2565,100 @@
+     views::View* sender, const gfx::Point& press, const gfx::Point& point) {
+   return GetDragOperationsForView(sender, point) &&
+       views::View::ExceededDragThreshold(point - press);
++}
++
++namespace {
++VerticalTabStripRegionView* RegionForLibrary(BrowserWindowInterface* browser) {
++  auto* browser_view =
++      browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  return browser_view ? views::AsViewClass<VerticalTabStripRegionView>(
++                            browser_view->tab_strip_view())
++                      : nullptr;
++}
++}  // namespace
++
++void CoveSidebarLibraryView::RememberOsDrag(const ui::DropTargetEvent& event) {
++  ActiveOsDrag drag;
++  drag.operations = event.source_operations();
++  if (event.data().HasCustomFormat(SidebarDragFormat())) {
++    drag.row_move = true;
++    drag.source = ReadRowDrag(event.data());
++  } else {
++    const auto urls = event.data().GetURLs(
++        ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
++    if (urls.size() == 1 && urls[0].url.SchemeIsHTTPOrHTTPS()) {
++      drag.url_copy = true;
++      drag.url = urls[0].url;
++      drag.title = urls[0].title;
++    }
++  }
++  active_os_drag_ = std::move(drag);
++}
++
++void CoveSidebarLibraryView::NoteDragEdgeAutoscroll(
++    const gfx::Point& screen_point) {
++  if (auto* region = RegionForLibrary(browser_)) {
++    region->NoteDragScreenPoint(screen_point);
++  }
++}
++
++void CoveSidebarLibraryView::StopDragEdgeAutoscroll() {
++  if (auto* region = RegionForLibrary(browser_)) {
++    region->StopDragEdgeAutoscroll();
++  }
++}
++
++void CoveSidebarLibraryView::RefreshSavedDropAtScreenPoint(
++    const gfx::Point& screen_point) {
++  const gfx::Point local =
++      views::View::ConvertPointFromScreen(this, screen_point);
++  if (live_drag_handle_) {
++    auto* tab = live_drag_handle_->Get();
++    auto* contents = tab ? tab->GetContents() : nullptr;
++    const GURL url = contents ? contents->GetVisibleURL() : GURL();
++    if (!tab || tab->GetBrowserWindowInterface() != browser_ ||
++        tab->GetGroup() || tab->GetSplit() || !url.is_valid() ||
++        (!url.SchemeIsHTTPOrHTTPS() && !url.SchemeIsFile())) {
++      live_drop_.reset();
++      ClearDropIndicator();
++      return;
++    }
++    auto destination = LocateDrop(local);
++    if (!destination || !IsDropLocationValid(*destination)) {
++      live_drop_.reset();
++      ClearDropIndicator();
++      return;
++    }
++    live_drop_ = destination;
++    ShowDropIndicator(*destination);
++    return;
++  }
++  if (!active_os_drag_) {
++    return;
++  }
++  auto destination = LocateDrop(local);
++  if (!destination || !IsDropLocationValid(*destination)) {
++    ClearDropIndicator();
++    return;
++  }
++  if (active_os_drag_->row_move) {
++    const auto* space = FindSpace(
++        browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref),
++        active_space_id_);
++    if (!active_os_drag_->source || !space ||
++        !(active_os_drag_->operations & ui::DragDropTypes::DRAG_MOVE) ||
++        !cove::SidebarOrder::CanMove(*space, active_os_drag_->source->item,
++                                     destination->parent,
++                                     destination->before)) {
++      ClearDropIndicator();
++      return;
++    }
++  } else if (!active_os_drag_->url_copy ||
++             !(active_os_drag_->operations & ui::DragDropTypes::DRAG_COPY)) {
++    ClearDropIndicator();
++    return;
++  }
++  ShowDropIndicator(*destination);
+ }
+ 
+ void CoveSidebarLibraryView::AcquireSavedDragHoverLock() {
+@@ -2580,6 +2683,8 @@
+ void CoveSidebarLibraryView::FinishRowDrag() {
+   saved_drag_hover_lock_.reset();
+   row_drag_active_ = false;
++  active_os_drag_.reset();
++  StopDragEdgeAutoscroll();
+   ClearDropIndicator();
+   if (rebuild_after_drag_) { rebuild_after_drag_ = false; Rebuild(); }
+ }
+@@ -2590,10 +2695,14 @@
+   return GetVisibleBounds().Contains(point) ? this : nullptr;
+ }
+ 
+-void CoveSidebarLibraryView::OnTabDragEntered() { ClearDropIndicator(); }
++void CoveSidebarLibraryView::OnTabDragEntered() {
++  active_os_drag_.reset();
++  ClearDropIndicator();
++}
+ 
+ TabDragContext* CoveSidebarLibraryView::OnTabDragUpdated(
+     TabDragTarget::DragController& controller, const gfx::Point& point_in_screen) {
++  NoteDragEdgeAutoscroll(point_in_screen);
+   live_drag_handle_.reset();
+   live_drop_.reset();
+   ClearDropIndicator();
+@@ -2625,6 +2734,7 @@
+ void CoveSidebarLibraryView::OnTabDragEnded() {
+   live_drag_handle_.reset();
+   live_drop_.reset();
++  StopDragEdgeAutoscroll();
+   ClearDropIndicator();
+ }
+ bool CoveSidebarLibraryView::CanDropTab() {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -14,6 +14,7 @@
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
++#include "url/gurl.h"
+ #include "base/callback_list.h"
+ #include "chrome/browser/ui/views/cove/cove_folder_model.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
+@@ -109,6 +110,12 @@
+                            const gfx::Point& point) override;
+   void OnWillStartDragForView(views::View* sender) override;
+   void FinishSavedDragHoverForTesting() { FinishRowDrag(); }
++  views::View* DropIndicatorForTesting() const { return drop_indicator_; }
++  void BeginSpaceTransitionForTesting() { begin_space_transition_.Run(1); }
++  // Retargets the saved or live-tab indicator at a stationary screen pointer
++  // after the shared viewport scrolls. Uses the validated source already
++  // captured for this drag.
++  void RefreshSavedDropAtScreenPoint(const gfx::Point& screen_point);
+ 
+   void OnTabDragEntered() override;
+   TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
+@@ -160,6 +167,17 @@
+   void ClearDropIndicator();
+   void FinishRowDrag();
+   void AcquireSavedDragHoverLock();
++  struct ActiveOsDrag {
++    bool row_move = false;
++    std::optional<RowDragData> source;
++    bool url_copy = false;
++    GURL url;
++    std::u16string title;
++    int operations = 0;
++  };
++  void RememberOsDrag(const ui::DropTargetEvent& event);
++  void NoteDragEdgeAutoscroll(const gfx::Point& screen_point);
++  void StopDragEdgeAutoscroll();
+   void PerformRowDrop(RowDragData source, DragLocation destination,
+                       const ui::DropTargetEvent& event,
+                       ui::mojom::DragOperation& operation,
+@@ -248,6 +266,7 @@
+   std::map<const views::View*, cove::SidebarItem> row_items_;
+   raw_ptr<views::View> drop_indicator_ = nullptr;
+   bool row_drag_active_ = false;
++  std::optional<ActiveOsDrag> active_os_drag_;
+   std::unique_ptr<ExpandOnHoverLock> saved_drag_hover_lock_;
+   bool rebuild_after_drag_ = false;
+   std::optional<tabs::TabHandle> live_drag_handle_;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -82,6 +82,7 @@
+ #include "ui/display/screen.h"
+ #include "ui/events/event.h"
+ #include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/point_f.h"
+ #include "ui/views/background.h"
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
+@@ -108,6 +109,9 @@
+ constexpr int kCollapsedResizeAreaWidth = 2;
+ constexpr int kKeyboardResizeWidth = 50;
+ constexpr int kSnapDistance = 15;
++constexpr int kDragEdgeBandDip = 24;
++constexpr float kDragEdgeScrollStepDip = 5.0f;
++constexpr base::TimeDelta kDragEdgeScrollInterval = base::Milliseconds(20);
+ 
+ // Recreate only the painted layer tree. Old layers have no View delegates,
+ // so rebuilding rows cannot make a transition retain destroyed tab Views.
+@@ -316,6 +320,7 @@
+ }
+ 
+ VerticalTabStripRegionView::~VerticalTabStripRegionView() {
++  StopDragEdgeAutoscroll();
+   // These parent surfaces borrow the child library's menu controller.
+   set_context_menu_controller(nullptr);
+   content_area_view_->set_context_menu_controller(nullptr);
+@@ -505,6 +510,7 @@
+ }
+ 
+ void VerticalTabStripRegionView::RemovedFromWidget() {
++  StopDragEdgeAutoscroll();
+   if (GetFocusManager()) {
+     GetFocusManager()->RemoveFocusChangeListener(&focus_listener_);
+   }
+@@ -958,6 +964,7 @@
+ void VerticalTabStripRegionView::RequestCollapse(bool collapse) {
+   target_collapse_state_.collapsed = collapse;
+   if (collapse) {
++    StopDragEdgeAutoscroll();
+     // A deliberate collapse wins over a stationary pointer anywhere in the
+     // sidebar, not just over its collapse button. Re-arm after mouse exit.
+     suppress_expand_on_hover_ = true;
+@@ -1056,6 +1063,7 @@
+ }
+ 
+ void VerticalTabStripRegionView::BeginSpaceTransition(int direction) {
++  StopDragEdgeAutoscroll();
+   ClearSpaceTransition();
+   if (!gfx::Animation::ShouldRenderRichAnimation() || !GetWidget() ||
+       !GetWidget()->IsVisible() || width() < kUncollapsedMinWidth ||
+@@ -1177,7 +1185,13 @@
+ void VerticalTabStripRegionView::OnCollapseStateChanged(
+     tabs::VerticalTabStripCollapseState state) {
+   // Apply padding immediately at the start of the animation by including
+-  // the collapsing state.
++  // the collapsing state. A hover reveal keeps the saved collapsed state, so
++  // that state alone must not cancel a drag that is still over the open list.
++  if (state == tabs::VerticalTabStripCollapseState::kCollapsing ||
++      (state == tabs::VerticalTabStripCollapseState::kCollapsed &&
++       !is_expanded_on_hover_)) {
++    StopDragEdgeAutoscroll();
++  }
+   bool collapsed = state != tabs::VerticalTabStripCollapseState::kExpanded;
+ 
+   if (library_view_) {
+@@ -1234,8 +1248,108 @@
+   if (favorites_view_) favorites_view_->SetTabDragActive(active);
+   InvalidateLayout();
+   if (GetWidget()) GetWidget()->LayoutRootViewIfNecessary();
++}
++
++views::ScrollView* VerticalTabStripRegionView::SharedRowsScrollView() const {
++  return space_rows_view_
++             ? views::ScrollView::GetScrollViewForContents(space_rows_view_)
++             : nullptr;
++}
++
++bool VerticalTabStripRegionView::CanDragEdgeAutoscroll() const {
++  if (!GetWidget() || space_snapshot_) {
++    return false;
++  }
++  const views::ScrollView* scroll = SharedRowsScrollView();
++  if (!scroll || !scroll->GetVisible() || !scroll->contents() ||
++      scroll->height() <= kDragEdgeBandDip * 2) {
++    return false;
++  }
++  return scroll->contents()->height() > scroll->GetVisibleRect().height();
++}
++
++VerticalTabStripRegionView::DragEdge
++VerticalTabStripRegionView::DragEdgeForScreenPoint(
++    const gfx::Point& screen_point) const {
++  views::ScrollView* scroll = SharedRowsScrollView();
++  if (!scroll) {
++    return DragEdge::kNone;
++  }
++  const gfx::Point local =
++      views::View::ConvertPointFromScreen(scroll, screen_point);
++  if (!scroll->GetLocalBounds().Contains(local)) {
++    return DragEdge::kNone;
++  }
++  if (local.y() <= kDragEdgeBandDip) {
++    return DragEdge::kTop;
++  }
++  if (local.y() >= scroll->height() - kDragEdgeBandDip) {
++    return DragEdge::kBottom;
++  }
++  return DragEdge::kNone;
++}
++
++void VerticalTabStripRegionView::NoteDragScreenPoint(
++    const gfx::Point& screen_point) {
++  if (!CanDragEdgeAutoscroll() ||
++      DragEdgeForScreenPoint(screen_point) == DragEdge::kNone) {
++    StopDragEdgeAutoscroll();
++    return;
++  }
++  drag_edge_screen_point_ = screen_point;
++  if (drag_edge_timer_.IsRunning()) {
++    return;
++  }
++  drag_edge_timer_.Start(
++      FROM_HERE, kDragEdgeScrollInterval,
++      base::BindRepeating(
++          &VerticalTabStripRegionView::OnDragEdgeAutoscrollTick,
++          weak_factory_.GetWeakPtr()));
+ }
+ 
++void VerticalTabStripRegionView::StopDragEdgeAutoscroll() {
++  drag_edge_timer_.Stop();
++  drag_edge_screen_point_.reset();
++}
++
++void VerticalTabStripRegionView::FireDragEdgeAutoscrollForTesting() {
++  OnDragEdgeAutoscrollTick();
++}
++
++bool VerticalTabStripRegionView::IsDragEdgeAutoscrollingForTesting() const {
++  return drag_edge_timer_.IsRunning();
++}
++
++void VerticalTabStripRegionView::OnDragEdgeAutoscrollTick() {
++  if (!drag_edge_screen_point_ || !CanDragEdgeAutoscroll()) {
++    StopDragEdgeAutoscroll();
++    return;
++  }
++  const gfx::Point screen_point = *drag_edge_screen_point_;
++  const DragEdge edge = DragEdgeForScreenPoint(screen_point);
++  views::ScrollView* scroll = SharedRowsScrollView();
++  if (edge == DragEdge::kNone || !scroll || !scroll->contents()) {
++    StopDragEdgeAutoscroll();
++    return;
++  }
++  const float max_offset = std::max(
++      0, scroll->contents()->height() - scroll->GetVisibleRect().height());
++  const float current = scroll->CurrentOffset().y();
++  const float delta = edge == DragEdge::kBottom ? kDragEdgeScrollStepDip
++                                                : -kDragEdgeScrollStepDip;
++  const float next = std::clamp(current + delta, 0.0f, max_offset);
++  if (next == current) {
++    StopDragEdgeAutoscroll();
++    return;
++  }
++  // Scrolling notifies native tab containers that observe this viewport.
++  // Saved-row and live-folder indicators then retarget the same screen point.
++  scroll->ScrollByOffset(gfx::PointF(0, next - current));
++  if (library_view_) {
++    library_view_->RefreshSavedDropAtScreenPoint(screen_point);
++  }
++}
++
+ TabDragTarget* VerticalTabStripRegionView::GetTabDragTarget(
+     const gfx::Point& point_in_screen) {
+   if (favorites_view_) {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -54,6 +54,7 @@
+ class AnimationAbortHandle;
+ class LabelButton;
+ class ResizeArea;
++class ScrollView;
+ class Separator;
+ class View;
+ }  // namespace views
+@@ -94,6 +95,13 @@
+ 
+   void FocusLocation();
+   void SetCoveTabDragActive(bool active);
++  // `screen_point` is the stationary pointer for a saved-row, Favorite, or
++  // live-tab drag. Scrolling runs only while it stays in the shared
++  // viewport's top or bottom edge band.
++  void NoteDragScreenPoint(const gfx::Point& screen_point);
++  void StopDragEdgeAutoscroll();
++  void FireDragEdgeAutoscrollForTesting();
++  bool IsDragEdgeAutoscrollingForTesting() const;
+ 
+   TabDragTarget* GetTabDragTarget(
+       const gfx::Point& point_in_screen) override;
+@@ -271,7 +279,14 @@
+   void OnOmniboxPopupVisibilityChanged(bool is_open) override;
+ 
+   void OnActiveTabChanged(const tabs::TabInterface* active_tab) override;
++
++  enum class DragEdge { kNone, kTop, kBottom };
+ 
++  views::ScrollView* SharedRowsScrollView() const;
++  bool CanDragEdgeAutoscroll() const;
++  DragEdge DragEdgeForScreenPoint(const gfx::Point& screen_point) const;
++  void OnDragEdgeAutoscrollTick();
++
+   // Organizer panel:
+   raw_ptr<views::View> organizer_panel_view_ = nullptr;
+   double organizer_panel_show_percent_ = 0.0;
+@@ -352,6 +367,9 @@
+ 
+   // The mouse exit event debounce timer.
+   base::OneShotTimer mouse_exit_timer_;
++  // Region-owned so a stationary drag keeps scrolling after the last event.
++  base::RepeatingTimer drag_edge_timer_;
++  std::optional<gfx::Point> drag_edge_screen_point_;
+ 
+   base::CallbackListSubscription paint_as_active_subscription_;
+   base::WeakPtrFactory<VerticalTabStripRegionView> weak_factory_{this};
+diff --git a/chrome/browser/ui/views/tabs/common/dragged_tabs_container.cc b/chrome/browser/ui/views/tabs/common/dragged_tabs_container.cc
+--- a/chrome/browser/ui/views/tabs/common/dragged_tabs_container.cc
++++ b/chrome/browser/ui/views/tabs/common/dragged_tabs_container.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
+ 
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++
+ #include <algorithm>
+ 
+ #include "base/auto_reset.h"
+@@ -31,6 +33,27 @@
+ 
+ namespace {
+ 
++VerticalTabStripRegionView* FindCoveRegion(views::View* host) {
++  for (views::View* view = host; view; view = view->parent()) {
++    if (auto* region = views::AsViewClass<VerticalTabStripRegionView>(view)) {
++      return region;
++    }
++  }
++  return nullptr;
++}
++
++void NoteCoveDragEdge(views::View* host, const gfx::Point& screen) {
++  if (auto* region = FindCoveRegion(host)) {
++    region->NoteDragScreenPoint(screen);
++  }
++}
++
++void StopCoveDragEdge(views::View* host) {
++  if (auto* region = FindCoveRegion(host)) {
++    region->StopDragEdgeAutoscroll();
++  }
++}
++
+ // Calculates the offset of the source dragged view (i.e. the main view being
+ // dragged) from the mouse.
+ gfx::Vector2d GetSourceViewOffsetFromMouse(
+@@ -78,6 +101,7 @@
+ 
+ DraggedTabsContainer::
+     ~DraggedTabsContainer() {  // NOLINT(modernize-use-equals-default)
++  StopCoveDragEdge(base::to_address(host_view_));
+   on_will_destroy_callback_list_.Notify();
+ }
+ 
+@@ -125,6 +149,7 @@
+   UpdateDraggingViewTransforms(point_in_container);
+ 
+   HandleTabDragInContainer(dragged_bounds_in_container, point_in_container);
++  NoteCoveDragEdge(base::to_address(host_view_), last_drag_point_in_screen_);
+ }
+ 
+ void DraggedTabsContainer::OnTabDragExited(const gfx::Point& point_in_screen) {
+@@ -217,6 +242,15 @@
+       scroll_view->AddContentsScrolledCallback(base::BindRepeating(
+           &DraggedTabsContainer::ApplyUpdatesForDragPositionChange,
+           base::Unretained(this)));
++  // The inner viewport keeps its layout scroll view. When Cove wraps the
++  // saved list and tabs in one outer viewport, follow that scroll too so a
++  // stationary drag refreshes transforms and insertion targets.
++  if (views::ScrollView* outer = OuterSharedScrollView()) {
++    on_outer_scrolled_subscription_ =
++        outer->AddContentsScrolledCallback(base::BindRepeating(
++            &DraggedTabsContainer::ApplyUpdatesForDragPositionChange,
++            base::Unretained(this)));
++  }
+ 
+   const auto& session_data = controller.GetSessionData();
+   BuildDragLayout(session_data);
+@@ -442,6 +476,21 @@
+   last_move_drag_x_ = std::nullopt;
+ 
+   on_scrolled_subscription_.reset();
++  on_outer_scrolled_subscription_.reset();
++  StopCoveDragEdge(base::to_address(host_view_));
++}
++
++views::ScrollView* DraggedTabsContainer::OuterSharedScrollView() const {
++  views::ScrollView* inner = GetScrollViewForContainer();
++  for (views::View* view = base::to_address(host_view_); view;
++       view = view->parent()) {
++    views::ScrollView* scroll =
++        views::ScrollView::GetScrollViewForContents(view);
++    if (scroll && scroll != inner) {
++      return scroll;
++    }
++  }
++  return nullptr;
+ }
+ 
+ void DraggedTabsContainer::UpdateDraggingViewTransforms(
+diff --git a/chrome/browser/ui/views/tabs/common/dragged_tabs_container.h b/chrome/browser/ui/views/tabs/common/dragged_tabs_container.h
+--- a/chrome/browser/ui/views/tabs/common/dragged_tabs_container.h
++++ b/chrome/browser/ui/views/tabs/common/dragged_tabs_container.h
+@@ -127,6 +127,10 @@
+  private:
+   // Returns the scroll view for the container.
+   virtual views::ScrollView* GetScrollViewForContainer() const = 0;
++
++  // Cove's shared sidebar viewport, when this container's own scroll view is
++  // only the inner layout viewport. Null when there is no outer scroller.
++  views::ScrollView* OuterSharedScrollView() const;
+ 
+   // Updates the target layout of the host view, and snaps `views_to_snap` to
+   // their target layout, skipping animations.
+@@ -268,6 +272,8 @@
+ 
+   std::optional<base::CallbackListSubscription> on_scrolled_subscription_ =
+       std::nullopt;
++  std::optional<base::CallbackListSubscription> on_outer_scrolled_subscription_ =
++      std::nullopt;
+ 
+   base::OnceClosureList on_will_destroy_callback_list_;
+ 
