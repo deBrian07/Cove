@@ -1,0 +1,150 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -55,11 +55,14 @@
+ #include "url/url_constants.h"
+ 
+ namespace {
+-constexpr SkColor kGround = SkColorSetRGB(29, 31, 38);
++constexpr SkColor kGround = SkColorSetRGB(23, 23, 23);
+ constexpr SkColor kText = SkColorSetRGB(239, 239, 245);
+-constexpr SkColor kMuted = SkColorSetRGB(156, 157, 172);
+-constexpr SkColor kSelection = SkColorSetRGB(79, 70, 229);
+-constexpr size_t kMaxRows = 8;
++constexpr SkColor kMuted = SkColorSetRGB(139, 139, 143);
++constexpr SkColor kSelection = SkColorSetRGB(67, 65, 207);
++constexpr size_t kMaxRows = 5;
++constexpr int kQueryHeight = 64;
++constexpr int kRowHeight = 48;
++constexpr int kRowGap = 4;
+ 
+ bool Matches(const std::u16string& text, const std::u16string& query) {
+   return query.empty() ||
+@@ -109,29 +112,32 @@
+     image->SetImageSize(gfx::Size(20, 20));
+     auto* text = AddChildView(std::make_unique<views::View>());
+     auto* lines = text->SetLayoutManager(std::make_unique<views::BoxLayout>(
+-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 3));
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
+     lines->set_cross_axis_alignment(
+-        views::BoxLayout::CrossAxisAlignment::kStretch);
++        views::BoxLayout::CrossAxisAlignment::kCenter);
+     layout->SetFlexForView(text, 1);
+     title_ = text->AddChildView(std::make_unique<views::Label>(title));
+     title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+     title_->SetEnabledColor(kText);
+     title_->SetAutoColorReadabilityEnabled(false);
+-    detail_ = text->AddChildView(std::make_unique<views::Label>(detail));
++    detail_ = text->AddChildView(std::make_unique<views::Label>(
++        detail.empty() ? std::u16string() : u"— " + detail));
++    lines->SetFlexForView(detail_, 1);
+     detail_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+     detail_->SetEnabledColor(kMuted);
+     detail_->SetAutoColorReadabilityEnabled(false);
+     detail_->SetVisible(!detail.empty());
+-    auto* hint = AddChildView(std::make_unique<views::Label>(action));
+-    hint->SetEnabledColor(kMuted);
+-    hint->SetAutoColorReadabilityEnabled(false);
++    hint_ = AddChildView(std::make_unique<views::Label>(action));
++    hint_->SetEnabledColor(kMuted);
++    hint_->SetAutoColorReadabilityEnabled(false);
+     GetViewAccessibility().SetName(title + u" " + detail + u" " + action);
+-    SetPreferredSize(gfx::Size(100, 58));
++    SetPreferredSize(gfx::Size(100, kRowHeight));
+   }
+   void SetSelected(bool selected) {
+     SetBackground(selected ? views::CreateRoundedRectBackground(kSelection, 8)
+                            : nullptr);
+     detail_->SetEnabledColor(selected ? kText : kMuted);
++    hint_->SetEnabledColor(selected ? kText : kMuted);
+     GetViewAccessibility().SetIsSelected(selected);
+     SchedulePaint();
+   }
+@@ -139,6 +145,7 @@
+  private:
+   raw_ptr<views::Label> title_ = nullptr;
+   raw_ptr<views::Label> detail_ = nullptr;
++  raw_ptr<views::Label> hint_ = nullptr;
+ };
+ BEGIN_METADATA(CommandRow)
+ END_METADATA
+@@ -172,7 +179,7 @@
+     bar->input_->SetText(std::u16string());
+     if (auto* anchor = bar->GetAnchorView()) {
+       bar->width_ = std::clamp(anchor->width() - 48, 280, 760);
+-      bar->input_->SetPreferredSize(gfx::Size(bar->width_ - 20, 52));
++      bar->input_->SetPreferredSize(gfx::Size(bar->width_ - 56, kQueryHeight));
+     }
+     VLOG(1) << "Cove native palette anchor_ms="
+             << (base::TimeTicks::Now() - started).InMillisecondsF();
+@@ -207,26 +214,33 @@
+   if (GetAnchorView()) {
+     width_ = std::clamp(GetAnchorView()->width() - 48, 280, 760);
+   }
+-  input_ = AddChildView(std::make_unique<views::Textfield>());
++  auto* input_row = AddChildView(std::make_unique<views::View>());
++  auto* query_layout = input_row->SetLayoutManager(
++      std::make_unique<views::BoxLayout>(
++          views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 14), 10));
++  query_layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kCenter);
++  input_row->SetBorder(views::CreateSolidSidedBorder(
++      gfx::Insets::TLBR(0, 0, 1, 0), SkColorSetRGB(46, 46, 48)));
++  auto* search = input_row->AddChildView(std::make_unique<views::ImageView>());
++  search->SetImage(ui::ImageModel::FromVectorIcon(
++      vector_icons::kSearchIcon, kText, 18));
++  search->SetImageSize(gfx::Size(18, 18));
++  input_ = input_row->AddChildView(std::make_unique<views::Textfield>());
++  query_layout->SetFlexForView(input_, 1);
+   input_->set_controller(this);
+   input_->SetTextInputType(ui::TEXT_INPUT_TYPE_SEARCH);
+   input_->SetPlaceholderText(u"Search or Enter URL…");
+   input_->GetViewAccessibility().SetName(u"Search or Enter URL");
+   input_->SetDefaultWidthInChars(1);
+-  input_->SetPreferredSize(gfx::Size(width_ - 20, 52));
++  input_->SetPreferredSize(gfx::Size(width_ - 56, kQueryHeight));
+   input_->SetBackgroundColor(kGround);
+   input_->SetColor(kText);
+-  input_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 14)));
++  input_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 0)));
+   input_->SetFontList(gfx::FontList().DeriveWithSizeDelta(5));
+   rows_view_ = AddChildView(std::make_unique<views::View>());
+   rows_view_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kVertical, gfx::Insets(), 4));
+-  auto* footer = AddChildView(std::make_unique<views::Label>(
+-      u"↑ ↓ navigate    ↩ open    ⌘↩ search    / commands    esc close"));
+-  footer->SetEnabledColor(kMuted);
+-  footer->SetAutoColorReadabilityEnabled(false);
+-  footer->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 12)));
+-  footer->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+   Rebuild();
+ }
+ 
+@@ -301,7 +315,8 @@
+ void CoveCommandBarView::Rebuild() {
+   rows_.clear();
+   const size_t max_rows = static_cast<size_t>(std::clamp(
+-      ((GetAnchorView() ? GetAnchorView()->height() : 700) - 154) / 62, 1,
++      ((GetAnchorView() ? GetAnchorView()->height() : 700) - 104) /
++          (kRowHeight + kRowGap), 1,
+       static_cast<int>(kMaxRows)));
+   std::u16string query;
+   base::TrimWhitespace(input_->GetText(), base::TRIM_ALL, &query);
+@@ -537,13 +552,15 @@
+         actions ? u"No matching command" : u"Type a URL or search"));
+     empty->SetEnabledColor(kMuted);
+     empty->SetAutoColorReadabilityEnabled(false);
+-    empty->SetPreferredSize(gfx::Size(100, 58));
++    empty->SetPreferredSize(gfx::Size(100, kRowHeight));
+   }
+   selected_ =
+       std::clamp(selected_, 0, std::max(0, static_cast<int>(rows_.size()) - 1));
+   Select(selected_);
+   SetPreferredSize(
+-      gfx::Size(width_, 52 + 34 + 20 + 62 * std::max(size_t{1}, rows_.size())));
++      gfx::Size(width_, kQueryHeight + 6 +
++                            (kRowHeight + kRowGap) *
++                                std::max(size_t{1}, rows_.size()) - kRowGap));
+   if (GetWidget()) {
+     GetWidget()->widget_delegate()->AsBubbleDialogDelegate()->SizeToContents();
+   }
