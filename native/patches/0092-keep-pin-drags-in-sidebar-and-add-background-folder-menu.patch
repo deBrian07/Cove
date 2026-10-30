@@ -1,0 +1,437 @@
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -147,6 +147,21 @@
+     ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+   }
+ 
++  void WalkDrag(TabDragContext* context, gfx::Point from, gfx::Point to) {
++    // Walk every pixel, including New Tab, separators and gaps. Jumping straight
++    // to a folder misses accidental detach paths in the real pointer journey.
++    while (from != to) {
++      from.Offset((to.x() > from.x()) - (to.x() < from.x()),
++                  (to.y() > from.y()) - (to.y() < from.y()));
++      ASSERT_TRUE(browser_view()->GetTabDragTarget(from)) << from.ToString();
++      ASSERT_TRUE(context->GetDragController());
++      ASSERT_EQ(TabDragController::Liveness::kAlive,
++                context->GetDragController()->Drag(from));
++      ASSERT_EQ(context, context->GetDragController()->GetAttachedContext());
++      browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    }
++  }
++
+   void BeginRealDrag(TabDragContext* context,
+                      TabSlotView* source,
+                      const gfx::Point& destination) {
+@@ -410,4 +425,124 @@
+   EXPECT_EQ(kFolderId, *pins.back().GetDict().FindString("folder"));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       SlowFolderDragCrossesNewTabAndPaddingWithoutTearOff) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto handle = model->GetActiveTab()->GetHandle();
++  const int entries = contents->GetController().GetEntryCount();
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source, source->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_NO_FATAL_FAILURE(WalkDrag(
++      context, source->GetBoundsInScreen().CenterPoint(),
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  ASSERT_TRUE(library()->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++  ASSERT_TRUE(handle.Get());
++  EXPECT_TRUE(handle.Get()->IsPinned());
++  EXPECT_EQ(contents, handle.Get()->GetContents());
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(entries, contents->GetController().GetEntryCount());
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(contents, "window.coveLiveDragDraft"));
++  const auto& pins = *PersonalSpace(browser()->GetProfile())->FindList("pins");
++  ASSERT_EQ(1u, pins.size());
++  EXPECT_EQ(kFolderId, *pins.front().GetDict().FindString("folder"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       SlowTwoTabDragIntoEmptyPinsKeepsBothPages) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), "cove.sidebar");
++    for (auto& space : *update->FindList("spaces"))
++      space.GetDict().Set("folders", base::ListValue());
++  }
++  auto* model = browser()->GetTabStripModel();
++  auto* first = model->GetActiveWebContents();
++  auto* contents = chrome::AddAndReturnTabAt(
++      browser(), embedded_test_server()->GetURL("/title2.html"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  ASSERT_TRUE(content::ExecJs(contents, "window.dragDraft = 'second draft';"));
++  const auto handle = model->GetActiveTab()->GetHandle();
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source, source->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_NO_FATAL_FAILURE(WalkDrag(context, source->GetBoundsInScreen().CenterPoint(),
++                                  library()->GetBoundsInScreen().CenterPoint()));
++  ASSERT_TRUE(library()->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++  ASSERT_TRUE(handle.Get());
++  EXPECT_TRUE(handle.Get()->IsPinned());
++  EXPECT_EQ(contents, handle.Get()->GetContents());
++  EXPECT_EQ(2, model->count());
++  EXPECT_NE(TabStripModel::kNoTab, model->GetIndexOfWebContents(first));
++  EXPECT_EQ("second draft", content::EvalJs(contents, "window.dragDraft"));
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++  const auto& pins = *PersonalSpace(browser()->GetProfile())->FindList("pins");
++  ASSERT_EQ(1u, pins.size());
++  EXPECT_TRUE(pins.front().GetDict().FindString("folder")->empty());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       SlowCanceledDragAcrossSidebarDoesNotPinOrMoveWindow) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto before = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source, source->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_NO_FATAL_FAILURE(WalkDrag(context, source->GetBoundsInScreen().CenterPoint(),
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  context->GetDragController()->EndDrag(EndDragReason::kCancel);
++  base::RunLoop().RunUntilIdle();
++  EXPECT_FALSE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       InternalPageDragStaysInSidebarAndCannotBecomeSavedPin) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source, source->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_NO_FATAL_FAILURE(WalkDrag(context, source->GetBoundsInScreen().CenterPoint(),
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  EXPECT_FALSE(library()->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_FALSE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++}
++
+ }  // namespace
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -5,10 +5,19 @@
+ #include <string>
+ #include <vector>
+ 
++#include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include <CoreFoundation/CoreFoundation.h>
++#include "base/apple/scoped_cftyperef.h"
++#endif
+ #include "base/command_line.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback_helpers.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "base/files/file_util.h"
+ #include "base/run_loop.h"
+ #include "base/test/run_until.h"
++#include "base/test/bind.h"
+ #include "base/test/test_future.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "base/values.h"
+@@ -36,11 +45,16 @@
+ #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
+ #include "ui/base/dragdrop/os_exchange_data.h"
+ #include "ui/compositor/compositor.h"
++#include "ui/events/event.h"
+ #include "ui/compositor/layer.h"
+ #include "ui/compositor/layer_tree_owner.h"
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/geometry/rect_conversions.h"
+ #include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/widget/any_widget_observer.h"
++#include "ui/views/window/dialog_delegate.h"
+ #include "ui/views/view_tracker.h"
+ #include "ui/views/view_utils.h"
+ #include "ui/views/widget/widget.h"
+@@ -94,16 +108,93 @@
+       .Set("parent", parent)
+       .Set("collapsed", false);
+ }
++views::Textfield* FindNameField(views::View* view) {
++  if (auto* field = views::AsViewClass<views::Textfield>(view)) return field;
++  for (const auto& child : view->children())
++    if (auto* field = FindNameField(child.get())) return field;
++  return nullptr;
++}
+ }  // namespace
+ 
+ // The friend fixture only selects the context row for the existing menu
+-// delegate. No public test-only browser control is added, and no native menu
+-// tracking loop or OS input injection is needed to exercise its commands.
++// delegate. The background-menu case also runs the real menu and name dialog
++// in this fixture's own native window; no desktop input injection is needed.
+ class CoveSidebarDragBrowserTest : public InProcessBrowserTest {
+  protected:
+   CoveSidebarLibraryView* library() {
+     return static_cast<CoveSidebarLibraryView*>(
+         CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost()));
++  }
++
++  void CreateFolderThroughContextMenu(views::View* surface,
++                                      const std::u16string& name) {
++    ASSERT_EQ(library(), surface->context_menu_controller());
++    library()->menu_runner_.reset();
++    library()->menu_model_.reset();
++    bool inspected = false;
++    std::optional<size_t> item;
++    base::OnceClosure inspect_menu = base::BindLambdaForTesting([&] {
++          inspected = true;
++          EXPECT_TRUE(library()->menu_runner_);
++          EXPECT_TRUE(library()->menu_model_);
++          if (library()->menu_model_) {
++            item = library()->menu_model_->GetIndexOfCommandId(3);
++            EXPECT_TRUE(item);
++            if (item) {
++              EXPECT_EQ(u"New Folder", library()->menu_model_->GetLabelAt(*item));
++              EXPECT_TRUE(library()->menu_model_->IsEnabledAt(*item));
++            }
++          }
++          if (library()->menu_runner_) library()->menu_runner_->Cancel();
++        });
++#if BUILDFLAG(IS_MAC)
++    // Native NSMenu tracking does not pump Chromium application tasks. Use a
++    // one-shot timer in that tracking mode to inspect/cancel only this fixture's
++    // menu, without synthesizing any desktop input or changing product code.
++    CFRunLoopTimerContext timer_context = {0, &inspect_menu, nullptr, nullptr, nullptr};
++    base::apple::ScopedCFTypeRef<CFRunLoopTimerRef> menu_timer(CFRunLoopTimerCreate(
++        kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.02, 0, 0, 0,
++        [](CFRunLoopTimerRef, void* context) {
++          std::move(*static_cast<base::OnceClosure*>(context)).Run();
++        }, &timer_context));
++    base::ScopedClosureRunner invalidate_timer(base::BindLambdaForTesting([&] {
++      CFRunLoopTimerInvalidate(menu_timer.get());
++    }));
++    CFRunLoopAddTimer(CFRunLoopGetCurrent(), menu_timer.get(),
++                      CFSTR("NSEventTrackingRunLoopMode"));
++    CFRunLoopAddTimer(CFRunLoopGetCurrent(), menu_timer.get(), kCFRunLoopCommonModes);
++#else
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, std::move(inspect_menu));
++#endif
++    {
++      auto* widget = surface->GetWidget();
++      const auto point = views::View::ConvertPointFromScreen(
++          widget->GetRootView(), surface->GetBoundsInScreen().CenterPoint());
++      ui::MouseEvent press(ui::EventType::kMousePressed, point, point,
++                            base::TimeTicks::Now(), ui::EF_RIGHT_MOUSE_BUTTON,
++                            ui::EF_RIGHT_MOUSE_BUTTON);
++      widget->OnMouseEvent(&press);
++      ui::MouseEvent release(ui::EventType::kMouseReleased, point, point,
++                              base::TimeTicks::Now(), 0,
++                              ui::EF_RIGHT_MOUSE_BUTTON);
++      widget->OnMouseEvent(&release);
++    }
++    base::RunLoop().RunUntilIdle();
++    ASSERT_TRUE(inspected);
++    ASSERT_TRUE(item);
++    views::NamedWidgetShownWaiter opened(views::test::AnyWidgetTestPasskey{},
++                                         "CoveNameDialog");
++    library()->menu_model_->ActivatedAt(*item);
++    auto* dialog = opened.WaitIfNeededAndGet();
++    ASSERT_TRUE(dialog);
++    auto* field = FindNameField(dialog->GetContentsView());
++    ASSERT_TRUE(field);
++    field->SetText(name);
++    auto* delegate = dialog->widget_delegate()->AsDialogDelegate();
++    ASSERT_TRUE(delegate);
++    delegate->AcceptDialog();
++    base::RunLoop().RunUntilIdle();
+   }
+ 
+   void Layout() {
+@@ -464,3 +555,32 @@
+   EXPECT_EQ(pins, *SavedSpace().FindList("pins"));
+   EXPECT_EQ(folders, *SavedSpace().FindList("folders"));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       RightClickEmptySidebarCreatesNamedFolderRepeatedly) {
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->Set("folders", base::ListValue());
++    space->Set("pins", base::ListValue());
++  }
++  Layout();
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_NO_FATAL_FAILURE(CreateFolderThroughContextMenu(library(), u"First folder"));
++  Layout();
++  EXPECT_TRUE(FindRow(library(), u"First folder"));
++  // The unused area below live tabs belongs to the outer sidebar rather than
++  // the saved library. Both surfaces must expose the same creation action.
++  views::View* region = library();
++  while (region && !views::AsViewClass<VerticalTabStripRegionView>(region))
++    region = region->parent();
++  ASSERT_TRUE(region);
++  ASSERT_NO_FATAL_FAILURE(CreateFolderThroughContextMenu(region, u"Second folder"));
++  Layout();
++  EXPECT_TRUE(FindRow(library(), u"First folder"));
++  EXPECT_TRUE(FindRow(library(), u"Second folder"));
++  ASSERT_EQ(2u, SavedSpace().FindList("folders")->size());
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -313,6 +313,7 @@
+   // Share the native sidebar surface, including its Glass treatment. Row
+   // labels use grayscale antialiasing rather than requiring an opaque panel.
+   SetBackground(nullptr);
++  set_context_menu_controller(this);
+   EnsureDefaultLibrary();
+   const base::DictValue& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+@@ -1868,6 +1869,7 @@
+     context_folder_id_ = folder->second;
+     menu_runner_.reset();
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+     menu_model_->AddItem(kNewSubfolderCommand, u"New Subfolder");
+     menu_model_->AddItem(kRenameFolderCommand, u"Rename Folder");
+     menu_model_->AddItem(kMoveFolderUpCommand, u"Move Up");
+@@ -1885,12 +1887,18 @@
+     context_space_id_ = space->second;
+     menu_runner_.reset();
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+     menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space");
+     RunContextMenu(source, point, source_type);
+     return;
+   }
+   const auto found = row_pin_ids_.find(source);
+   if (found == row_pin_ids_.end()) {
++    menu_runner_.reset();
++    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    menu_model_->AddItem(kNewFolderCommand, u"New Folder");
++    menu_model_->AddItem(kPinCurrentPageCommand, u"Pin Current Tab");
++    RunContextMenu(source, point, source_type);
+     return;
+   }
+   context_pin_id_ = found->second;
+@@ -1900,6 +1908,7 @@
+   menu_folder_ids_.clear();
+   menu_runner_.reset();
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+   menu_model_->AddItem(kRenamePinCommand, u"Rename Pin");
+   menu_model_->AddItem(kRemovePinCommand, u"Remove pin");
+   menu_model_->AddItem(kMovePinToRootCommand, u"Move Outside Folders");
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -199,6 +199,12 @@
+   space_rows_view_->layer()->SetFillsBoundsOpaquely(false);
+   library_view_ = space_rows_view_->AddChildView(
+       std::make_unique<CoveSidebarLibraryView>(browser_view->browser()));
++  // Blank sidebar surfaces must expose organization actions too. Child tab
++  // rows retain their own tab context menus.
++  set_context_menu_controller(library_view_);
++  content_area_view_->set_context_menu_controller(library_view_);
++  space_clip_view_->set_context_menu_controller(library_view_);
++  space_rows_view_->set_context_menu_controller(library_view_);
+   library_view_->SetFavoriteActions(
+       base::BindRepeating(&CoveFavoritesView::ToggleCurrentPage,
+                           favorites_view_->GetWeakPtr()),
+@@ -295,6 +301,11 @@
+ }
+ 
+ VerticalTabStripRegionView::~VerticalTabStripRegionView() {
++  // These parent surfaces borrow the child library's menu controller.
++  set_context_menu_controller(nullptr);
++  content_area_view_->set_context_menu_controller(nullptr);
++  space_clip_view_->set_context_menu_controller(nullptr);
++  space_rows_view_->set_context_menu_controller(nullptr);
+   ClearSpaceTransition();
+   for (const auto& lock : hover_locks_) {
+     lock->ClearRegionViewOnDestruction();
+@@ -1217,7 +1228,20 @@
+       return target;
+     }
+   }
+-  return BaseTabStripRegionView::GetTabDragTarget(point_in_screen);
++  if (auto* target =
++          BaseTabStripRegionView::GetTabDragTarget(point_in_screen)) {
++    return target;
++  }
++  // Separators, padding and New Tab sit between the live tab list and saved
++  // rows. Keep the drag attached while crossing those surfaces. The library
++  // returns the existing context there, but only accepts drops inside its own
++  // saved-row bounds. A tear-off still requires leaving the sidebar.
++  if (library_view_ && IsDrawn() &&
++      GetVisibleBounds().Contains(
++          views::View::ConvertPointFromScreen(this, point_in_screen))) {
++    return library_view_;
++  }
++  return nullptr;
+ }
+ 
+ gfx::Rect VerticalTabStripRegionView::GetTabStripDraggableBounds() const {
+diff --git a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+--- a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
++++ b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+@@ -819,16 +819,14 @@
+     BrowserView* source_browser_view = GetBrowserViewForContext(source_context_);
+     const bool cove_single_loose_tab =
+         is_dragging_all_tabs && model->count() == 1 &&
+-        !model->GetTabAtIndex(0)->IsPinned() &&
+-        (model->GetWebContentsAt(0)->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
+-         model->GetWebContentsAt(0)->GetVisibleURL().SchemeIsFile()) &&
+         !model->GetTabAtIndex(0)->GetGroup() &&
+         !model->GetTabAtIndex(0)->GetSplit() && source_browser_view &&
+         source_browser_view->ShouldDrawVerticalTabStrip() &&
+         CoveSpaceCloseHandler::Get(
+             source_browser_view->browser()->GetUnownedUserDataHost());
+ 
+-    // Cove's only loose tab can be dragged into an existing saved folder.
++    // Keep even an unsaveable New Tab in the sidebar drag until the pointer
++    // leaves it. Starting a drag is not itself a request to move the window.
+     // Keep a normal tab drag while still inside this window. If it leaves the
+     // strip/sidebar, the existing all-tabs branch in
+     // DetachIntoNewBrowserAndRunMoveLoop still moves this same window.
