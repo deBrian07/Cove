@@ -1,6 +1,14 @@
 # Native validation — 2026-10-29
 
-## Current 87-patch acceptance
+## Current 88-patch build: actual macOS Settings menu corrected
+
+The user reproduced Cove → Settings still opening Chromium settings. The macOS application menu uses AppController's `showPreferences:` selector, bypassing the browser-command paths changed in 0087. Patch 0088 routes its profile handler through the existing ActivateOrCreateBrowser helper and native ShowCoveSettings, including the no-browser fallback. The older command test called ShowCoveSettings itself after dispatch, which could mask a routing failure; it now waits for the command to create the named widget.
+
+All five settings browser tests pass with retries disabled, including the actual NSMenu item's target/action via NSApp, unchanged tab count/URL, no-browser profile handling, startup URL preservation, preferences and window lifetime. App compilation, accepted build receipt, renderer smoke and 88-patch SHA/application verification pass. Both configuration identities are `c837cec71c546d7f75811971fba91c3bb3bc5259ff9c990263a599e2c7312c40`. Logs: `/tmp/cove-native88-compile.log`, `/tmp/cove-native88-build-accepted.log`, `/tmp/cove-native88-settings-tests.log`, `/tmp/cove-native88-settings-results.json`, `/tmp/cove-native88-smoke.log`, `/tmp/cove-native88-verify.json`. The broader 23-case run and 67/36 tests below belong to the preceding 87 build; do not claim a clean 25-case run on 88.
+
+Cove is currently closed: the user quit normally before compilation. Keep it closed while further native builds run. QA87 and every normal/Arc profile remain intact. The user additionally requested Arc-style folders, pins and Favorites and explicitly chose to include drag-and-drop. That work is next; underlying folders/pins already exist, but saved-row drag/reorder and dragging live tabs into folders need implementation. Preserve live WebContents/history and stable saved identities; never reset profiles to add organization.
+
+## Previous accepted 87-patch acceptance
 
 Native app build and renderer smoke pass. Generated and built configuration identities both equal `d84450259b7d916dcf65b7d72b57c0956be7071856f39a675edd832d5db0f44e`. All 87 patches pass original-file SHA/application verification. All 23 browser cases passed in one clean run with retries disabled: 17 session/Space cases, three caption/sidebar cases and three settings cases. All 67 focused native tests and 36 tooling tests pass.
 

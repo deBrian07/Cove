@@ -1,0 +1,131 @@
+diff --git a/chrome/browser/app_controller_mac.mm b/chrome/browser/app_controller_mac.mm
+--- a/chrome/browser/app_controller_mac.mm
++++ b/chrome/browser/app_controller_mac.mm
+@@ -85,6 +85,7 @@
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+ #include "chrome/browser/ui/chrome_pages.h"
++#include "chrome/browser/ui/views/cove/cove_settings_view.h"
+ #include "chrome/browser/ui/cocoa/apps/quit_with_apps_controller_mac.h"
+ #import "chrome/browser/ui/cocoa/bookmarks/bookmark_menu_bridge.h"
+ #import "chrome/browser/ui/cocoa/confirm_quit.h"
+@@ -2099,12 +2100,10 @@
+     // Failed to load profile, show Profile Picker instead.
+     return;
+   }
+-  // Re-use an existing browser, or create a new one.
+-  if (BrowserWindowInterface* browser = ActivateBrowser(profile)) {
+-    chrome::ShowSettings(browser);
+-  } else {
+-    chrome::OpenOptionsWindow(profile);
+-  }
++  // The application menu and Cmd+, dispatch here directly, bypassing the
++  // browser's IDC_OPTIONS handler. Use the same native settings surface even
++  // when the profile has no browser window yet.
++  ShowCoveSettings(ActivateOrCreateBrowser(profile));
+ }
+ 
+ - (IBAction)orderFrontStandardAboutPanel:(id)sender {
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -12,10 +12,14 @@
+ #include "base/test/test_future.h"
+ #include "base/threading/thread_restrictions.h"
+ #include "chrome/app/chrome_command_ids.h"
++#import "chrome/browser/app_controller_mac.h"
+ #include "chrome/browser/prefs/session_startup_pref.h"
++#include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
++#include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/cove/cove_settings_view.h"
+@@ -24,6 +28,8 @@
+ #include "chrome/browser/ui/views/tab_search_bubble_host.h"
+ #include "chrome/common/pref_names.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "components/keep_alive_registry/keep_alive_types.h"
++#include "components/keep_alive_registry/scoped_keep_alive.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/viz/common/frame_sinks/copy_output_request.h"
+ #include "components/viz/common/frame_sinks/copy_output_result.h"
+@@ -41,6 +47,7 @@
+ #include "ui/views/focus/focus_manager.h"
+ #include "ui/views/test/button_test_api.h"
+ #include "ui/views/view_utils.h"
++#include "ui/views/widget/any_widget_observer.h"
+ #include "ui/views/widget/widget.h"
+ 
+ namespace {
+@@ -303,8 +310,10 @@
+ 
+ IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
+                        SettingsCommandOpensNativeWindowAndActionsReleaseIt) {
++  views::NamedWidgetShownWaiter opened(views::test::AnyWidgetTestPasskey{},
++                                       "CoveSettings");
+   ASSERT_TRUE(chrome::ExecuteCommand(browser(), IDC_OPTIONS));
+-  auto* window = ShowCoveSettings(browser());
++  auto* window = opened.WaitIfNeededAndGet();
+   ASSERT_TRUE(window);
+   auto weak_window = window->GetWeakPtr();
+   auto* button = SettingsButton(window->GetContentsView(), u"Search settings…");
+@@ -317,3 +326,55 @@
+            contents->GetVisibleURL() == GURL("chrome://settings/search");
+   }));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
++                       MacApplicationMenuOpensNativeSettingsWithoutNavigation) {
++  auto* model = browser()->GetTabStripModel();
++  const int tab_count = model->count();
++  const GURL original_url = model->GetActiveWebContents()->GetVisibleURL();
++  NSMenu* application_menu = [[NSApp.mainMenu itemAtIndex:0] submenu];
++  ASSERT_TRUE(application_menu);
++  NSMenuItem* item = [application_menu itemWithTag:IDC_OPTIONS];
++  ASSERT_TRUE(item);
++  EXPECT_EQ(@selector(showPreferences:), item.action);
++  views::NamedWidgetShownWaiter opened(views::test::AnyWidgetTestPasskey{},
++                                       "CoveSettings");
++  ASSERT_TRUE([NSApp sendAction:item.action to:item.target from:item]);
++  auto* window = opened.WaitIfNeededAndGet();
++  ASSERT_TRUE(window);
++  EXPECT_TRUE(window->IsVisible());
++  EXPECT_TRUE(SettingsButton(window->GetContentsView(), u"Profiles"));
++  EXPECT_EQ(tab_count, model->count());
++  EXPECT_EQ(original_url, model->GetActiveWebContents()->GetVisibleURL());
++  window->CloseNow();
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSettingsBrowserTest,
++                       MacPreferencesWithoutBrowserUsesNativeSettings) {
++  auto* profile = browser()->GetProfile();
++  ScopedKeepAlive keep_alive(KeepAliveOrigin::SESSION_RESTORE,
++                             KeepAliveRestartOption::DISABLED);
++  ScopedProfileKeepAlive profile_keep_alive(
++      profile, ProfileKeepAliveOrigin::kBrowserWindow);
++  CloseBrowserSynchronously(browser());
++  EXPECT_FALSE(
++      ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser());
++  views::NamedWidgetShownWaiter opened(views::test::AnyWidgetTestPasskey{},
++                                       "CoveSettings");
++  [AppController.sharedController showPreferencesForProfile:profile];
++  auto* window = opened.WaitIfNeededAndGet();
++  ASSERT_TRUE(window);
++  auto* created =
++      ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
++  ASSERT_TRUE(created);
++  EXPECT_EQ(profile, created->GetProfile());
++  for (int i = 0; i < created->GetTabStripModel()->count(); ++i) {
++    EXPECT_FALSE(created->GetTabStripModel()
++                     ->GetWebContentsAt(i)
++                     ->GetVisibleURL()
++                     .spec()
++                     .starts_with("chrome://settings"));
++  }
++  EXPECT_TRUE(SettingsButton(window->GetContentsView(), u"General"));
++  window->CloseNow();
++}

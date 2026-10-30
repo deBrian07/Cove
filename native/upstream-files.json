@@ -3,6 +3,7 @@
   "chrome/app/app-Info.plist": "b9086affccae0673758bbf886e836ad637e4bc9b37849498498a06f69c8edba5",
   "chrome/app/chromium_strings.grd": "2744123fbc7d9a99b5d08ae3669c605f77550501c5d4275311f25312c405af26",
   "chrome/app/theme/chromium/BRANDING": "15ac20cb8744ebac0815961059231baefa71fd4ed3023cb2094aaf8a34ae423b",
+  "chrome/browser/app_controller_mac.mm": "02599209e0cd946487a6ae54c924e2d6749794c97ce96144dc2cd001320790c7",
   "chrome/browser/chrome_content_browser_client.cc": "563401c825839f7f745d857ced94a67193162480e3b283fae1f5060da2e3622e",
   "chrome/browser/chrome_content_browser_client_browsertest.cc": "acfec1ef3077ff477ff753510c199bba8e73eb761cfc263a7f10529ccf99caed",
   "chrome/browser/global_keyboard_shortcuts_mac.mm": "b930252f065d4245d4390cf3bc9d7b8396a429b48c2cff63be0e02ea74205180",
