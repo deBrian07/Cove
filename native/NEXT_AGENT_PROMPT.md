@@ -10,7 +10,29 @@ That script is read-only. It prints Git state, patch count, live build processes
 
 The user wants native Cove to match Arc's functions and supplied screenshots, and requested a continuation handoff before the usage limit. They also authorized pushing the complete project history to `https://github.com/deBrian07/Cove.git`, branch `main`, without co-author trailers. Preserve existing history; do not reinitialize Git or replace README with a one-line stub. The requested remote was empty when checked, and GitHub authentication uses `deBrian07`.
 
-## Current 88-patch build: actual macOS Settings menu corrected
+## Current 91-patch build: folders, pins and Favorites drag-and-drop
+
+The native sidebar now uses the mixed saved-order model from 0089 (`3a004b6`). Patch 0090 (`0e8f104`) connects that model to folder/pin rendering, drag insertion feedback and the existing Move Up/Down and destination menus. It adds visible Pin and New Folder controls, keeps saved rows visible during hover reveal, and accepts an individual loose live tab through Chromium's real TabDragController. Dropping into a folder pins the existing page without navigating, replacing WebContents or losing its draft/history. Two live pages at the same URL retain separate saved IDs and drafts; an existing navigated pin retains its home.
+
+Patch 0091 (`4428b0e`) adds Favorites reordering and URL drops, plus an empty Favorite target during a live-tab drag. Creating a Favorite leaves the original page alive and unpinned. Both drag implementations revalidate stable sources/destinations, reject stale or foreign-profile moves, and defer source-view rebuilds until the native drag ends. Canceled drops leave saved organization intact. Folder cycle rejection, malformed records and unknown saved fields remain protected.
+
+All **40 browser cases passed in one clean run with retries disabled**, including 17 existing session/library cases, three caption cases, five settings cases, six sidebar drag cases, four Favorites cases and five real live-tab drag cases. All **75 focused native tests** and **36 tooling tests** passed. All 91 patches passed original-file SHA256/sequential-application verification. The final native app/test compile, accepted build receipt and renderer smoke pass. Generated and built configuration identities both equal `578cdbbf4dac532ea6ad5710b60e681aa0f8246903586da0bdcc07274c44bb02`.
+
+Evidence: `/tmp/cove-native91-browser-tests.log`, `/tmp/cove-native91-browser-results.json` (40 SUCCESS, no repeated cases), `/tmp/cove-native89-focused-tests.log` (75; model unchanged afterward), `/tmp/cove-native91-tooling.log` (32+4), `/tmp/cove-native91-verify.json`, `/tmp/cove-native91-final-build.log`, `/tmp/cove-native91-build-accepted.log` and `/tmp/cove-native91-smoke.log`. The earlier 13-case drag run also passed, but the 40-case run is final browser acceptance. The sidebar compositor crop `/tmp/cove-native91-sidebar.png` was inspected for Favorites, saved pins, nested folders and hover reveal. Its synthetic test data stays in an isolated fixture; no default Favorite websites are added to real profiles. The crop excludes the desktop and AppKit titlebar.
+
+Scope: saved folder/pin moves operate in the active Space and the same Profile; Favorites belong to the Profile. Live drops accept one loose tab in the same browser, including its only tab. Grouped/split/multi-tab and cross-Space live moves are not implemented. Physical mouse drag/hover, fullscreen and keyboard feel still need manual acceptance; native fixture/compositor tests are not hardware input evidence. No CUA input tools were available. Do not claim 100% Arc parity. PRE_/process-kill recovery, saved-group sync, pane headers, Peek, Little Arc and editable shortcuts remain unfinished.
+
+The user quit Cove normally before builds. Existing QA87 and all normal/Arc/prototype profiles were preserved. QA91 was opened after final acceptance and uses only `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native91` and `/tmp/cove-native91-ui.log`. Refresh live state before the next build; quit any running QA window normally before replacing its app. No separate Cove account or sync service was added; existing profiles and the Google account page link remain.
+
+For subsequent source changes, the bounded browser filter is:
+
+```text
+CoveSessionBrowserTest.*:CoveSidebarLibraryBrowserTest.*:CoveCaptionButtonsBrowserTest.*:CoveSettingsBrowserTest.*:CoveSidebarDragBrowserTest.*:CoveFavoritesDragBrowserTest.*:CoveLiveTabDragBrowserTest.*
+```
+
+Use `--test-launcher-jobs=1 --test-launcher-retry-limit=0 --use-mock-keychain`. Optional `--cove-sidebar-snapshot=/tmp/example.png` captures the test window's hover-revealed sidebar compositor. Use the versioned patch series, not stale editing scripts in `/tmp`. Do not edit patch/config/source inputs while GN/Ninja runs. Keep the SSD connected and reuse `out/Cove`.
+
+## Previous 88-patch build: actual macOS Settings menu corrected
 
 The user reproduced Cove → Settings still opening Chromium settings. The macOS application menu uses AppController's `showPreferences:` selector, bypassing the browser-command paths changed in 0087. Patch 0088 routes its profile handler through the existing ActivateOrCreateBrowser helper and native ShowCoveSettings, including the no-browser fallback. The older command test called ShowCoveSettings itself after dispatch, which could mask a routing failure; it now waits for the command to create the named widget.
 

@@ -2,9 +2,9 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 87-patch app builds and passes renderer smoke, 67 focused native tests, 36 tooling tests and one clean 23-case browser run. Patches 0084–0086 synchronize native controls with collapse, match the command-bar reference and prevent focused sidebar fields/leftover hover timers from reopening an explicit collapse. Patch 0087 adds native settings using real profile/preferences services and existing settings pages.
+The current 91-patch native app builds and passes renderer smoke, 75 focused native tests, 36 tooling tests and one clean 40-case browser run with retries disabled. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering.
 
-Palette and six-section settings compositor renders were inspected. Native tests inspect actual NSWindow visibility and real command paths. Physical hover/re-entry, keyboard feel, caption hit testing, menus and fullscreen still need a manual pass; no CUA input tools were available. PRE_/process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md).
+Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, keyboard feel and fullscreen still need a manual pass. PRE_/process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
 
 ## Spaces and organization
 
@@ -34,11 +34,11 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Replace a pin's home with its current page | Added in 0076 | Verify home persists and a later reset uses the replacement |
 | Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
-| Favorites | Native saved URLs and grid; 0076 adds command | Arc-style shared live Favorite ownership and profile semantics remain partial |
-| Create, rename and collapse folders | Native; 0076 adds named command creation; 0079 adds nested rows and New Subfolder | Live-check nesting, saved collapse and descendant visibility; dragging remains missing |
-| Move and reorder whole folders | 0079 adds destination paths, root moves, sibling reorder and cycle rejection | Live-check moves, boundary enablement and persistence; cross-Space moves remain missing |
+| Favorites | Profile-wide saved URLs/grid; 0091 adds reorder, URL drops and live-tab creation, including first-Favorite target | Physical drag acceptance and Arc-style shared live Favorite ownership remain |
+| Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
+| Move and reorder whole folders | 0089–0090 add mixed saved order, native dragging, insertion feedback and common menu ordering; cycle/stale-target tests pass | Physical drag and cross-Space moves remain |
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
-| Move pins into or outside folders | 0079 adds root moves and nested destination paths to the native menu | Live-check destination enablement and persistence; dragging and cross-Space moves remain missing |
+| Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
 | Recently used tab switcher | Missing | MRU overlay and modifier-release selection, beyond sequential Chromium tab cycling |
 | Sidebar undo/restore | Missing | Recover sidebar organization changes without replacing browser profiles |
@@ -73,7 +73,7 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 
 ## Native settings
 
-Cmd+, opens Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Repeated opening and closing, preference persistence, real command routing and view cleanup pass browser tests.
+Cove → Settings and Cmd+, open Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Repeated opening and closing, preference persistence, real command routing and view cleanup pass browser tests.
 
 The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. Peek/Little Arc settings are not represented by dummy switches.
 
@@ -116,7 +116,7 @@ The command bar targets approximately 760px width, a 64px query field and five 4
 ## Implementation order
 
 1. Complete the current Space, pin and command functions and validate their effects.
-2. Validate nested folder operations, then complete durable Space/session ownership, tab/cross-Space moves and dragging.
+2. Manually validate folder/pin/Favorites dragging, then complete durable Space/session acceptance and grouped/split/cross-Space moves.
 3. Split rows, pane headers, split-by-drag and additional layouts.
 4. Peek, Little Arc, MRU switching and editable shortcuts.
 5. Appearance/Boosts, capture/library/media and integration features.
