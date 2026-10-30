@@ -2,7 +2,7 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 93-patch native app builds and passes renderer smoke, 75 focused native tests, 36 tooling tests and one clean 47-case browser run with retries disabled. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
+The current 94-patch native app builds and passes renderer smoke, 36 tooling tests and one clean 51-execution browser run with retries disabled (including the PRE_ restart phase). The 75 focused model/animation tests last passed on 0089; those implementations are unchanged. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
 
 Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, keyboard feel and fullscreen still need a manual pass. Single-window PRE_/fresh-process restoration now passes; multi-window/group/split and actual process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
 
@@ -36,7 +36,7 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
 | Favorites | Profile-wide saved URLs/grid; 0091 adds reorder, URL drops and live-tab creation, including first-Favorite target | Physical drag acceptance and Arc-style shared live Favorite ownership remain |
 | Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
-| Move and reorder whole folders | 0089–0090 add mixed saved order, native dragging, insertion feedback and common menu ordering; cycle/stale-target tests pass | Physical drag, long-list scrolling/edge autoscroll and cross-Space moves remain |
+| Move and reorder whole folders | 0089–0090 add mixed saved order, native dragging, insertion feedback and common menu ordering; cycle/stale-target tests pass | 0094 passes unified long-list scrolling/reveal and scrolled live-folder-drop regressions. Physical drag, edge autoscroll and cross-Space moves remain |
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
 | Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
@@ -116,7 +116,7 @@ The command bar targets approximately 760px width, a 64px query field and five 4
 ## Implementation order
 
 1. Complete the current Space, pin and command functions and validate their effects.
-2. Manually validate the corrected drag/folder paths, make long saved lists and live tabs reachable with scrolling/drag-edge autoscroll, then complete multi-window/crash restoration and grouped/split/cross-Space moves.
+2. Manually validate the corrected drag/folder paths, finish saved-row/Favorites hover lifetime and drag-edge autoscroll, then complete multi-window/crash restoration and grouped/split/cross-Space moves.
 3. Split rows, pane headers, split-by-drag and additional layouts.
 4. Peek, Little Arc, MRU switching and editable shortcuts.
 5. Appearance/Boosts, capture/library/media and integration features.
