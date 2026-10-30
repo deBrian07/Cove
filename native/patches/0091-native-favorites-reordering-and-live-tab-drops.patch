@@ -1,0 +1,1271 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -10,6 +10,12 @@
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
++#include "base/i18n/rtl.h"
++#include "base/no_destructor.h"
++#include "base/pickle.h"
++#include "base/supports_user_data.h"
++#include "base/unguessable_token.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/values.h"
+ #include "chrome/browser/favicon/favicon_service_factory.h"
+@@ -19,6 +25,8 @@
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
+ #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
+ #include "components/favicon/content/content_favicon_driver.h"
+ #include "components/favicon/core/favicon_service.h"
+ #include "components/favicon_base/favicon_types.h"
+@@ -28,6 +36,14 @@
+ #include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/web_contents.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/base/clipboard/clipboard_format_type.h"
++#include "ui/base/dragdrop/drag_drop_types.h"
++#include "ui/base/dragdrop/drop_target_event.h"
++#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "ui/base/dragdrop/os_exchange_data.h"
++#include "ui/color/color_provider.h"
++#include "ui/compositor/layer_tree_owner.h"
++#include "ui/gfx/canvas.h"
+ #include "ui/base/mojom/menu_source_type.mojom.h"
+ #include "ui/base/page_transition_types.h"
+ #include "ui/base/window_open_disposition.h"
+@@ -44,6 +60,7 @@
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/layout/table_layout.h"
++#include "ui/views/controls/label.h"
+ #include "url/gurl.h"
+ 
+ namespace {
+@@ -58,6 +75,42 @@
+ constexpr int kRowGap = 4;
+ constexpr int kIconSize = 20;
+ 
++class FavoriteProfileIdentity : public base::SupportsUserData::Data {
++ public:
++  base::UnguessableToken token = base::UnguessableToken::Create();
++};
++
++std::string FavoriteProfileToken(Profile* profile) {
++  static const int key = 0;
++  auto* identity = static_cast<FavoriteProfileIdentity*>(profile->GetUserData(&key));
++  if (!identity) {
++    auto owned = std::make_unique<FavoriteProfileIdentity>();
++    identity = owned.get();
++    profile->SetUserData(&key, std::move(owned));
++  }
++  return identity->token.ToString();
++}
++
++const ui::ClipboardFormatType& FavoriteDragFormat() {
++  static const base::NoDestructor<ui::ClipboardFormatType> format(
++      ui::ClipboardFormatType::CustomPlatformType("CoveFavorites.v1"));
++  return *format;
++}
++
++std::optional<size_t> UniqueFavoriteIndex(const base::ListValue& favorites,
++                                          const std::string& url) {
++  std::optional<size_t> result;
++  for (size_t i = 0; i < favorites.size(); ++i) {
++    const auto* favorite = favorites[i].GetIfDict();
++    const auto* existing = favorite ? favorite->FindString("url") : nullptr;
++    if (existing && *existing == url) {
++      if (result) return std::nullopt;
++      result = i;
++    }
++  }
++  return result;
++}
++
+ bool IsFavoriteUrl(const GURL& url) {
+   return url.is_valid() && (url.SchemeIsHTTPOrHTTPS());
+ }
+@@ -75,8 +128,9 @@
+   METADATA_HEADER(FavoriteTile, views::LabelButton)
+ 
+  public:
+-  explicit FavoriteTile(PressedCallback callback)
+-      : views::LabelButton(std::move(callback)) {
++  FavoriteTile(PressedCallback callback, base::RepeatingClosure drag_done)
++      : views::LabelButton(std::move(callback)),
++        drag_done_(std::move(drag_done)) {
+     SetHorizontalAlignment(gfx::ALIGN_CENTER);
+     SetImageLabelSpacing(4);
+     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 5)));
+@@ -90,6 +144,13 @@
+         kColorLocationBarBackground, 12));
+   }
+ 
++  void OnDragDone() override {
++    views::LabelButton::OnDragDone();
++    // The callback only posts a weak task; the source remains alive until the
++    // Widget has completed its native drag-loop cleanup.
++    drag_done_.Run();
++  }
++
+  protected:
+   void StateChanged(ButtonState old_state) override {
+     views::LabelButton::StateChanged(old_state);
+@@ -101,6 +162,9 @@
+           kColorLocationBarBackground, 12));
+     }
+   }
++
++ private:
++  base::RepeatingClosure drag_done_;
+ };
+ 
+ BEGIN_METADATA(FavoriteTile)
+@@ -120,7 +184,9 @@
+                           weak_factory_.GetWeakPtr()));
+ }
+ 
+-CoveFavoritesView::~CoveFavoritesView() = default;
++CoveFavoritesView::~CoveFavoritesView() {
++  tab_drag_destroy_callbacks_.Notify();
++}
+ 
+ base::WeakPtr<CoveFavoritesView> CoveFavoritesView::GetWeakPtr() {
+   return weak_factory_.GetWeakPtr();
+@@ -180,7 +246,359 @@
+   favorites->Append(std::move(favorite));
+ }
+ 
++void CoveFavoritesView::SetTabDragActive(bool active) {
++  if (tab_drag_active_ == active) return;
++  tab_drag_active_ = active;
++  if (!active) OnTabDragEnded();
++  Rebuild();
++}
++
++TabDragTarget* CoveFavoritesView::GetTabDragTarget(
++    const gfx::Point& point_in_screen) {
++  if (!tab_drag_active_ || collapsed_ || !GetWidget() || !GetVisible())
++    return nullptr;
++  const auto point = views::View::ConvertPointFromScreen(this, point_in_screen);
++  return GetVisibleBounds().Contains(point) ? this : nullptr;
++}
++
++void CoveFavoritesView::OnTabDragEntered() {
++  OnTabDragEnded();
++}
++
++TabDragContext* CoveFavoritesView::OnTabDragUpdated(
++    TabDragTarget::DragController& controller,
++    const gfx::Point& point_in_screen) {
++  OnTabDragEnded();
++  const auto* attached = controller.GetAttachedContext();
++  if (!attached || attached->GetWidget() != GetWidget()) return nullptr;
++  auto* context = const_cast<TabDragContext*>(attached);
++  if (!GetTabDragTarget(point_in_screen)) return context;
++  const auto& data = controller.GetSessionData();
++  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
++      data.group_header_drag_data_) return context;
++  content::WebContents* contents = nullptr;
++  for (const auto& entry : data.tab_drag_data_) {
++    if (entry.contents) contents = entry.contents;
++  }
++  auto* tab = contents ? tabs::TabInterface::GetFromContents(contents) : nullptr;
++  if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
++      tab->GetSplit() || !IsFavoriteUrl(contents->GetVisibleURL())) return context;
++  FavoriteDrop drop;
++  drop.url = contents->GetVisibleURL().spec();
++  drop.title = contents->GetTitle();
++  if (drop.url.size() > 8192) return context;
++  if (drop.title.size() > 4096) drop.title.resize(4096);
++  drop.before_url = BeforeUrlAt(
++      views::View::ConvertPointFromScreen(this, point_in_screen));
++  if (!BuildDropList(drop)) return context;
++  live_drag_handle_ = tab->GetHandle();
++  live_drop_ = std::move(drop);
++  if (row_urls_.empty()) {
++    if (!children().empty()) children().front()->SetBackground(
++        views::CreateRoundedRectBackground(ui::kColorSysPrimaryContainer, 12));
++    drop_indicator_ = GetLocalBounds();
++    drop_indicator_.Inset(2);
++    SchedulePaint();
++  } else {
++    SetDropIndicator(live_drop_->before_url);
++  }
++  return context;
++}
++
++void CoveFavoritesView::OnTabDragExited(const gfx::Point& point_in_screen) {
++  OnTabDragEnded();
++}
++
++void CoveFavoritesView::OnTabDragEnded() {
++  live_drag_handle_.reset();
++  live_drop_.reset();
++  ClearDropIndicator();
++}
++
++bool CoveFavoritesView::CanDropTab() {
++  auto* tab = live_drag_handle_ ? live_drag_handle_->Get() : nullptr;
++  return tab && live_drop_ && tab->GetBrowserWindowInterface() == browser_ &&
++         !tab->GetGroup() && !tab->GetSplit() &&
++         tab->GetContents()->GetVisibleURL().spec() == live_drop_->url &&
++         BuildDropList(*live_drop_).has_value();
++}
++
++void CoveFavoritesView::HandleTabDrop(
++    TabDragTarget::DragController& controller) {
++  if (CanDropTab()) {
++    // Chromium retains the source tab and completes its native drag before a
++    // pref observer can rebuild the saved tiles. This is a saved URL copy,
++    // never a tab detach, navigation, pin or native selection mutation.
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&CoveFavoritesView::CommitLiveFavorite,
++                                  weak_factory_.GetWeakPtr(),
++                                  *live_drag_handle_, *live_drop_));
++  }
++  OnTabDragEnded();
++}
++
++void CoveFavoritesView::CommitLiveFavorite(tabs::TabHandle handle,
++                                          FavoriteDrop drop) {
++  auto* tab = handle.Get();
++  if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
++      tab->GetSplit() ||
++      tab->GetContents()->GetVisibleURL().spec() != drop.url ||
++      !IsFavoriteUrl(GURL(drop.url))) return;
++  auto favorites = BuildDropList(drop);
++  if (!favorites) return;
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  update->Set("favorites", std::move(*favorites));
++}
++
++base::CallbackListSubscription CoveFavoritesView::RegisterWillDestroyCallback(
++    base::OnceClosure callback) {
++  return tab_drag_destroy_callbacks_.Add(std::move(callback));
++}
++
++void CoveFavoritesView::WriteDragDataForView(views::View* sender,
++                                            const gfx::Point& press_pt,
++                                            ui::OSExchangeData* data) {
++  const auto row = row_urls_.find(sender);
++  if (row == row_urls_.end() ||
++      GetDragOperationsForView(sender, press_pt) == ui::DragDropTypes::DRAG_NONE) {
++    return;
++  }
++  base::Pickle pickle;
++  pickle.WriteString(FavoriteProfileToken(browser_->GetProfile()));
++  pickle.WriteString(std::string());
++  pickle.WriteString(row->second);
++  data->SetPickledData(FavoriteDragFormat(), pickle);
++  const auto* favorites = browser_->GetProfile()->GetPrefs()
++                              ->GetDict(kCoveSidebarPref).FindList("favorites");
++  const auto source = favorites ? UniqueFavoriteIndex(*favorites, row->second)
++                                : std::nullopt;
++  data->SetURL(GURL(row->second),
++               source ? FavoriteTitle((*favorites)[*source].GetDict())
++                      : base::UTF8ToUTF16(GURL(row->second).host()));
++}
++
++int CoveFavoritesView::GetDragOperationsForView(views::View* sender,
++                                               const gfx::Point& point) {
++  const auto row = row_urls_.find(sender);
++  const auto* favorites = browser_->GetProfile()->GetPrefs()
++                              ->GetDict(kCoveSidebarPref).FindList("favorites");
++  if (collapsed_ || row == row_urls_.end() || !favorites ||
++      row->second.size() > 8192 ||
++      !UniqueFavoriteIndex(*favorites, row->second)) {
++    return ui::DragDropTypes::DRAG_NONE;
++  }
++  return ui::DragDropTypes::DRAG_MOVE | ui::DragDropTypes::DRAG_COPY;
++}
++
++bool CoveFavoritesView::CanStartDragForView(views::View* sender,
++                                           const gfx::Point& press_pt,
++                                           const gfx::Point& point) {
++  return GetDragOperationsForView(sender, point) != ui::DragDropTypes::DRAG_NONE &&
++         views::View::ExceededDragThreshold(point - press_pt);
++}
++
++void CoveFavoritesView::OnWillStartDragForView(views::View* sender) {
++  source_drag_active_ = row_urls_.contains(sender);
++}
++
++void CoveFavoritesView::FinishSourceDrag() {
++  source_drag_active_ = false;
++  if (!rebuild_after_drag_) return;
++  rebuild_after_drag_ = false;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&CoveFavoritesView::Rebuild,
++                                weak_factory_.GetWeakPtr()));
++}
++
++bool CoveFavoritesView::GetDropFormats(
++    int* formats, std::set<ui::ClipboardFormatType>* types) {
++  *formats = ui::OSExchangeData::URL;
++  types->insert(FavoriteDragFormat());
++  return !collapsed_;
++}
++
++std::optional<CoveFavoritesView::FavoriteDrop> CoveFavoritesView::ReadDrop(
++    const ui::OSExchangeData& data) const {
++  if (collapsed_) return std::nullopt;
++  FavoriteDrop drop;
++  // Never reinterpret a malformed, stale or foreign-profile MOVE as a URL COPY.
++  if (data.HasCustomFormat(FavoriteDragFormat())) {
++    auto pickle = data.GetPickledData(FavoriteDragFormat());
++    if (!pickle || pickle->AsBytes().size() > 16384) return std::nullopt;
++    base::PickleIterator reader(*pickle);
++    std::string profile;
++    std::string otr;
++    if (!reader.ReadString(&profile) || !reader.ReadString(&otr) ||
++        !reader.ReadString(&drop.url) || !reader.ReachedEnd() ||
++        profile != FavoriteProfileToken(browser_->GetProfile()) ||
++        !otr.empty()) {
++      return std::nullopt;
++    }
++    drop.move = true;
++  } else {
++    const auto urls = data.GetURLs(ui::FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
++    if (urls.size() != 1) return std::nullopt;
++    drop.url = urls[0].url.spec();
++    drop.title = urls[0].title;
++    if (drop.title.size() > 4096) drop.title.resize(4096);
++  }
++  if (drop.url.size() > 8192 || !IsFavoriteUrl(GURL(drop.url))) return std::nullopt;
++  return drop;
++}
++
++std::optional<base::ListValue> CoveFavoritesView::BuildDropList(
++    const FavoriteDrop& drop) const {
++  const auto* saved = browser_->GetProfile()->GetPrefs()
++                          ->GetDict(kCoveSidebarPref).FindList("favorites");
++  base::ListValue next = saved ? saved->Clone() : base::ListValue();
++  base::Value value;
++  if (drop.move) {
++    const auto source = UniqueFavoriteIndex(next, drop.url);
++    if (!source || drop.before_url == drop.url) return std::nullopt;
++    value = next[*source].Clone();
++    next.erase(next.begin() + *source);
++  } else {
++    for (const auto& entry : next) {
++      const auto* dict = entry.GetIfDict();
++      const auto* url = dict ? dict->FindString("url") : nullptr;
++      if (url && GURL(*url) == GURL(drop.url)) return std::nullopt;
++    }
++    base::DictValue favorite;
++    favorite.Set("url", drop.url);
++    favorite.Set("title", base::UTF16ToUTF8(drop.title));
++    value = base::Value(std::move(favorite));
++  }
++  size_t index = next.size();
++  if (!drop.before_url.empty()) {
++    const auto before = UniqueFavoriteIndex(next, drop.before_url);
++    if (!before) return std::nullopt;
++    index = *before;
++  }
++  next.Insert(next.begin() + index, std::move(value));
++  if (saved && *saved == next) return std::nullopt;
++  return next;
++}
++
++bool CoveFavoritesView::CanDrop(const ui::OSExchangeData& data) {
++  const auto drop = ReadDrop(data);
++  if (!drop) return false;
++  // A valid existing Favorite can be moved even if appending would be a no-op.
++  if (drop->move) {
++    const auto* favorites = browser_->GetProfile()->GetPrefs()
++                                ->GetDict(kCoveSidebarPref).FindList("favorites");
++    return favorites && UniqueFavoriteIndex(*favorites, drop->url).has_value();
++  }
++  return BuildDropList(*drop).has_value();
++}
++
++std::string CoveFavoritesView::BeforeUrlAt(const gfx::Point& point) const {
++  for (const auto& child : children()) {
++    const auto found = row_urls_.find(child.get());
++    if (found == row_urls_.end()) continue;
++    const gfx::Rect bounds = child->GetMirroredBounds();
++    if (point.y() < bounds.y() ||
++        (point.y() < bounds.bottom() &&
++         (base::i18n::IsRTL() ? point.x() > bounds.CenterPoint().x()
++                              : point.x() < bounds.CenterPoint().x()))) {
++      return found->second;
++    }
++  }
++  return {};
++}
++
++void CoveFavoritesView::ClearDropIndicator() {
++  if (drop_indicator_.IsEmpty()) return;
++  if (row_urls_.empty() && !children().empty()) {
++    children().front()->SetBackground(views::CreateRoundedRectBackground(
++        kColorLocationBarBackground, 12));
++  }
++  drop_indicator_ = gfx::Rect();
++  SchedulePaint();
++}
++
++void CoveFavoritesView::SetDropIndicator(const std::string& before_url) {
++  ClearDropIndicator();
++  const views::View* target = nullptr;
++  for (const auto& child : children()) {
++    const auto row = row_urls_.find(child.get());
++    if (row == row_urls_.end()) continue;
++    target = child.get();
++    if (row->second == before_url) break;
++  }
++  if (!target) return;
++  const gfx::Rect bounds = target->GetMirroredBounds();
++  const bool leading = !before_url.empty();
++  const bool left = leading != base::i18n::IsRTL();
++  drop_indicator_ = gfx::Rect(left ? bounds.x() - 2 : bounds.right(),
++                              bounds.y(), 2, bounds.height());
++  SchedulePaint();
++}
++
++void CoveFavoritesView::OnDragEntered(const ui::DropTargetEvent& event) {
++  OnDragUpdated(event);
++}
++
++int CoveFavoritesView::OnDragUpdated(const ui::DropTargetEvent& event) {
++  auto drop = ReadDrop(event.data());
++  if (!drop) { ClearDropIndicator(); return ui::DragDropTypes::DRAG_NONE; }
++  const int operation = drop->move ? ui::DragDropTypes::DRAG_MOVE
++                                    : ui::DragDropTypes::DRAG_COPY;
++  drop->before_url = BeforeUrlAt(event.location());
++  if (!(event.source_operations() & operation) || !BuildDropList(*drop)) {
++    ClearDropIndicator();
++    return ui::DragDropTypes::DRAG_NONE;
++  }
++  SetDropIndicator(drop->before_url);
++  return operation;
++}
++
++void CoveFavoritesView::OnDragExited() {
++  ClearDropIndicator();
++}
++
++views::View::DropCallback CoveFavoritesView::GetDropCallback(
++    const ui::DropTargetEvent& event) {
++  if (OnDragUpdated(event) == ui::DragDropTypes::DRAG_NONE) return base::NullCallback();
++  auto drop = *ReadDrop(event.data());
++  drop.before_url = BeforeUrlAt(event.location());
++  ClearDropIndicator();
++  return base::BindOnce(
++      [](base::WeakPtr<CoveFavoritesView> owner, FavoriteDrop captured,
++          const ui::DropTargetEvent& event, ui::mojom::DragOperation& output,
++          std::unique_ptr<ui::LayerTreeOwner> image) {
++        output = ui::mojom::DragOperation::kNone;
++        if (owner) owner->PerformDrop(std::move(captured), event, output,
++                                      std::move(image));
++      }, weak_factory_.GetWeakPtr(), std::move(drop));
++}
++
++void CoveFavoritesView::PerformDrop(
++    FavoriteDrop drop, const ui::DropTargetEvent& event,
++    ui::mojom::DragOperation& output,
++    std::unique_ptr<ui::LayerTreeOwner> drag_image_layer) {
++  output = ui::mojom::DragOperation::kNone;
++  if (collapsed_) return;
++  auto favorites = BuildDropList(drop);
++  if (!favorites) return;
++  output = drop.move ? ui::mojom::DragOperation::kMove
++                      : ui::mojom::DragOperation::kCopy;
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(), kCoveSidebarPref);
++  update->Set("favorites", std::move(*favorites));
++}
++
++void CoveFavoritesView::OnPaint(gfx::Canvas* canvas) {
++  views::View::OnPaint(canvas);
++  if (!drop_indicator_.IsEmpty() && GetColorProvider()) {
++    canvas->FillRect(drop_indicator_, GetColorProvider()->GetColor(ui::kColorSysPrimary));
++  }
++}
++
+ void CoveFavoritesView::Rebuild() {
++  ClearDropIndicator();
++  if (source_drag_active_) {
++    rebuild_after_drag_ = true;
++    return;
++  }
+   favicon_task_tracker_.TryCancelAll();
+   row_urls_.clear();
+   RemoveAllChildViews();
+@@ -190,19 +608,33 @@
+   auto* layout = static_cast<views::TableLayout*>(GetLayoutManager());
+   layout->RemoveRows(layout->NumRows());
+   layout->RemoveColumns(layout->NumColumns());
+-  if (collapsed_ || !favorites || favorites->empty()) {
++  if (collapsed_) {
+     SetVisible(false);
+     return;
+   }
+ 
+-  const size_t count = std::count_if(
++  const size_t count = favorites ? std::count_if(
+       favorites->begin(), favorites->end(), [](const base::Value& value) {
+         const base::DictValue* favorite = value.GetIfDict();
+         const std::string* url = favorite ? favorite->FindString("url") : nullptr;
+         return url && IsFavoriteUrl(GURL(*url));
+-      });
++      }) : 0;
+   if (count == 0) {
+-    SetVisible(false);
++    SetVisible(tab_drag_active_);
++    if (tab_drag_active_) {
++      layout->AddColumn(views::LayoutAlignment::kStretch,
++                        views::LayoutAlignment::kStretch, 1.0f,
++                        views::TableLayout::ColumnSize::kUsePreferred, 0,
++                        kMinimumTileWidth);
++      layout->AddRows(1, views::TableLayout::kFixedSize, kTileHeight);
++      auto* placeholder = AddChildView(
++          std::make_unique<views::Label>(u"Drop to Favorite"));
++      placeholder->SetEnabledColor(ui::kColorLabelForegroundSecondary);
++      placeholder->SetBackground(views::CreateRoundedRectBackground(
++          kColorLocationBarBackground, 12));
++    }
++    InvalidateLayout();
++    PreferredSizeChanged();
+     return;
+   }
+   SetVisible(true);
+@@ -236,12 +668,15 @@
+     const GURL url(*url_string);
+     auto* tile = AddChildView(std::make_unique<FavoriteTile>(
+         base::BindRepeating(&CoveFavoritesView::OpenFavorite,
+-                            weak_factory_.GetWeakPtr(), url)));
++                            weak_factory_.GetWeakPtr(), url),
++        base::BindRepeating(&CoveFavoritesView::FinishSourceDrag,
++                            weak_factory_.GetWeakPtr())));
+     tile->SetTooltipText(FavoriteTitle(*favorite) + u" — " +
+                          base::UTF8ToUTF16(*url_string));
+     tile->GetViewAccessibility().SetName(
+         FavoriteTitle(*favorite) + u", " + base::UTF8ToUTF16(*url_string));
+     tile->set_context_menu_controller(this);
++    tile->set_drag_controller(this);
+     row_urls_[tile] = *url_string;
+ 
+     bool has_open_favicon = false;
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.h b/chrome/browser/ui/views/cove/cove_favorites_view.h
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.h
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.h
+@@ -7,15 +7,23 @@
+ 
+ #include <map>
+ #include <memory>
++#include <optional>
++#include <set>
+ #include <string>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "base/callback_list.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
++#include "components/tabs/public/tab_interface.h"
++#include "base/values.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/task/cancelable_task_tracker.h"
+ #include "components/prefs/pref_change_registrar.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/menus/simple_menu_model.h"
+ #include "ui/views/context_menu_controller.h"
++#include "ui/views/drag_controller.h"
++#include "ui/gfx/geometry/rect.h"
+ #include "ui/views/view.h"
+ 
+ class BrowserWindowInterface;
+@@ -32,6 +40,8 @@
+ // Profile-wide favorite pages shown in the Cove sidebar.
+ class CoveFavoritesView : public views::View,
+                           public views::ContextMenuController,
++                          public views::DragController,
++                          public TabDragTarget,
+                           public ui::SimpleMenuModel::Delegate {
+   METADATA_HEADER(CoveFavoritesView, views::View)
+ 
+@@ -46,6 +56,39 @@
+   bool IsCurrentPageFavorite() const;
+   base::WeakPtr<CoveFavoritesView> GetWeakPtr();
+ 
++  void SetTabDragActive(bool active);
++  TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
++  void OnTabDragEntered() override;
++  TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
++                                   const gfx::Point& point_in_screen) override;
++  void OnTabDragExited(const gfx::Point& point_in_screen) override;
++  void OnTabDragEnded() override;
++  bool CanDropTab() override;
++  void HandleTabDrop(TabDragTarget::DragController& controller) override;
++  base::CallbackListSubscription RegisterWillDestroyCallback(
++      base::OnceClosure callback) override;
++
++  // views::DragController:
++  void WriteDragDataForView(views::View* sender,
++                            const gfx::Point& press_pt,
++                            ui::OSExchangeData* data) override;
++  int GetDragOperationsForView(views::View* sender,
++                               const gfx::Point& point) override;
++  bool CanStartDragForView(views::View* sender,
++                           const gfx::Point& press_pt,
++                           const gfx::Point& point) override;
++  void OnWillStartDragForView(views::View* sender) override;
++
++  // views::View:
++  bool GetDropFormats(int* formats,
++                      std::set<ui::ClipboardFormatType>* types) override;
++  bool CanDrop(const ui::OSExchangeData& data) override;
++  void OnDragEntered(const ui::DropTargetEvent& event) override;
++  int OnDragUpdated(const ui::DropTargetEvent& event) override;
++  void OnDragExited() override;
++  DropCallback GetDropCallback(const ui::DropTargetEvent& event) override;
++  void OnPaint(gfx::Canvas* canvas) override;
++
+   // views::ContextMenuController:
+   void ShowContextMenuForViewImpl(
+       views::View* source,
+@@ -56,6 +99,23 @@
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
++  struct FavoriteDrop {
++    std::string url;
++    std::u16string title;
++    std::string before_url;
++    bool move = false;
++  };
++  std::optional<FavoriteDrop> ReadDrop(const ui::OSExchangeData& data) const;
++  std::optional<base::ListValue> BuildDropList(const FavoriteDrop& drop) const;
++  std::string BeforeUrlAt(const gfx::Point& point) const;
++  void SetDropIndicator(const std::string& before_url);
++  void ClearDropIndicator();
++  void PerformDrop(FavoriteDrop drop,
++                    const ui::DropTargetEvent& event,
++                    ui::mojom::DragOperation& output,
++                    std::unique_ptr<ui::LayerTreeOwner> drag_image_layer);
++  void FinishSourceDrag();
++  void CommitLiveFavorite(tabs::TabHandle handle, FavoriteDrop drop);
+   void Rebuild();
+   void OpenFavorite(const GURL& url);
+   void RemoveFavorite(const std::string& url);
+@@ -66,6 +126,13 @@
+   PrefChangeRegistrar pref_change_registrar_;
+   base::CancelableTaskTracker favicon_task_tracker_;
+   bool collapsed_ = false;
++  bool source_drag_active_ = false;
++  bool tab_drag_active_ = false;
++  std::optional<tabs::TabHandle> live_drag_handle_;
++  std::optional<FavoriteDrop> live_drop_;
++  base::OnceClosureList tab_drag_destroy_callbacks_;
++  bool rebuild_after_drag_ = false;
++  gfx::Rect drop_indicator_;
+   std::map<views::View*, std::string> row_urls_;
+   std::string context_favorite_url_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_favorites_view_browsertest.cc
+@@ -0,0 +1,234 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_favorites_view.h"
++
++#include "base/run_loop.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "ui/base/dragdrop/drag_drop_types.h"
++#include "ui/base/dragdrop/drop_target_event.h"
++#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "ui/base/dragdrop/os_exchange_data.h"
++#include "ui/compositor/layer_tree_owner.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++constexpr char kPref[] = "cove.sidebar";
++
++CoveFavoritesView* FindFavorites(views::View* root) {
++  if (auto* favorites = views::AsViewClass<CoveFavoritesView>(root)) {
++    return favorites;
++  }
++  for (const auto& child : root->children()) {
++    if (auto* favorites = FindFavorites(child.get())) {
++      return favorites;
++    }
++  }
++  return nullptr;
++}
++
++base::DictValue Favorite(const char* url, const char* title) {
++  return base::DictValue()
++      .Set("url", url)
++      .Set("title", title)
++      .Set("kept", title);
++}
++}  // namespace
++
++class CoveFavoritesDragBrowserTest : public InProcessBrowserTest {
++ protected:
++  CoveFavoritesView* Favorites(BrowserWindowInterface* window = nullptr) {
++    return FindFavorites(
++        BrowserView::GetBrowserViewForBrowser(window ? window : browser()));
++  }
++  void Seed(BrowserWindowInterface* window = nullptr) {
++    auto* target = window ? window : browser();
++    {
++      ScopedDictPrefUpdate update(target->GetProfile()->GetPrefs(), kPref);
++      base::ListValue favorites;
++      favorites.Append(base::Value());
++      favorites.Append(Favorite("https://a.example/", "A"));
++      favorites.Append(Favorite("https://b.example/", "B"));
++      favorites.Append(Favorite("https://c.example/", "C"));
++      update->Set("favorites", std::move(favorites));
++    }
++    BrowserView::GetBrowserViewForBrowser(target)
++        ->GetWidget()
++        ->LayoutRootViewIfNecessary();
++  }
++  const base::ListValue& Saved() {
++    return *browser()->GetProfile()->GetPrefs()->GetDict(kPref).FindList(
++        "favorites");
++  }
++  gfx::PointF AppendPoint(CoveFavoritesView* view) {
++    const auto bounds = view->children().back()->GetMirroredBounds();
++    return gfx::PointF(bounds.right() - 1, bounds.CenterPoint().y());
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveFavoritesDragBrowserTest,
++                       NativeMovePreservesDataAndLivePage) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Drag page</title>")));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, "window.favoriteDropIdentity = 73"));
++  const int tabs = browser()->GetTabStripModel()->count();
++  const GURL page = contents->GetVisibleURL();
++  Seed();
++  auto* favorites = Favorites();
++  ASSERT_TRUE(favorites);
++  ASSERT_EQ(3u, favorites->children().size());
++  auto* source = favorites->children().front().get();
++  ui::OSExchangeData data;
++  favorites->WriteDragDataForView(source, gfx::Point(), &data);
++  ui::DropTargetEvent event(data, AppendPoint(favorites),
++                            AppendPoint(favorites),
++                            ui::DragDropTypes::DRAG_MOVE);
++  ASSERT_TRUE(favorites->CanDrop(data));
++  EXPECT_EQ(ui::DragDropTypes::DRAG_MOVE, favorites->OnDragUpdated(event));
++  const auto unchanged = Saved().Clone();
++  favorites->OnDragExited();
++  EXPECT_EQ(unchanged, Saved());
++  favorites->OnWillStartDragForView(source);
++  auto callback = favorites->GetDropCallback(event);
++  ASSERT_TRUE(callback);
++  auto operation = ui::mojom::DragOperation::kNone;
++  std::move(callback).Run(event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kMove, operation);
++  EXPECT_EQ(source, favorites->children().front().get());
++  EXPECT_TRUE(Saved()[0].is_none());
++  EXPECT_EQ("B", *Saved()[1].GetDict().FindString("kept"));
++  EXPECT_EQ("C", *Saved()[2].GetDict().FindString("kept"));
++  EXPECT_EQ("A", *Saved()[3].GetDict().FindString("kept"));
++  source->OnDragDone();
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(tabs, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(page, contents->GetVisibleURL());
++  EXPECT_EQ(73, content::EvalJs(contents, "window.favoriteDropIdentity"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveFavoritesDragBrowserTest,
++                       DropRevalidatesRemovedSourceAndDestination) {
++  Seed();
++  auto* favorites = Favorites();
++  ASSERT_TRUE(favorites);
++  ui::OSExchangeData data;
++  favorites->WriteDragDataForView(favorites->children().front().get(),
++                                  gfx::Point(), &data);
++  ui::DropTargetEvent event(data, AppendPoint(favorites),
++                            AppendPoint(favorites),
++                            ui::DragDropTypes::DRAG_MOVE);
++  auto callback = favorites->GetDropCallback(event);
++  ASSERT_TRUE(callback);
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kPref);
++    update->FindList("favorites")
++        ->erase(update->FindList("favorites")->begin() + 1);
++  }
++  const auto after_removal = Saved().Clone();
++  auto operation = ui::mojom::DragOperation::kMove;
++  std::move(callback).Run(event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(after_removal, Saved());
++
++  Seed();
++  favorites = Favorites();
++  ui::OSExchangeData external;
++  external.SetURL(GURL("https://new.example/"), u"New");
++  const gfx::Rect target = favorites->children()[1]->GetMirroredBounds();
++  const gfx::PointF point(target.x(), target.CenterPoint().y());
++  ui::DropTargetEvent copy_event(external, point, point,
++                                 ui::DragDropTypes::DRAG_COPY);
++  auto copy = favorites->GetDropCallback(copy_event);
++  ASSERT_TRUE(copy);
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kPref);
++    update->FindList("favorites")
++        ->erase(update->FindList("favorites")->begin() + 2);
++  }
++  const auto after_target_removal = Saved().Clone();
++  operation = ui::mojom::DragOperation::kCopy;
++  std::move(copy).Run(copy_event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(after_target_removal, Saved());
++}
++
++IN_PROC_BROWSER_TEST_F(
++    CoveFavoritesDragBrowserTest,
++    UrlCopyRejectsDuplicatesInvalidSchemesAndForeignProfile) {
++  Seed();
++  auto* favorites = Favorites();
++  ASSERT_TRUE(favorites);
++  ui::OSExchangeData external;
++  external.SetURL(GURL("https://new.example/"), u"New title");
++  ui::DropTargetEvent event(external, AppendPoint(favorites),
++                            AppendPoint(favorites),
++                            ui::DragDropTypes::DRAG_COPY);
++  auto callback = favorites->GetDropCallback(event);
++  ASSERT_TRUE(callback);
++  auto operation = ui::mojom::DragOperation::kNone;
++  std::move(callback).Run(event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kCopy, operation);
++  ASSERT_EQ(5u, Saved().size());
++  EXPECT_EQ("New title", *Saved().back().GetDict().FindString("title"));
++  EXPECT_FALSE(favorites->CanDrop(external));
++  ui::OSExchangeData invalid;
++  invalid.SetURL(GURL("javascript:alert(1)"), u"Invalid");
++  EXPECT_FALSE(favorites->CanDrop(invalid));
++  ui::OSExchangeData own;
++  favorites->WriteDragDataForView(favorites->children().front().get(),
++                                  gfx::Point(), &own);
++  auto* private_browser = CreateIncognitoBrowser(browser()->GetProfile());
++  Seed(private_browser);
++  auto* private_favorites = Favorites(private_browser);
++  ASSERT_TRUE(private_favorites);
++  EXPECT_FALSE(private_favorites->CanDrop(own));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveFavoritesDragBrowserTest,
++                       ClosedDropOwnerAndAmbiguousSourceDoNotMutateFavorites) {
++  Seed();
++  auto* second = CreateBrowser(browser()->GetProfile());
++  auto* favorites = Favorites(second);
++  ASSERT_TRUE(favorites);
++  favorites->GetWidget()->LayoutRootViewIfNecessary();
++  ui::OSExchangeData data;
++  favorites->WriteDragDataForView(favorites->children().front().get(),
++                                  gfx::Point(), &data);
++  ui::DropTargetEvent event(data, AppendPoint(favorites),
++                            AppendPoint(favorites),
++                            ui::DragDropTypes::DRAG_MOVE);
++  auto callback = favorites->GetDropCallback(event);
++  ASSERT_TRUE(callback);
++  const auto saved = Saved().Clone();
++  CloseBrowserSynchronously(second);
++  auto operation = ui::mojom::DragOperation::kMove;
++  std::move(callback).Run(event, operation, nullptr);
++  EXPECT_EQ(ui::mojom::DragOperation::kNone, operation);
++  EXPECT_EQ(saved, Saved());
++
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kPref);
++    update->FindList("favorites")
++        ->Append(Favorite("https://a.example/", "Duplicate A"));
++  }
++  favorites = Favorites();
++  ASSERT_TRUE(favorites);
++  EXPECT_EQ(ui::DragDropTypes::DRAG_NONE,
++            favorites->GetDragOperationsForView(
++                favorites->children().front().get(), gfx::Point()));
++  EXPECT_FALSE(favorites->CanDrop(data));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -2,17 +2,18 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+-
+ #include <memory>
+ #include <string>
+ 
+ #include "base/run_loop.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/cove/cove_favorites_view.h"
++#include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
+@@ -31,6 +32,7 @@
+ #include "content/public/test/browser_test_utils.h"
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
++#include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/view_utils.h"
+ #include "ui/views/widget/widget.h"
+@@ -38,6 +40,18 @@
+ namespace {
+ constexpr char kFolderId[] = "live-tab-drop-folder";
+ constexpr char16_t kFolderName[] = u"Live drag destination";
++
++CoveFavoritesView* FindFavoritesView(views::View* root) {
++  if (auto* favorites = views::AsViewClass<CoveFavoritesView>(root)) {
++    return favorites;
++  }
++  for (const auto& child : root->children()) {
++    if (auto* result = FindFavoritesView(child.get())) {
++      return result;
++    }
++  }
++  return nullptr;
++}
+ 
+ views::View* FindFolderRow(views::View* root) {
+   if (auto* button = views::AsViewClass<views::LabelButton>(root);
+@@ -53,7 +67,8 @@
+ }
+ 
+ const base::DictValue* PersonalSpace(Profile* profile) {
+-  const auto* spaces = profile->GetPrefs()->GetDict("cove.sidebar").FindList("spaces");
++  const auto* spaces =
++      profile->GetPrefs()->GetDict("cove.sidebar").FindList("spaces");
+   if (!spaces) {
+     return nullptr;
+   }
+@@ -97,10 +112,10 @@
+     ASSERT_TRUE(ui_test_utils::NavigateToURL(
+         browser(), embedded_test_server()->GetURL("/title1.html")));
+     ASSERT_TRUE(library());
+-    ASSERT_TRUE(content::ExecJs(
+-        browser()->GetTabStripModel()->GetActiveWebContents(),
+-        "window.coveLiveDragDraft = 'unsent live drag draft'; "
+-        "history.pushState({}, '', '#same-page-instance');"));
++    ASSERT_TRUE(
++        content::ExecJs(browser()->GetTabStripModel()->GetActiveWebContents(),
++                        "window.coveLiveDragDraft = 'unsent live drag draft'; "
++                        "history.pushState({}, '', '#same-page-instance');"));
+     {
+       ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
+                                   "cove.sidebar");
+@@ -141,8 +156,10 @@
+     context->OwnDragController(std::move(controller));
+     ASSERT_EQ(TabDragController::Liveness::kAlive,
+               raw->Init(context, source, {source}, gfx::Point(4, 4),
+-                        browser()->GetTabStripModel()
+-                            ->selection_model().GetListSelectionModel(),
++                        browser()
++                            ->GetTabStripModel()
++                            ->selection_model()
++                            .GetListSelectionModel(),
+                         ui::mojom::DragEventSource::kMouse));
+     ASSERT_EQ(TabDragController::Liveness::kAlive, raw->Drag(destination));
+     ASSERT_TRUE(context->GetDragController());
+@@ -165,11 +182,18 @@
+   ASSERT_TRUE(context);
+   auto* source = context->GetTabForContents(contents);
+   ASSERT_TRUE(source);
+-  const auto point = FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
++  const auto point =
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
+   ASSERT_EQ(static_cast<TabDragTarget*>(library()),
+             browser_view()->GetTabDragTarget(point));
+ 
+   ASSERT_NO_FATAL_FAILURE(BeginRealDrag(context, source, point));
++  // A first-Favorite affordance may appear at drag start, shifting the rows.
++  // Resolve the native folder's current position after that layout change.
++  widget->LayoutRootViewIfNecessary();
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(
++                FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
+   EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
+   EXPECT_TRUE(library()->CanDropTab());
+   context->GetDragController()->EndDrag(EndDragReason::kComplete);
+@@ -183,7 +207,8 @@
+   EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
+   EXPECT_EQ(entries, contents->GetController().GetEntryCount());
+   EXPECT_EQ(original_url, contents->GetVisibleURL());
+-  EXPECT_EQ("unsent live drag draft", content::EvalJs(contents, "window.coveLiveDragDraft"));
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(contents, "window.coveLiveDragDraft"));
+   const auto* space = PersonalSpace(browser()->GetProfile());
+   ASSERT_TRUE(space);
+   const auto* pins = space->FindList("pins");
+@@ -204,17 +229,26 @@
+   auto* contents = model->GetActiveWebContents();
+   const auto handle = model->GetActiveTab()->GetHandle();
+   const int entries = contents->GetController().GetEntryCount();
+-  const auto before = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
++  const auto before =
++      browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
+   auto* widget = browser_view()->GetWidget();
+   const gfx::Rect original_bounds = widget->GetWindowBoundsInScreen();
+   auto* context = browser_view()->tab_strip_view()->GetDragContext();
+   ASSERT_TRUE(context);
+   auto* source = context->GetTabForContents(contents);
+   ASSERT_TRUE(source);
+-  const auto point = FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
++  const auto point =
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
+ 
+   ASSERT_NO_FATAL_FAILURE(BeginRealDrag(context, source, point));
+-  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  // A first-Favorite affordance may appear at drag start, shifting the rows.
++  // Resolve the native folder's current position after that layout change.
++  widget->LayoutRootViewIfNecessary();
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(
++                FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  EXPECT_EQ(before,
++            browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
+   EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
+   context->GetDragController()->EndDrag(EndDragReason::kCancel);
+   base::RunLoop().RunUntilIdle();
+@@ -224,9 +258,156 @@
+   EXPECT_EQ(handle.Get(), model->GetActiveTab());
+   EXPECT_EQ(contents, model->GetActiveWebContents());
+   EXPECT_FALSE(model->GetActiveTab()->IsPinned());
+-  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  EXPECT_EQ(before,
++            browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
+   EXPECT_EQ(entries, contents->GetController().GetEntryCount());
+-  EXPECT_EQ("unsent live drag draft", content::EvalJs(contents, "window.coveLiveDragDraft"));
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(contents, "window.coveLiveDragDraft"));
+   EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       OnlyTabCanCreateFirstFavoriteWithoutPinningOrReloading) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto handle = model->GetActiveTab()->GetHandle();
++  const GURL url = contents->GetVisibleURL();
++  const int entries = contents->GetController().GetEntryCount();
++  auto* favorites = FindFavoritesView(browser_view());
++  ASSERT_TRUE(favorites);
++  EXPECT_FALSE(favorites->GetVisible());
++  auto* widget = browser_view()->GetWidget();
++  const auto bounds = widget->GetWindowBoundsInScreen();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source,
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  widget->LayoutRootViewIfNecessary();
++  ASSERT_TRUE(favorites->GetVisible());
++  ASSERT_EQ(1u, favorites->children().size());
++  EXPECT_EQ(
++      u"Drop to Favorite",
++      favorites->children().front()->GetViewAccessibility().GetCachedName());
++  const auto point = favorites->GetBoundsInScreen().CenterPoint();
++  EXPECT_EQ(static_cast<TabDragTarget*>(favorites),
++            browser_view()->GetTabDragTarget(point));
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(point));
++  ASSERT_TRUE(favorites->CanDropTab());
++  EXPECT_EQ(bounds, widget->GetWindowBoundsInScreen());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++  const auto* saved = browser()
++                          ->GetProfile()
++                          ->GetPrefs()
++                          ->GetDict("cove.sidebar")
++                          .FindList("favorites");
++  ASSERT_TRUE(saved);
++  ASSERT_EQ(1u, saved->size());
++  EXPECT_EQ(url.spec(), *saved->front().GetDict().FindString("url"));
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  ASSERT_TRUE(handle.Get());
++  EXPECT_EQ(handle.Get(), model->GetActiveTab());
++  EXPECT_FALSE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(entries, contents->GetController().GetEntryCount());
++  EXPECT_EQ(url, contents->GetVisibleURL());
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(contents, "window.coveLiveDragDraft"));
++  EXPECT_EQ(bounds, widget->GetWindowBoundsInScreen());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       CanceledFirstFavoriteDropHidesAffordanceAndKeepsPage) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  const auto before =
++      browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
++  auto* favorites = FindFavoritesView(browser_view());
++  ASSERT_TRUE(favorites);
++  EXPECT_FALSE(favorites->GetVisible());
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(contents);
++  ASSERT_TRUE(source);
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source,
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_TRUE(favorites->GetVisible());
++  const auto point = favorites->GetBoundsInScreen().CenterPoint();
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(point));
++  ASSERT_TRUE(favorites->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kCancel);
++  base::RunLoop().RunUntilIdle();
++  EXPECT_FALSE(favorites->GetVisible());
++  EXPECT_EQ(before,
++            browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar"));
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ(1, model->count());
++  EXPECT_FALSE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(contents, "window.coveLiveDragDraft"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveLiveTabDragBrowserTest,
++                       SameUrlPagesKeepSeparateSavedPinsAndDrafts) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* first = model->GetActiveWebContents();
++  const GURL url = first->GetVisibleURL();
++  model->SetTabPinned(model->active_index(), true);
++  auto* second = chrome::AddAndReturnTabAt(browser(), url, -1, true);
++  ASSERT_TRUE(second);
++  ASSERT_TRUE(content::WaitForLoadStop(second));
++  ASSERT_TRUE(
++      content::ExecJs(second,
++                      "window.secondPinnedDraft = 'separate unsent draft';"
++                      "history.pushState({}, '', location.href);"));
++  ASSERT_EQ(url, second->GetVisibleURL());
++  const int first_history = first->GetController().GetEntryCount();
++  const int second_history = second->GetController().GetEntryCount();
++  const auto source_handle = model->GetActiveTab()->GetHandle();
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* context = browser_view()->tab_strip_view()->GetDragContext();
++  auto* source = context->GetTabForContents(second);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
++      context, source,
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(
++                FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  ASSERT_TRUE(library()->CanDropTab());
++  context->GetDragController()->EndDrag(EndDragReason::kComplete);
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(2, model->count());
++  EXPECT_EQ(2, model->IndexOfFirstNonPinnedTab());
++  ASSERT_TRUE(source_handle.Get());
++  EXPECT_EQ(second, source_handle.Get()->GetContents());
++  EXPECT_EQ(first_history, first->GetController().GetEntryCount());
++  EXPECT_EQ(second_history, second->GetController().GetEntryCount());
++  EXPECT_EQ("unsent live drag draft",
++            content::EvalJs(first, "window.coveLiveDragDraft"));
++  EXPECT_EQ("separate unsent draft",
++            content::EvalJs(second, "window.secondPinnedDraft"));
++  const auto* space = PersonalSpace(browser()->GetProfile());
++  ASSERT_TRUE(space);
++  ASSERT_TRUE(space->FindList("pins"));
++  ASSERT_EQ(2u, space->FindList("pins")->size());
++  const auto& pins = *space->FindList("pins");
++  EXPECT_NE(*pins.front().GetDict().FindString("id"),
++            *pins.back().GetDict().FindString("id"));
++  EXPECT_EQ(url.spec(), *pins.front().GetDict().FindString("url"));
++  EXPECT_EQ(url.spec(), *pins.back().GetDict().FindString("url"));
++  EXPECT_EQ(kFolderId, *pins.back().GetDict().FindString("folder"));
++}
++
+ }  // namespace
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -2508,6 +2508,9 @@
+ }
+ 
+ void BrowserView::TabDraggingStatusChanged(bool is_dragging) {
++  if (vertical_tab_strip_region_view_) {
++    vertical_tab_strip_region_view_->SetCoveTabDragActive(is_dragging);
++  }
+ #if !BUILDFLAG(IS_LINUX)
+   UpdateFastResizeForContentViews(is_dragging);
+ 
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -1198,8 +1198,18 @@
+       .value_or(false);
+ }
+ 
++void VerticalTabStripRegionView::SetCoveTabDragActive(bool active) {
++  if (favorites_view_) favorites_view_->SetTabDragActive(active);
++  InvalidateLayout();
++  if (GetWidget()) GetWidget()->LayoutRootViewIfNecessary();
++}
++
+ TabDragTarget* VerticalTabStripRegionView::GetTabDragTarget(
+     const gfx::Point& point_in_screen) {
++  if (favorites_view_) {
++    if (auto* target = favorites_view_->GetTabDragTarget(point_in_screen))
++      return target;
++  }
+   // Saved folders are outside the native tab container, but live tabs must
+   // remain in Chromium's drag session rather than becoming URL-copy drags.
+   if (library_view_) {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -93,6 +93,7 @@
+   ~VerticalTabStripRegionView() override;
+ 
+   void FocusLocation();
++  void SetCoveTabDragActive(bool active);
+ 
+   TabDragTarget* GetTabDragTarget(
+       const gfx::Point& point_in_screen) override;
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1624,6 +1624,7 @@
+       "../browser/ui/views/cove/cove_caption_buttons_browsertest.mm",
+       "../browser/ui/views/cove/cove_live_tab_drag_browsertest.cc",
+       "../browser/ui/views/cove/cove_sidebar_drag_browsertest.cc",
++      "../browser/ui/views/cove/cove_favorites_view_browsertest.cc",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     deps = [
