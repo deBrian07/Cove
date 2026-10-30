@@ -2,7 +2,7 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 91-patch native app builds and passes renderer smoke, 75 focused native tests, 36 tooling tests and one clean 40-case browser run with retries disabled. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering.
+The current 92-patch native app builds and passes renderer smoke, 75 focused native tests, 36 tooling tests and one clean 45-case browser run with retries disabled. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
 
 Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, keyboard feel and fullscreen still need a manual pass. PRE_/process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
 
