@@ -1,0 +1,872 @@
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.cc b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+--- a/chrome/browser/ui/views/cove/cove_name_dialog.cc
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+@@ -12,7 +12,9 @@
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
++#include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "components/constrained_window/constrained_window_views.h"
+ #include "components/strings/grit/components_strings.h"
+@@ -26,6 +28,10 @@
+ 
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveNameField);
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveNameSaveButton);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeSidebarField);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeAccentField);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeHighlightField);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeSaveButton);
+ 
+ class CoveNameDialogDelegate final : public ui::DialogModelDelegate {
+  public:
+@@ -117,3 +123,105 @@
+   constrained_window::ShowBrowserModal(std::move(model),
+                                       parent->GetNativeWindow());
+ }
++
++bool CoveHexColor(std::u16string text, std::u16string* normalized) {
++  base::TrimWhitespace(text, base::TRIM_ALL, &text);
++  std::string hex = base::UTF16ToUTF8(text);
++  if (!hex.empty() && hex.front() == '#') {
++    hex.erase(hex.begin());
++  }
++  uint32_t rgb = 0;
++  if (hex.size() != 6 || !base::HexStringToUInt(hex, &rgb)) {
++    return false;
++  }
++  *normalized = u"#" + base::UTF8ToUTF16(hex);
++  return true;
++}
++
++class CoveThemeDialogDelegate final : public ui::DialogModelDelegate {
++ public:
++  explicit CoveThemeDialogDelegate(
++      base::OnceCallback<void(std::u16string, std::u16string, std::u16string)>
++          accept)
++      : accept_(std::move(accept)) {}
++  ~CoveThemeDialogDelegate() override = default;
++
++  void Initialize() { UpdateSaveEnabled(); }
++
++  bool Accept() {
++    std::u16string sidebar;
++    std::u16string accent;
++    std::u16string highlight;
++    if (!accept_ || !ReadColors(&sidebar, &accent, &highlight)) {
++      return false;
++    }
++    auto accept = std::move(accept_);
++    std::move(accept).Run(std::move(sidebar), std::move(accent),
++                          std::move(highlight));
++    return true;
++  }
++
++ private:
++  bool ReadColors(std::u16string* sidebar, std::u16string* accent,
++                  std::u16string* highlight) {
++    return CoveHexColor(Field(kCoveThemeSidebarField), sidebar) &&
++           CoveHexColor(Field(kCoveThemeAccentField), accent) &&
++           CoveHexColor(Field(kCoveThemeHighlightField), highlight);
++  }
++
++  std::u16string Field(ui::ElementIdentifier id) {
++    return dialog_model()->GetTextfieldByUniqueId(id)->text();
++  }
++
++  void UpdateSaveEnabled() {
++    std::u16string sidebar;
++    std::u16string accent;
++    std::u16string highlight;
++    dialog_model()->SetButtonEnabled(
++        dialog_model()->GetButtonByUniqueId(kCoveThemeSaveButton),
++        ReadColors(&sidebar, &accent, &highlight));
++  }
++
++  base::OnceCallback<void(std::u16string, std::u16string, std::u16string)>
++      accept_;
++};
++
++void ShowCoveThemeDialog(
++    views::View* anchor,
++    std::u16string sidebar,
++    std::u16string accent,
++    std::u16string highlight,
++    base::OnceCallback<void(std::u16string, std::u16string, std::u16string)>
++        accept) {
++  if (!anchor || !anchor->GetWidget() || !accept) {
++    return;
++  }
++  views::Widget* parent = anchor->GetWidget()->GetPrimaryWindowWidget();
++  if (!parent || !parent->GetNativeWindow()) {
++    return;
++  }
++  auto delegate = std::make_unique<CoveThemeDialogDelegate>(std::move(accept));
++  auto* const delegate_ptr = delegate.get();
++  auto model =
++      ui::DialogModel::Builder(std::move(delegate))
++          .SetInternalName("CoveThemeDialog")
++          .SetTitle(u"Edit theme colors")
++          .SetAccessibleTitle(u"Edit theme colors")
++          .AddParagraph(ui::DialogModelLabel(u"Sidebar, accent, and highlight are separate colors. Use a 6-digit hex value for each."))
++          .AddTextfield(kCoveThemeSidebarField, u"Sidebar", std::move(sidebar))
++          .AddTextfield(kCoveThemeAccentField, u"Accent", std::move(accent))
++          .AddTextfield(kCoveThemeHighlightField, u"Highlight",
++                        std::move(highlight))
++          .SetInitiallyFocusedField(kCoveThemeSidebarField)
++          .AddOkButton(
++              base::BindRepeating(&CoveThemeDialogDelegate::Accept,
++                                  base::Unretained(delegate_ptr)),
++              ui::DialogModel::Button::Params()
++                  .SetId(kCoveThemeSaveButton)
++                  .SetLabel(l10n_util::GetStringUTF16(IDS_SAVE)))
++          .AddCancelButton(base::DoNothing())
++          .Build();
++  delegate_ptr->Initialize();
++  constrained_window::ShowBrowserModal(std::move(model),
++                                      parent->GetNativeWindow());
++}
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.h b/chrome/browser/ui/views/cove/cove_name_dialog.h
+--- a/chrome/browser/ui/views/cove/cove_name_dialog.h
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.h
+@@ -23,4 +23,14 @@
+     std::u16string initial_name,
+     base::OnceCallback<void(std::u16string)> accept);
+ 
++// Edits the three colors of one Space. `accept` runs only when every field is
++// a 6-digit hex color. Cancellation does not run `accept`.
++void ShowCoveThemeDialog(
++    views::View* anchor,
++    std::u16string sidebar,
++    std::u16string accent,
++    std::u16string highlight,
++    base::OnceCallback<void(std::u16string, std::u16string, std::u16string)>
++        accept);
++
+ #endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -97,6 +97,20 @@
+   return nullptr;
+ }
+ 
++views::LabelButton* ReturnControl(views::View* row) {
++  if (!row) {
++    return nullptr;
++  }
++  for (const auto& child : row->children()) {
++    if (auto* button = views::AsViewClass<views::LabelButton>(child.get());
++        button && button->GetText() == u"Return to saved URL" &&
++        button->GetVisible()) {
++      return button;
++    }
++  }
++  return nullptr;
++}
++
+ views::LabelButton* FindRow(views::View* root, std::u16string_view text) {
+   if (auto* row = views::AsViewClass<views::LabelButton>(root);
+       row && row->GetText().find(text) != std::u16string::npos) {
+@@ -1137,4 +1151,100 @@
+   EXPECT_FALSE(region->IsDragEdgeAutoscrollingForTesting());
+   EXPECT_EQ(url, contents->GetVisibleURL());
+   EXPECT_EQ("kept", content::EvalJs(contents, "window.edgeDraft"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       NavigatedPinOffersReturnWithoutLeavingTheTab) {
++  const GURL home("data:text/html,<title>Saved pin</title>");
++  const GURL away("data:text/html,<title>Left the saved pin</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("pins")->front().GetDict().Set("url", home.spec());
++  }
++  model->SetTabPinned(model->active_index(), true);
++  const auto handle = model->GetActiveTab()->GetHandle();
++  Layout();
++  EXPECT_EQ(nullptr, ReturnControl(PinRow("p")));
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), away));
++  ASSERT_TRUE(content::ExecJs(contents, "window.pinDraft='still here'"));
++  const int history = contents->GetController().GetEntryCount();
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return ReturnControl(PinRow("p")) != nullptr; }));
++  EXPECT_EQ("still here", content::EvalJs(contents, "window.pinDraft"));
++  EXPECT_EQ(away, contents->GetVisibleURL());
++  Layout();
++  auto* control = ReturnControl(PinRow("p"));
++  ASSERT_TRUE(control);
++  ASSERT_FALSE(control->GetLocalBounds().IsEmpty());
++  const gfx::PointF inside(control->GetLocalBounds().CenterPoint());
++  ui::MouseEvent press(ui::EventType::kMousePressed, inside, inside,
++                       base::TimeTicks::Now(), ui::EF_LEFT_MOUSE_BUTTON,
++                       ui::EF_LEFT_MOUSE_BUTTON);
++  ui::MouseEvent release(ui::EventType::kMouseReleased, inside, inside,
++                         base::TimeTicks::Now(), ui::EF_LEFT_MOUSE_BUTTON,
++                         ui::EF_LEFT_MOUSE_BUTTON);
++  control->OnMousePressed(press);
++  control->OnMouseReleased(release);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  EXPECT_EQ(home, contents->GetLastCommittedURL());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ(handle, model->GetActiveTab()->GetHandle());
++  EXPECT_TRUE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(1, model->count());
++  // Returning to the saved page is a new visit. The page that was open stays
++  // behind it, so Back still reaches that page.
++  auto& visited = contents->GetController();
++  EXPECT_GT(visited.GetEntryCount(), history);
++  const int index = visited.GetLastCommittedEntryIndex();
++  ASSERT_GT(index, 0);
++  EXPECT_EQ(away, visited.GetEntryAtIndex(index - 1)->GetURL());
++  EXPECT_EQ(home.spec(),
++            *SavedSpace().FindList("pins")->front().GetDict().FindString("url"));
++  EXPECT_EQ(2u, SavedSpace().FindList("pins")->size());
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return ReturnControl(PinRow("p")) == nullptr; }));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SpaceThemesKeepSeparateSidebarAccentAndHighlight) {
++  Seed();
++  const SkColor before = library()->ActiveSidebarColorForTesting();
++  library()->SetSpacePaletteForTesting("personal", 2);
++  Layout();
++  const SkColor grove = library()->ActiveSidebarColorForTesting();
++  EXPECT_NE(before, grove);
++  const auto* theme = SavedSpace().FindDict("theme");
++  ASSERT_TRUE(theme);
++  const auto* sidebar = theme->FindString("sidebar");
++  const auto* accent = theme->FindString("accent");
++  const auto* highlight = theme->FindString("highlight");
++  ASSERT_TRUE(sidebar);
++  ASSERT_TRUE(accent);
++  ASSERT_TRUE(highlight);
++  EXPECT_NE(*sidebar, *accent);
++  EXPECT_NE(*accent, *highlight);
++  EXPECT_NE(*sidebar, *highlight);
++  library()->SetSpacePaletteForTesting("personal", 3);
++  Layout();
++  EXPECT_NE(grove, library()->ActiveSidebarColorForTesting());
++  const auto* next = SavedSpace().FindDict("theme")->FindString("sidebar");
++  ASSERT_TRUE(next);
++  EXPECT_NE(*next, *sidebar);
++  library()->CommitSpaceThemeForTesting("personal", u"#112233", u"#445566",
++                                       u"#778899");
++  Layout();
++  EXPECT_EQ(SkColorSetRGB(0x11, 0x22, 0x33),
++            library()->ActiveSidebarColorForTesting());
++  const auto* custom = SavedSpace().FindDict("theme");
++  ASSERT_TRUE(custom);
++  EXPECT_EQ("#112233", *custom->FindString("sidebar"));
++  EXPECT_EQ("#445566", *custom->FindString("accent"));
++  EXPECT_EQ("#778899", *custom->FindString("highlight"));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -12,9 +12,11 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/custom_corners_background.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <optional>
+ #include <set>
+ #include <utility>
+@@ -129,8 +131,98 @@
+ constexpr int kMoveFolderUpCommand = 13;
+ constexpr int kMoveFolderDownCommand = 14;
+ constexpr int kMovePinToRootCommand = 15;
++constexpr int kEditThemeCommand = 16;
+ constexpr int kMovePinCommandBase = 100;
++constexpr int kThemeCommandBase = 200;
+ constexpr int kMoveFolderCommandBase = 10000;
++
++struct SpacePalette {
++  const char* name;
++  const char* sidebar;
++  const char* accent;
++  const char* highlight;
++};
++
++// Each palette is three roles, not a single tint: the sidebar surface, the
++// Space marker, and the selected-row wash.
++constexpr std::array<SpacePalette, 5> kSpacePalettes = {{
++    {"Dusk", "#241f33", "#8b7ec8", "#3c3458"},
++    {"Harbor", "#17262e", "#5ea0c0", "#2c4654"},
++    {"Grove", "#1a2820", "#6eaa78", "#2c4634"},
++    {"Ember", "#2a201c", "#d08a68", "#4a342c"},
++    {"Slate", "#1e1f24", "#a8b0bc", "#34363e"},
++}};
++
++std::u16string FormatHexColor(SkColor color) {
++  constexpr std::array<char, 16> kDigits = {'0', '1', '2', '3', '4', '5',
++                                            '6', '7', '8', '9', 'a', 'b',
++                                            'c', 'd', 'e', 'f'};
++  std::string hex = "#";
++  const auto append = [&](uint8_t value) {
++    hex.push_back(kDigits.at(value >> 4));
++    hex.push_back(kDigits.at(value & 0x0f));
++  };
++  append(SkColorGetR(color));
++  append(SkColorGetG(color));
++  append(SkColorGetB(color));
++  return base::UTF8ToUTF16(hex);
++}
++
++std::optional<SkColor> ParseHexColor(std::string_view text) {
++  if (!text.empty() && text.front() == '#') {
++    text.remove_prefix(1);
++  }
++  uint32_t rgb = 0;
++  if (text.size() != 6 || !base::HexStringToUInt(text, &rgb)) {
++    return std::nullopt;
++  }
++  return SkColorSetRGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
++}
++
++SkColor MixColors(SkColor from, SkColor to, float amount) {
++  const auto channel = [amount](int from_channel, int to_channel) {
++    return static_cast<int>(from_channel + (to_channel - from_channel) * amount);
++  };
++  return SkColorSetRGB(channel(SkColorGetR(from), SkColorGetR(to)),
++                       channel(SkColorGetG(from), SkColorGetG(to)),
++                       channel(SkColorGetB(from), SkColorGetB(to)));
++}
++
++struct ResolvedPalette {
++  SkColor sidebar = SkColorSetRGB(0x24, 0x1f, 0x33);
++  SkColor accent = SkColorSetRGB(0x8b, 0x7e, 0xc8);
++  SkColor highlight = SkColorSetRGB(0x3c, 0x34, 0x58);
++};
++
++ResolvedPalette PaletteForSpace(const base::DictValue& space) {
++  ResolvedPalette palette;
++  if (const auto* theme = space.FindDict("theme")) {
++    if (const auto* sidebar = theme->FindString("sidebar")) {
++      if (auto color = ParseHexColor(*sidebar)) {
++        palette.sidebar = *color;
++      }
++    }
++    if (const auto* accent = theme->FindString("accent")) {
++      if (auto color = ParseHexColor(*accent)) {
++        palette.accent = *color;
++      }
++    }
++    if (const auto* highlight = theme->FindString("highlight")) {
++      if (auto color = ParseHexColor(*highlight)) {
++        palette.highlight = *color;
++      }
++    }
++    return palette;
++  }
++  if (const auto* color = space.FindString("color")) {
++    if (auto accent = ParseHexColor(*color)) {
++      palette.accent = *accent;
++      palette.sidebar = MixColors(*accent, SK_ColorBLACK, 0.72f);
++      palette.highlight = MixColors(palette.sidebar, *accent, 0.45f);
++    }
++  }
++  return palette;
++}
+ 
+ void ExpandFolderPath(base::DictValue& space, std::string id) {
+   const cove::FolderTree tree(space.FindList("folders"));
+@@ -272,21 +364,62 @@
+   return *format;
+ }
+ 
++// Quiet second line under a pin title. It is a control, not another row:
++// the title still selects the open tab, and this line navigates that same
++// tab back to the saved page.
++class ReturnHomeLink : public views::LabelButton {
++  METADATA_HEADER(ReturnHomeLink, views::LabelButton)
++ public:
++  explicit ReturnHomeLink(PressedCallback callback)
++      : LabelButton(std::move(callback), u"Return to saved URL") {
++    SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    SetTextSubpixelRenderingEnabled(false);
++    SetEnabledTextColors(ui::kColorLabelForegroundSecondary);
++    SetBorder(views::CreateEmptyBorder(gfx::Insets()));
++    SetFocusRingCornerRadius(4);
++    label()->SetFontList(label()->font_list().DeriveWithSizeDelta(-2));
++    SetAccessibleName(u"Return to saved URL");
++    SetTooltipText(u"Return this tab to its saved page");
++  }
++};
++
+ class SidebarDragRow : public views::LabelButton {
+   METADATA_HEADER(SidebarDragRow, views::LabelButton)
+  public:
+   SidebarDragRow(PressedCallback callback, const std::u16string& text,
+                  base::RepeatingClosure finished)
+-      : LabelButton(std::move(callback), text), finished_(std::move(finished)) {}
++      : LabelButton(std::move(callback), text), finished_(std::move(finished)) {
++    SetNotifyEnterExitOnChild(true);
++  }
+   ~SidebarDragRow() override;
+   base::WeakPtr<SidebarDragRow> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
+   void SetFolderStyle() {
+     label()->SetFontList(label()->font_list().DeriveWithWeight(
+         gfx::Font::Weight::SEMIBOLD));
+   }
+-  void SetSelected(bool selected) {
++  void SetSelected(bool selected, SkColor highlight) {
+     selected_ = selected;
++    highlight_ = highlight;
+     UpdateBackground();
++  }
++  // A bound pin can leave its saved URL. The title still selects that tab;
++  // this separate control navigates the same tab back.
++  void SetReturnHome(bool visible, PressedCallback callback) {
++    if (!visible) {
++      if (return_home_) {
++        return_home_->SetVisible(false);
++        InvalidateLayout();
++      }
++      return;
++    }
++    if (!return_home_) {
++      return_home_ = AddChildView(
++          std::make_unique<ReturnHomeLink>(std::move(callback)));
++    } else {
++      return_home_->SetCallback(std::move(callback));
++    }
++    return_home_->SetVisible(true);
++    InvalidateLayout();
+   }
+   void OnDragDone() override {
+     LabelButton::OnDragDone();
+@@ -296,12 +429,35 @@
+   void StateChanged(ButtonState old_state) override {
+     LabelButton::StateChanged(old_state);
+     UpdateBackground();
++  }
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available) const override {
++    gfx::Size size = LabelButton::CalculatePreferredSize(available);
++    if (return_home_ && return_home_->GetVisible()) {
++      size.set_height(std::max(size.height(), 52));
++    }
++    return size;
++  }
++  void Layout(PassKey) override {
++    LayoutSuperclass<LabelButton>(this);
++    if (!return_home_ || !return_home_->GetVisible()) {
++      return;
++    }
++    gfx::Rect title = this->label()->bounds();
++    title.set_height(std::max(16, height() - 20));
++    this->label()->SetBoundsRect(title);
++    return_home_->SetBounds(title.x(), title.bottom(),
++                            std::max(0, width() - title.x() - 8), 16);
+   }
+  private:
+   void UpdateBackground() {
+     if (selected_) {
+-      SetBackground(views::CreateRoundedRectBackground(
+-          kColorTabBackgroundActiveFrameActive, 8));
++      if (SkColorGetA(highlight_) == 255) {
++        SetBackground(views::CreateRoundedRectBackground(highlight_, 8));
++      } else {
++        SetBackground(views::CreateRoundedRectBackground(
++            kColorTabBackgroundActiveFrameActive, 8));
++      }
+     } else if (GetState() == STATE_HOVERED || GetState() == STATE_PRESSED) {
+       SetBackground(views::CreateRoundedRectBackground(
+           kColorTabBackgroundInactiveHoverFrameActive, 8));
+@@ -310,10 +466,14 @@
+     }
+   }
+   bool selected_ = false;
++  SkColor highlight_ = SK_ColorTRANSPARENT;
++  raw_ptr<views::LabelButton> return_home_ = nullptr;
+   base::RepeatingClosure finished_;
+   base::WeakPtrFactory<SidebarDragRow> weak_factory_{this};
+ };
+ SidebarDragRow::~SidebarDragRow() = default;
++BEGIN_METADATA(ReturnHomeLink)
++END_METADATA
+ BEGIN_METADATA(SidebarDragRow)
+ END_METADATA
+ 
+@@ -705,6 +865,7 @@
+     row_items_[row] = saved.item;
+   }
+ 
++  ApplyActiveSpaceTheme();
+   UpdatePinRowAppearance();
+   LoadSavedPinFavicons();
+   RebuildSpaceFooter();
+@@ -750,7 +911,7 @@
+       continue;
+     }
+     const bool selected = !active_pin_id.empty() && pin_id == active_pin_id;
+-    static_cast<SidebarDragRow*>(row)->SetSelected(selected);
++    static_cast<SidebarDragRow*>(row)->SetSelected(selected, active_highlight_);
+     if (selected) {
+       row->SetEnabledTextColors(kColorTabForegroundActiveFrameActive);
+     } else {
+@@ -760,7 +921,66 @@
+     row->SetFocusRingCornerRadius(8);
+     row->SetImageLabelSpacing(8);
+     row->SetImageModel(views::Button::STATE_NORMAL, PinIconForId(pin_id));
++    GURL home;
++    const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                      ->GetDict(kCoveSidebarPref),
++                                  active_space_id_);
++    if (const auto* pins = space ? space->FindList("pins") : nullptr) {
++      for (const auto& value : *pins) {
++        const auto* pin = value.GetIfDict();
++        const auto* id = pin ? pin->FindString("id") : nullptr;
++        const auto* url = pin ? pin->FindString("url") : nullptr;
++        if (id && url && *id == pin_id) {
++          home = GURL(*url);
++          break;
++        }
++      }
++    }
++    const auto bound = bound_pin_handles_.find(pin_id);
++    auto* tab = bound == bound_pin_handles_.end() ? nullptr : bound->second.Get();
++    const bool drifted = tab && tab->GetBrowserWindowInterface() == browser_ &&
++                         tab->IsPinned() && home.is_valid() &&
++                         tab->GetContents()->GetVisibleURL() != home;
++    auto* drag_row = static_cast<SidebarDragRow*>(row);
++    drag_row->SetReturnHome(
++        drifted, base::BindRepeating(&CoveSidebarLibraryView::ReturnPinToSavedUrl,
++                                     weak_factory_.GetWeakPtr(), pin_id));
++    row->SetMinSize(gfx::Size(0, drifted ? 52 : 36));
++  }
++}
++
++void CoveSidebarLibraryView::ReturnPinToSavedUrl(std::string pin_id) {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++                                    ->GetDict(kCoveSidebarPref),
++                                active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins) {
++    return;
++  }
++  GURL home;
++  for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    const auto* url = pin ? pin->FindString("url") : nullptr;
++    if (id && url && *id == pin_id) {
++      home = GURL(*url);
++      break;
++    }
++  }
++  if (!home.is_valid() || home.SchemeIs("javascript")) {
++    return;
+   }
++  const auto bound = bound_pin_handles_.find(pin_id);
++  auto* tab = bound == bound_pin_handles_.end() ? nullptr : bound->second.Get();
++  if (!tab || tab->GetBrowserWindowInterface() != browser_ || !tab->IsPinned()) {
++    return;
++  }
++  auto* contents = tab->GetContents();
++  if (!contents || contents->GetVisibleURL() == home) {
++    return;
++  }
++  contents->GetController().LoadURL(
++      home, content::Referrer(), ui::PAGE_TRANSITION_AUTO_BOOKMARK, "");
+ }
+ 
+ ui::ImageModel CoveSidebarLibraryView::PinIconForId(const std::string& pin_id) const {
+@@ -885,6 +1105,9 @@
+       const std::string id = *space->FindString("id");
+       const auto name = base::UTF8ToUTF16(*space->FindString("name"));
+       const bool active = id == active_space_id_;
++      const auto palette = PaletteForSpace(*space);
++      const SkColor marker =
++          active ? palette.accent : MixColors(palette.accent, SK_ColorBLACK, 0.4f);
+       auto* dot =
+           MakeRow(footer, active ? u"●" : u"•",
+                   base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+@@ -892,8 +1115,9 @@
+       dot->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 2)));
+       dot->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+       dot->SetPreferredSize(gfx::Size(24, 28));
+-      dot->SetEnabledTextColors(active ? ui::kColorLabelForeground
+-                                       : ui::kColorLabelForegroundSecondary);
++      dot->SetTextColor(views::Button::STATE_NORMAL, marker);
++      dot->SetTextColor(views::Button::STATE_HOVERED, palette.accent);
++      dot->SetTextColor(views::Button::STATE_PRESSED, palette.accent);
+       dot->GetViewAccessibility().SetName(name);
+       dot->SetTooltipText(name);
+       dot->set_context_menu_controller(this);
+@@ -1080,6 +1304,7 @@
+   menu_model_->AddItem(kPinCurrentPageCommand, u"Pin this page");
+   menu_model_->AddItem(kNewFolderCommand, u"New folder");
+   menu_model_->AddItem(kNewSpaceCommand, u"New Space");
++  AppendThemeMenu(menu_model_.get());
+   auto* anchor = views::AsViewClass<views::MenuButton>(menu_button_.view());
+   VLOG(1) << "Cove footer anchor=" << !!anchor;
+   if (!anchor || !anchor->GetWidget()) {
+@@ -1999,6 +2224,7 @@
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+     menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space");
++    AppendThemeMenu(menu_model_.get());
+     RunContextMenu(source, point, source_type);
+     return;
+   }
+@@ -2778,7 +3004,105 @@
+ BEGIN_METADATA(CoveSidebarLibraryView)
+ END_METADATA
+ 
++void CoveSidebarLibraryView::AppendThemeMenu(ui::SimpleMenuModel* menu) {
++  menu->AddItem(kEditThemeCommand, u"Edit theme colors…");
++}
++
++void CoveSidebarLibraryView::SetSpacePalette(const std::string& space_id,
++                                            size_t index) {
++  if (!browser_ || index >= std::size(kSpacePalettes)) {
++    return;
++  }
++  const SpacePalette& chosen = kSpacePalettes.at(index);
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  auto* space = FindSpace(*update, space_id);
++  if (!space) {
++    return;
++  }
++  base::DictValue theme;
++  theme.Set("sidebar", chosen.sidebar);
++  theme.Set("accent", chosen.accent);
++  theme.Set("highlight", chosen.highlight);
++  space->Set("theme", std::move(theme));
++  space->Set("color", chosen.accent);
++}
++
++void CoveSidebarLibraryView::EditSpaceTheme() {
++  const std::string space_id =
++      context_space_id_.empty() ? active_space_id_ : context_space_id_;
++  const auto* space = FindSpace(
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref), space_id);
++  if (!space || !GetWidget()) {
++    return;
++  }
++  const ResolvedPalette palette = PaletteForSpace(*space);
++  ShowCoveThemeDialog(
++      this, FormatHexColor(palette.sidebar), FormatHexColor(palette.accent),
++      FormatHexColor(palette.highlight),
++      base::BindOnce(&CoveSidebarLibraryView::CommitSpaceTheme,
++                     weak_factory_.GetWeakPtr(), space_id));
++}
++
++void CoveSidebarLibraryView::CommitSpaceTheme(std::string space_id,
++                                              std::u16string sidebar,
++                                              std::u16string accent,
++                                              std::u16string highlight) {
++  const auto sidebar_color = ParseHexColor(base::UTF16ToUTF8(sidebar));
++  const auto accent_color = ParseHexColor(base::UTF16ToUTF8(accent));
++  const auto highlight_color = ParseHexColor(base::UTF16ToUTF8(highlight));
++  if (!browser_ || !sidebar_color || !accent_color || !highlight_color) {
++    return;
++  }
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  auto* space = FindSpace(*update, space_id);
++  if (!space) {
++    return;
++  }
++  base::DictValue theme;
++  theme.Set("sidebar", base::UTF16ToUTF8(sidebar));
++  theme.Set("accent", base::UTF16ToUTF8(accent));
++  theme.Set("highlight", base::UTF16ToUTF8(highlight));
++  space->Set("theme", std::move(theme));
++  space->Set("color", base::UTF16ToUTF8(accent));
++}
++
++void CoveSidebarLibraryView::ApplyActiveSpaceTheme() {
++  if (!browser_) {
++    return;
++  }
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()->GetDict(
++                                    kCoveSidebarPref),
++                                active_space_id_);
++  if (!space) {
++    return;
++  }
++  const ResolvedPalette palette = PaletteForSpace(*space);
++  active_sidebar_ = palette.sidebar;
++  active_accent_ = palette.accent;
++  active_highlight_ = palette.highlight;
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
++  auto* region = browser_view ? views::AsViewClass<VerticalTabStripRegionView>(
++                                    browser_view->tab_strip_view())
++                              : nullptr;
++  if (!region || !region->background()) {
++    return;
++  }
++  if (auto* background = region->background()->AsA<CustomCornersBackground>()) {
++    background->SetPrimaryColor(CustomCorners::ColorChoice(palette.sidebar));
++    region->SchedulePaint();
++  }
++}
++
+ bool CoveSidebarLibraryView::IsCommandIdEnabled(int command_id) const {
++  if (command_id == kEditThemeCommand) {
++    return true;
++  }
++  if (command_id >= kThemeCommandBase &&
++      command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
++    return true;
++  }
+   if (!menu_space_id_.empty() && menu_space_id_ != active_space_id_) return false;
+   const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
+                                    ->GetDict(kCoveSidebarPref), active_space_id_);
+@@ -2818,6 +3142,16 @@
+ 
+ void CoveSidebarLibraryView::ExecuteCommand(int command_id, int event_flags) {
+   if (!IsCommandIdEnabled(command_id)) return;
++  if (command_id == kEditThemeCommand) {
++    EditSpaceTheme();
++    return;
++  }
++  if (command_id >= kThemeCommandBase &&
++      command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
++    SetSpacePalette(context_space_id_.empty() ? active_space_id_ : context_space_id_,
++                    static_cast<size_t>(command_id - kThemeCommandBase));
++    return;
++  }
+   if (const auto move = menu_folder_moves_.find(command_id);
+       move != menu_folder_moves_.end()) {
+     MoveFolder(context_folder_id_, move->second);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -14,6 +14,7 @@
+ #include <vector>
+ 
+ #include "base/functional/callback.h"
++#include "third_party/skia/include/core/SkColor.h"
+ #include "url/gurl.h"
+ #include "base/callback_list.h"
+ #include "chrome/browser/ui/views/cove/cove_folder_model.h"
+@@ -111,6 +112,16 @@
+   void OnWillStartDragForView(views::View* sender) override;
+   void FinishSavedDragHoverForTesting() { FinishRowDrag(); }
+   views::View* DropIndicatorForTesting() const { return drop_indicator_; }
++  void SetSpacePaletteForTesting(const std::string& space_id, size_t index) {
++    SetSpacePalette(space_id, index);
++  }
++  void CommitSpaceThemeForTesting(const std::string& space_id,
++                                  std::u16string sidebar, std::u16string accent,
++                                  std::u16string highlight) {
++    CommitSpaceTheme(std::move(space_id), std::move(sidebar), std::move(accent),
++                     std::move(highlight));
++  }
++  SkColor ActiveSidebarColorForTesting() const { return active_sidebar_; }
+   void BeginSpaceTransitionForTesting() { begin_space_transition_.Run(1); }
+   // Retargets the saved or live-tab indicator at a stationary screen pointer
+   // after the shared viewport scrolls. Uses the validated source already
+@@ -239,6 +250,13 @@
+   void AddSpace();
+   void SwitchSpace(std::string space_id);
+   void OpenPin(std::string pin_id, GURL url);
++  void SetSpacePalette(const std::string& space_id, size_t index);
++  void ApplyActiveSpaceTheme();
++  void AppendThemeMenu(ui::SimpleMenuModel* menu);
++  void EditSpaceTheme();
++  void CommitSpaceTheme(std::string space_id, std::u16string sidebar,
++                        std::u16string accent, std::u16string highlight);
++  void ReturnPinToSavedUrl(std::string pin_id);
+   void RemovePin(const std::string& pin_id);
+   void MovePinToFolder(const std::string& pin_id, const std::string& folder_id);
+ 
+@@ -291,6 +309,10 @@
+   std::string context_pin_id_;
+   std::vector<std::string> menu_folder_ids_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<ui::SimpleMenuModel> theme_menu_;
++  SkColor active_sidebar_ = SK_ColorTRANSPARENT;
++  SkColor active_accent_ = SK_ColorTRANSPARENT;
++  SkColor active_highlight_ = SK_ColorTRANSPARENT;
+   std::unique_ptr<views::MenuRunner> menu_runner_;
+   base::WeakPtrFactory<CoveSidebarLibraryView> weak_factory_{this};
+ };
+diff --git a/chrome/browser/ui/views/frame/custom_corners.cc b/chrome/browser/ui/views/frame/custom_corners.cc
+--- a/chrome/browser/ui/views/frame/custom_corners.cc
++++ b/chrome/browser/ui/views/frame/custom_corners.cc
+@@ -62,14 +62,16 @@
+             ? ThemedBackground::ThemeChoice::kToolbarTheme
+             : ThemedBackground::ThemeChoice::kFrameTheme);
+   } else {
+-    ui::ColorId color_id = std::get<ui::ColorId>(color_choice.color);
+-
++    const SkColor base =
++        std::holds_alternative<SkColor>(color_choice.color)
++            ? std::get<SkColor>(color_choice.color)
++            : GetView().GetColorProvider()->GetColor(
++                  std::get<ui::ColorId>(color_choice.color));
+     cc::PaintFlags flags;
+     flags.setAntiAlias(anti_alias);
+     flags.setStyle(cc::PaintFlags::kFill_Style);
+     flags.setColor(SkColorSetA(
+-        GetView().GetColorProvider()->GetColor(color_id),
+-        std::clamp(static_cast<int>(255 * color_choice.opacity), 0, 255)));
++        base, std::clamp(static_cast<int>(255 * color_choice.opacity), 0, 255)));
+     canvas->DrawPath(path, flags);
+   }
+ }
+diff --git a/chrome/browser/ui/views/frame/custom_corners.h b/chrome/browser/ui/views/frame/custom_corners.h
+--- a/chrome/browser/ui/views/frame/custom_corners.h
++++ b/chrome/browser/ui/views/frame/custom_corners.h
+@@ -12,6 +12,7 @@
+ #include "base/memory/raw_ref.h"
+ #include "base/scoped_observation.h"
+ #include "base/types/strong_alias.h"
++#include "third_party/skia/include/core/SkColor.h"
+ #include "ui/color/color_id.h"
+ #include "ui/views/view.h"
+ #include "ui/views/view_observer.h"
+@@ -69,7 +70,8 @@
+   using ToolbarTheme = base::StrongAlias<class ToolbarThemeTag, std::monostate>;
+ 
+   // Specifies which color to be used for the background.
+-  using ColorChoice = std::variant<FrameTheme, ToolbarTheme, ui::ColorId>;
++  using ColorChoice =
++      std::variant<FrameTheme, ToolbarTheme, ui::ColorId, SkColor>;
+ 
+   // Represents a color choice with optional alpha. Special-case logic will be
+   // used to optimize fully opaque and fully transparent surfaces.
+diff --git a/ui/views/controls/scroll_view.cc b/ui/views/controls/scroll_view.cc
+--- a/ui/views/controls/scroll_view.cc
++++ b/ui/views/controls/scroll_view.cc
+@@ -1093,12 +1093,18 @@
+ 
+   ui::ScrollInputHandler* compositor_scroller =
+       GetWidget()->GetCompositor()->scroll_input_handler();
+-  if (compositor_scroller && scroll_synchronizer_count_ == 0) {
+-    DCHECK(scroll_with_layers_enabled_);
++  if (compositor_scroller && scroll_synchronizer_count_ == 0 &&
++      scroll_with_layers_enabled_) {
+     if (compositor_scroller->OnScrollEvent(e, contents_->layer())) {
+       e.SetHandled();
+       e.StopPropagation();
+     }
++  } else if (!scroll_with_layers_enabled_ &&
++             event->type() == ui::EventType::kScroll) {
++    // Cove's sidebar scrolls on the main thread so drag hit testing stays
++    // current. Apply the trackpad delta here instead of requiring a layer.
++    ScrollByOffset(gfx::PointF(-e.x_offset(), -e.y_offset()));
++    e.SetHandled();
+   }
+ 
+   // A direction might not be known when the event stream starts, notify both
