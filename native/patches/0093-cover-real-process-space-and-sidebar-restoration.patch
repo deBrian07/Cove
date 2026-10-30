@@ -1,0 +1,202 @@
+diff --git a/chrome/browser/ui/cove/cove_session_browsertest.cc b/chrome/browser/ui/cove/cove_session_browsertest.cc
+--- a/chrome/browser/ui/cove/cove_session_browsertest.cc
++++ b/chrome/browser/ui/cove/cove_session_browsertest.cc
+@@ -1,6 +1,13 @@
+ // Copyright 2026 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
++#include "components/prefs/scoped_user_pref_update.h"
++#include "chrome/test/base/chrome_test_path_utils.h"
++#include "base/values.h"
++#include "base/process/process_handle.h"
++#include "base/files/file_path.h"
++#include "base/logging.h"
++#include "chrome/browser/sessions/session_restore.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include <map>
+ #include <set>
+@@ -445,3 +452,184 @@
+   }
+   EXPECT_TRUE(found_canvas);
+ }
++
++
++// PRE_ and the matching case run in separate browser processes with the same
++// isolated test profile. Do not replace this with an in-process reconstruction:
++// startup must recover both parked pages and persisted sidebar organization.
++class CoveSessionRestartBrowserTest : public CoveSessionBrowserTest {
++ public:
++  CoveSessionRestartBrowserTest() {
++    // A normal restore launch has no URL argument. The default browser-test
++    // harness appends about:blank, which adds a new page to the restored window.
++    set_open_about_blank_on_browser_launch(false);
++  }
++
++ protected:
++  GURL LocalPage(const char* file, const char* fragment) {
++    return GURL(chrome_test_utils::GetTestUrl(base::FilePath(),
++                    base::FilePath::FromASCII(file)).spec() + "#" + fragment);
++  }
++
++  base::DictValue History(content::WebContents* contents) {
++    auto& controller = contents->GetController();
++    base::ListValue urls;
++    for (int i = 0; i < controller.GetEntryCount(); ++i)
++      urls.Append(controller.GetEntryAtIndex(i)->GetVirtualURL().spec());
++    return base::DictValue().Set("urls", std::move(urls))
++        .Set("index", controller.GetCurrentEntryIndex());
++  }
++
++  void ExpectHistory(content::WebContents* contents,
++                     const base::DictValue& expected) {
++    const auto* urls = expected.FindList("urls");
++    ASSERT_TRUE(urls);
++    auto& controller = contents->GetController();
++    ASSERT_EQ(urls->size(), static_cast<size_t>(controller.GetEntryCount()));
++    EXPECT_EQ(expected.FindInt("index"), controller.GetCurrentEntryIndex());
++    for (int i = 0; i < controller.GetEntryCount(); ++i)
++      EXPECT_EQ((*urls)[i].GetString(),
++                controller.GetEntryAtIndex(i)->GetVirtualURL().spec());
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveSessionRestartBrowserTest,
++                       PRE_RestartKeepsParkedHistoryPinHomeAndFolderOrder) {
++  auto* profile = browser()->GetProfile();
++  SessionStartupPref::SetStartupPref(profile,
++                                    SessionStartupPref(SessionStartupPref::LAST));
++  auto* model = browser()->GetTabStripModel();
++  const auto home = LocalPage("title1.html", "restart-pin-home");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  model->SetTabPinned(model->active_index(), true);
++  auto* pinned = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(pinned,
++      "history.pushState({}, '', '#restart-pin-away')"));
++  auto* personal = chrome::AddAndReturnTabAt(
++      browser(), LocalPage("title2.html", "restart-personal"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(personal));
++  ASSERT_TRUE(content::ExecJs(personal,
++      "history.pushState({}, '', '#restart-personal-selected')"));
++  base::DictValue expected;
++  expected.Set("process", static_cast<int>(base::GetCurrentProcId()));
++  expected.Set("home", home.spec());
++  expected.Set("pin_history", History(pinned));
++  expected.Set("personal_history", History(personal));
++  {
++    ScopedDictPrefUpdate update(profile->GetPrefs(), "cove.sidebar");
++    base::DictValue* space = nullptr;
++    for (auto& value : *update->FindList("spaces"))
++      if (*value.GetDict().FindString("id") == "personal") space = &value.GetDict();
++    ASSERT_TRUE(space);
++    auto* pins = space->FindList("pins");
++    ASSERT_TRUE(pins);
++    ASSERT_EQ(1u, pins->size());
++    const auto id = *pins->front().GetDict().FindString("id");
++    expected.Set("pin_id", id);
++    pins->front().GetDict().Set("folder", "restart-child");
++    base::ListValue folders;
++    folders.Append(base::DictValue().Set("id", "restart-parent")
++        .Set("name", "Restart parent").Set("parent", "").Set("collapsed", true));
++    folders.Append(base::DictValue().Set("id", "restart-child")
++        .Set("name", "Restart child").Set("parent", "restart-parent")
++        .Set("collapsed", false));
++    folders.Append(base::DictValue().Set("id", "restart-other")
++        .Set("name", "Restart other").Set("parent", "").Set("collapsed", false));
++    space->Set("folders", std::move(folders));
++    base::ListValue order;
++    order.Append("folder:restart-other");
++    order.Append("folder:restart-parent");
++    order.Append("folder:restart-child");
++    order.Append("pin:" + id);
++    space->Set("sidebar_order", order.Clone());
++    expected.Set("order", std::move(order));
++    base::ListValue favorites;
++    favorites.Append(base::DictValue().Set("url", "https://restart-favorite.example/")
++        .Set("title", "Restart Favorite").Set("retained", "unknown field"));
++    update->Set("favorites", favorites.Clone());
++    expected.Set("favorites", std::move(favorites));
++  }
++  Switch("work");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
++      LocalPage("title3.html", "restart-work")));
++  auto* work = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(work,
++      "history.pushState({}, '', '#restart-work-selected')"));
++  expected.Set("work_history", History(work));
++  {
++    ScopedDictPrefUpdate update(profile->GetPrefs(), "cove.sidebar");
++    update->Set("restart_test_expected", std::move(expected));
++  }
++  auto snapshot = Library(browser())->GetSessionSnapshot();
++  ASSERT_TRUE(snapshot);
++  ASSERT_EQ("work", snapshot->active_space);
++  ASSERT_EQ(3u, snapshot->tabs.size());
++  auto* service = SessionServiceFactory::GetForProfile(profile);
++  service->ResetFromCurrentBrowsers();
++  SessionServiceTestHelper(service).SaveNow();
++  base::RunLoop write;
++  profile->GetPrefs()->CommitPendingWrite(write.QuitClosure());
++  write.Run();
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionRestartBrowserTest,
++                       RestartKeepsParkedHistoryPinHomeAndFolderOrder) {
++  if (SessionRestore::IsRestoring(browser()->GetProfile())) {
++    SessionRestoreTestHelper restore_observer;
++    restore_observer.Wait();
++  }
++  base::RunLoop().RunUntilIdle();
++  auto snapshot = Library(browser())->GetSessionSnapshot();
++  ASSERT_TRUE(snapshot);
++  LOG(INFO) << "Restart fixture: windows=" << GlobalBrowserCollection::GetInstance()->GetSize()
++             << " active=" << snapshot->active_space
++             << " snapshot_tabs=" << snapshot->tabs.size()
++             << " attached=" << browser()->GetTabStripModel()->count();
++  for (const auto& entry : snapshot->tabs) {
++    auto* contents = entry.tab->GetContents();
++    const auto* owner = GetCoveTabSessionState(contents);
++    LOG(INFO) << "Restart fixture page: url=" << contents->GetVisibleURL()
++               << " owner=" << (owner ? owner->space : "missing")
++               << " entries=" << contents->GetController().GetEntryCount();
++  }
++  ASSERT_EQ("work", snapshot->active_space);
++  ASSERT_EQ(3u, snapshot->tabs.size());
++  const auto root = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").Clone();
++  const auto* expected = root.FindDict("restart_test_expected");
++  ASSERT_TRUE(expected);
++  ASSERT_TRUE(expected->FindInt("process"));
++  EXPECT_NE(*expected->FindInt("process"), static_cast<int>(base::GetCurrentProcId()));
++  ASSERT_TRUE(root.FindList("favorites"));
++  EXPECT_EQ(*expected->FindList("favorites"), *root.FindList("favorites"));
++  auto* model = browser()->GetTabStripModel();
++  ASSERT_EQ(1, model->count());
++  ASSERT_NO_FATAL_FAILURE(ExpectHistory(model->GetActiveWebContents(),
++                                        *expected->FindDict("work_history")));
++  Switch("personal");
++  ASSERT_EQ(2, model->count());
++  ASSERT_TRUE(model->GetTabAtIndex(0)->IsPinned());
++  EXPECT_EQ("restart-personal-selected", model->GetActiveWebContents()->GetVisibleURL().ref());
++  ASSERT_NO_FATAL_FAILURE(ExpectHistory(model->GetWebContentsAt(0),
++                                        *expected->FindDict("pin_history")));
++  ASSERT_NO_FATAL_FAILURE(ExpectHistory(model->GetWebContentsAt(1),
++                                        *expected->FindDict("personal_history")));
++  const base::DictValue* personal = nullptr;
++  for (const auto& value : *root.FindList("spaces"))
++    if (*value.GetDict().FindString("id") == "personal") personal = &value.GetDict();
++  ASSERT_TRUE(personal);
++  ASSERT_TRUE(personal->FindList("sidebar_order"));
++  EXPECT_EQ(*expected->FindList("order"), *personal->FindList("sidebar_order"));
++  const auto* pins = personal->FindList("pins");
++  ASSERT_TRUE(pins);
++  ASSERT_EQ(1u, pins->size());
++  const auto& pin = pins->front().GetDict();
++  EXPECT_EQ(*expected->FindString("pin_id"), *pin.FindString("id"));
++  EXPECT_EQ(*expected->FindString("home"), *pin.FindString("url"));
++  EXPECT_EQ("restart-child", *pin.FindString("folder"));
++  ASSERT_EQ(3u, personal->FindList("folders")->size());
++  EXPECT_EQ(true, personal->FindList("folders")->front().GetDict().FindBool("collapsed"));
++  Switch("work");
++  ASSERT_EQ(1, model->count());
++  ASSERT_NO_FATAL_FAILURE(ExpectHistory(model->GetActiveWebContents(),
++                                        *expected->FindDict("work_history")));
++}
