@@ -1,0 +1,531 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -22,6 +22,13 @@
+ #include "base/threading/thread_restrictions.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/favicon/favicon_service_factory.h"
++#include "components/favicon/core/favicon_service.h"
++#include "components/favicon_base/favicon_types.h"
++#include "components/keyed_service/core/service_access_type.h"
++#include "ui/gfx/image/image.h"
++#include "ui/gfx/image/image_skia_rep.h"
++#include "ui/views/controls/label.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+@@ -41,6 +48,9 @@
+ #include "components/viz/common/frame_sinks/copy_output_request.h"
+ #include "components/viz/common/frame_sinks/copy_output_result.h"
+ #include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/favicon_status.h"
++#include "chrome/browser/ui/tabs/tab_change_type.h"
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+@@ -97,6 +107,29 @@
+   return nullptr;
+ }
+ 
++views::Label* FindRowLabel(views::View* root) {
++  if (auto* label = views::AsViewClass<views::Label>(root)) return label;
++  for (const auto& child : root->children())
++    if (auto* label = FindRowLabel(child.get())) return label;
++  return nullptr;
++}
++
++gfx::Image SolidPinIcon(SkColor color) {
++  SkBitmap bitmap;
++  bitmap.allocN32Pixels(16, 16);
++  bitmap.eraseColor(color);
++  return gfx::Image::CreateFrom1xBitmap(bitmap);
++}
++
++bool RowHasIconColor(views::LabelButton* row, SkColor color) {
++  if (!row) return false;
++  const auto image = row->GetImage(views::Button::STATE_NORMAL);
++  if (image.isNull()) return false;
++  const auto& bitmap = image.GetRepresentation(1.0f).GetBitmap();
++  return bitmap.width() == 16 && bitmap.height() == 16 &&
++         bitmap.getColor(8, 8) == color;
++}
++
+ base::DictValue Pin(const char* id, const char* title, const char* url) {
+   return base::DictValue()
+       .Set("id", id)
+@@ -137,6 +170,19 @@
+   CoveSidebarLibraryView* library() {
+     return static_cast<CoveSidebarLibraryView*>(
+         CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost()));
++  }
++
++  views::LabelButton* PinRow(const std::string& id) {
++    for (const auto& [row, pin_id] : library()->row_pin_ids_)
++      if (pin_id == id) return views::AsViewClass<views::LabelButton>(row);
++    return nullptr;
++  }
++
++  void DeliverPinIcon(size_t index, const std::string& id, const GURL& home,
++                      views::LabelButton* row, SkColor color) {
++    favicon_base::FaviconImageResult result;
++    result.image = SolidPinIcon(color);
++    library()->OnPinFaviconLoaded(index, id, home, row, result);
+   }
+ 
+   void CreateFolderThroughContextMenu(views::View* surface,
+@@ -726,3 +772,164 @@
+   EXPECT_EQ("original draft", content::EvalJs(original, "window.selectionDraft"));
+   EXPECT_EQ(63u, SavedSpace().FindList("folders")->size());
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       ClosedPinsUseCachedSiteIconsWithoutOpeningPages) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
++      GURL("data:text/html,<title>Untouched Today</title>")));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, "window.iconDraft='keep this draft'"));
++  auto* service = FaviconServiceFactory::GetForProfile(
++      browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
++  ASSERT_TRUE(service);
++  for (const auto& [page, color] : {
++      std::pair{"https://pin-p.example/", SK_ColorRED},
++      std::pair{"https://pin-q.example/", SK_ColorBLUE}}) {
++    SkBitmap bitmap;
++    bitmap.allocN32Pixels(16, 16);
++    bitmap.eraseColor(color);
++    service->SetFavicons({GURL(page)}, GURL(std::string(page) + "favicon.ico"),
++        favicon_base::IconType::kFavicon, gfx::Image::CreateFrom1xBitmap(bitmap));
++  }
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("pins")->front().GetDict().Set("folder", "a");
++  }
++  const auto has_icon = [&](const char16_t* name, SkColor expected) {
++    auto* row = FindRow(library(), name);
++    if (!row) return false;
++    const auto image = row->GetImage(views::Button::STATE_NORMAL);
++    if (image.isNull()) return false;
++    const auto& bitmap = image.GetRepresentation(1.0f).GetBitmap();
++    return bitmap.width() == 16 && bitmap.height() == 16 &&
++           bitmap.getColor(8, 8) == expected;
++  };
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return has_icon(u"Pin P", SK_ColorRED) && has_icon(u"Pin Q", SK_ColorBLUE);
++  }));
++  Layout();
++  auto* folder = FindRow(library(), u"Folder A");
++  auto* pin = FindRow(library(), u"Pin P");
++  ASSERT_TRUE(folder);
++  ASSERT_TRUE(pin);
++  EXPECT_EQ(u"Folder A", folder->GetText());
++  auto* pin_label = FindRowLabel(pin);
++  auto* folder_label = FindRowLabel(folder);
++  ASSERT_TRUE(pin_label);
++  ASSERT_TRUE(folder_label);
++  EXPECT_GT(pin_label->GetBoundsInScreen().x(),
++            folder_label->GetBoundsInScreen().x());
++  EXPECT_EQ(folder->height(), pin->height());
++  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ("keep this draft", content::EvalJs(contents, "window.iconDraft"));
++  // A library rebuild reuses cache data without opening saved pages.
++  Seed();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return has_icon(u"Pin P", SK_ColorRED) && has_icon(u"Pin Q", SK_ColorBLUE);
++  }));
++  EXPECT_EQ(1, browser()->GetTabStripModel()->count());
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       StaleCachedPinIconCannotReplaceChangedHomeIcon) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
++      GURL("data:text/html,<title>Unchanged Today</title>")));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, "window.iconDraft='unchanged draft'"));
++  auto* service = FaviconServiceFactory::GetForProfile(
++      browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
++  ASSERT_TRUE(service);
++  const GURL old_home("https://pin-p.example/");
++  const GURL new_home("https://replacement-pin.example/");
++  service->SetFavicons({old_home}, old_home.Resolve("favicon.ico"),
++      favicon_base::IconType::kFavicon, SolidPinIcon(SK_ColorRED));
++  service->SetFavicons({new_home}, new_home.Resolve("favicon.ico"),
++      favicon_base::IconType::kFavicon, SolidPinIcon(SK_ColorBLUE));
++  Seed();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return RowHasIconColor(PinRow("p"), SK_ColorRED);
++  }));
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("pins")->front().GetDict().Set("url", new_home.spec());
++  }
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return RowHasIconColor(PinRow("p"), SK_ColorBLUE);
++  }));
++  auto* row = PinRow("p");
++  ASSERT_TRUE(row);
++  // Even if a destroyed row's address is reused, an old-home result must be
++  // rejected against the current saved record rather than recoloring this row.
++  DeliverPinIcon(0, "p", old_home, row, SK_ColorRED);
++  EXPECT_TRUE(RowHasIconColor(row, SK_ColorBLUE));
++  // A queued result also cannot use a stale index belonging to another pin.
++  DeliverPinIcon(1, "p", new_home, row, SK_ColorGREEN);
++  EXPECT_TRUE(RowHasIconColor(row, SK_ColorBLUE));
++  EXPECT_EQ(new_home.spec(),
++      *SavedSpace().FindList("pins")->front().GetDict().FindString("url"));
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ("unchanged draft", content::EvalJs(contents, "window.iconDraft"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       LivePinFaviconWinsOverCachedSavedHomeIcon) {
++  // Data pages keep this test entirely local while exercising a real pin
++  // binding and navigation away from its saved home in the same WebContents.
++  const GURL home("data:text/html,<title>Pin home</title>");
++  const GURL away("data:text/html,<title>Live pin page</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* space = FindSpace(*update, "personal");
++    ASSERT_TRUE(space);
++    space->FindList("pins")->front().GetDict().Set("url", home.spec());
++  }
++  model->SetTabPinned(model->active_index(), true);
++  const auto handle = model->GetActiveTab()->GetHandle();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), away));
++  ASSERT_EQ(contents, model->GetActiveWebContents());
++  ASSERT_TRUE(content::ExecJs(contents, "window.iconDraft='live pin draft'"));
++  const int history_count = contents->GetController().GetEntryCount();
++  Layout();
++  auto* row = PinRow("p");
++  ASSERT_TRUE(row);
++  auto* entry = contents->GetController().GetLastCommittedEntry();
++  ASSERT_TRUE(entry);
++  // ContentFaviconDriver reads the committed entry's favicon. A completed
++  // live-page result must outrank a later saved-home cache callback.
++  auto& favicon = entry->GetFavicon();
++  favicon.valid = true;
++  favicon.image = SolidPinIcon(SK_ColorGREEN);
++  library()->OnTabChangedAt(model->GetActiveTab(), TabChangeType::kAll);
++  EXPECT_TRUE(RowHasIconColor(row, SK_ColorGREEN));
++  DeliverPinIcon(0, "p", home, row, SK_ColorRED);
++  EXPECT_TRUE(RowHasIconColor(row, SK_ColorGREEN));
++  // If the live entry has no valid favicon, the same saved icon is available
++  // as the fallback without navigation or recreating the pinned page.
++  favicon.valid = false;
++  favicon.image = gfx::Image();
++  library()->OnTabChangedAt(model->GetActiveTab(), TabChangeType::kAll);
++  EXPECT_TRUE(RowHasIconColor(row, SK_ColorRED));
++  EXPECT_EQ(handle, model->GetActiveTab()->GetHandle());
++  EXPECT_TRUE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ(away, contents->GetLastCommittedURL());
++  EXPECT_EQ(history_count, contents->GetController().GetEntryCount());
++  EXPECT_EQ(2u, SavedSpace().FindList("pins")->size());
++  EXPECT_EQ(home.spec(),
++      *SavedSpace().FindList("pins")->front().GetDict().FindString("url"));
++  EXPECT_EQ("live pin draft", content::EvalJs(contents, "window.iconDraft"));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -14,6 +14,7 @@
+ #include <set>
+ #include <utility>
+ #include <variant>
++#include <tuple>
+ #include "base/no_destructor.h"
+ #include "base/pickle.h"
+ #include "base/supports_user_data.h"
+@@ -57,6 +58,11 @@
+ #include "chrome/browser/ui/views/cove/cove_name_dialog.h"
+ #include "chrome/browser/ui/views/cove/cove_folder_model.h"
+ #include "components/favicon/content/content_favicon_driver.h"
++#include "chrome/browser/favicon/favicon_service_factory.h"
++#include "components/favicon/core/favicon_service.h"
++#include "components/favicon_base/favicon_types.h"
++#include "components/keyed_service/core/service_access_type.h"
++#include "ui/gfx/color_palette.h"
+ #include "components/prefs/pref_service.h"
+ #include "components/prefs/scoped_user_pref_update.h"
+ #include "components/tabs/public/split_tab_collection.h"
+@@ -268,12 +274,39 @@
+                  base::RepeatingClosure finished)
+       : LabelButton(std::move(callback), text), finished_(std::move(finished)) {}
+   ~SidebarDragRow() override;
++  base::WeakPtr<SidebarDragRow> GetWeakPtr() { return weak_factory_.GetWeakPtr(); }
++  void SetFolderStyle() {
++    label()->SetFontList(label()->font_list().DeriveWithWeight(
++        gfx::Font::Weight::SEMIBOLD));
++  }
++  void SetSelected(bool selected) {
++    selected_ = selected;
++    UpdateBackground();
++  }
+   void OnDragDone() override {
+     LabelButton::OnDragDone();
+     if (finished_) finished_.Run();
+   }
++ protected:
++  void StateChanged(ButtonState old_state) override {
++    LabelButton::StateChanged(old_state);
++    UpdateBackground();
++  }
+  private:
++  void UpdateBackground() {
++    if (selected_) {
++      SetBackground(views::CreateRoundedRectBackground(
++          kColorTabBackgroundActiveFrameActive, 8));
++    } else if (GetState() == STATE_HOVERED || GetState() == STATE_PRESSED) {
++      SetBackground(views::CreateRoundedRectBackground(
++          kColorTabBackgroundInactiveHoverFrameActive, 8));
++    } else {
++      SetBackground(nullptr);
++    }
++  }
++  bool selected_ = false;
+   base::RepeatingClosure finished_;
++  base::WeakPtrFactory<SidebarDragRow> weak_factory_{this};
+ };
+ SidebarDragRow::~SidebarDragRow() = default;
+ BEGIN_METADATA(SidebarDragRow)
+@@ -568,6 +601,8 @@
+     rebuild_after_drag_ = true;
+     return;
+   }
++  pin_favicon_tasks_.TryCancelAll();
++  cached_pin_icons_.clear();
+   drop_indicator_ = nullptr;
+   pin_current_button_.SetView(nullptr);
+   row_items_.clear();
+@@ -636,27 +671,35 @@
+       row_pin_ids_[row] = saved.item.id;
+     } else {
+       const auto name = saved.name.empty() ? u"Folder" : saved.name;
+-      row = MakeRow(this, (saved.collapsed ? u"▸ " : u"▾ ") + name,
++      row = MakeRow(this, name,
+           base::BindRepeating(&CoveSidebarLibraryView::ToggleFolder,
+               weak_factory_.GetWeakPtr(), saved.item.id), finished);
+       row->SetImageModel(views::Button::STATE_NORMAL,
+           ui::ImageModel::FromVectorIcon(saved.collapsed
+               ? vector_icons::kFolderFlippableIcon : vector_icons::kFolderOpenIcon,
+-              ui::kColorIcon, 16));
++              gfx::kGoogleBlue500, 16));
++      static_cast<SidebarDragRow*>(row)->SetFolderStyle();
+       row->SetImageLabelSpacing(8);
+       if (saved.collapsed) row->GetViewAccessibility().SetIsCollapsed();
+       else row->GetViewAccessibility().SetIsExpanded();
+       row->SetTooltipText(saved.collapsed ? u"Expand folder" : u"Collapse folder");
+       row_folder_ids_[row] = saved.item.id;
+     }
++    // Match the native Today row rhythm. Icons carry folder disclosure;
++    // keeping chevrons out of the label leaves every title on one baseline.
++    row->SetMinSize(gfx::Size(0, 36));
++    row->SetElideBehavior(gfx::ELIDE_TAIL);
++    row->SetFocusRingCornerRadius(8);
++    row->SetImageLabelSpacing(8);
+     row->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
+-        4, 8 + 14 * static_cast<int>(std::min<size_t>(saved.depth, 8)), 4, 8)));
++        4, 8 + 16 * static_cast<int>(std::min<size_t>(saved.depth, 8)), 4, 8)));
+     row->set_context_menu_controller(this);
+     row->set_drag_controller(this);
+     row_items_[row] = saved.item;
+   }
+ 
+   UpdatePinRowAppearance();
++  LoadSavedPinFavicons();
+   RebuildSpaceFooter();
+   InvalidateLayout();
+   if (pinned_coverage_changed_) {
+@@ -674,7 +717,7 @@
+         (contents->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
+          contents->GetVisibleURL().SchemeIsFile()));
+   }
+-  std::map<std::string, content::WebContents*> bound_contents;
++  bound_pin_handles_.clear();
+   std::string active_pin_id;
+   for (int index = 0; index < model->count(); ++index) {
+     const auto* tab = model->GetTabAtIndex(index);
+@@ -686,7 +729,7 @@
+         binding->second.first != active_space_id_) {
+       continue;
+     }
+-    bound_contents[binding->second.second] = tab->GetContents();
++    bound_pin_handles_[binding->second.second] = tab->GetHandle();
+     if (index == model->active_index()) {
+       active_pin_id = binding->second.second;
+     }
+@@ -700,10 +743,7 @@
+       continue;
+     }
+     const bool selected = !active_pin_id.empty() && pin_id == active_pin_id;
+-    row->SetBackground(
+-        selected ? views::CreateRoundedRectBackground(
+-                       kColorTabBackgroundActiveFrameActive, 8)
+-                 : nullptr);
++    static_cast<SidebarDragRow*>(row)->SetSelected(selected);
+     if (selected) {
+       row->SetEnabledTextColors(kColorTabForegroundActiveFrameActive);
+     } else {
+@@ -712,21 +752,84 @@
+     row->GetViewAccessibility().SetIsSelected(selected);
+     row->SetFocusRingCornerRadius(8);
+     row->SetImageLabelSpacing(8);
+-    ui::ImageModel icon = ui::ImageModel::FromVectorIcon(
+-        vector_icons::kGlobeIcon, ui::kColorIcon, 16);
+-    const auto contents = bound_contents.find(pin_id);
+-    if (contents != bound_contents.end() && contents->second) {
+-      auto* driver =
+-          favicon::ContentFaviconDriver::FromWebContents(contents->second);
+-      if (driver && driver->FaviconIsValid()) {
+-        const gfx::Image favicon = driver->GetFavicon();
+-        if (!favicon.IsEmpty()) {
+-          icon = ui::ImageModel::FromImage(favicon);
+-        }
+-      }
+-    }
+-    row->SetImageModel(views::Button::STATE_NORMAL, icon);
+-  }
++    row->SetImageModel(views::Button::STATE_NORMAL, PinIconForId(pin_id));
++  }
++}
++
++ui::ImageModel CoveSidebarLibraryView::PinIconForId(const std::string& pin_id) const {
++  ui::ImageModel icon = ui::ImageModel::FromVectorIcon(
++      vector_icons::kGlobeIcon, ui::kColorIcon, 16);
++  if (const auto cached = cached_pin_icons_.find(pin_id);
++      cached != cached_pin_icons_.end()) icon = cached->second;
++  if (const auto bound = bound_pin_handles_.find(pin_id);
++      bound != bound_pin_handles_.end()) {
++    auto* tab = bound->second.Get();
++    auto* driver = tab && tab->IsPinned() && tab->GetBrowserWindowInterface() == browser_
++        ? favicon::ContentFaviconDriver::FromWebContents(tab->GetContents()) : nullptr;
++    if (driver && driver->FaviconIsValid() && !driver->GetFavicon().IsEmpty())
++      icon = ui::ImageModel::FromImage(driver->GetFavicon());
++  }
++  return icon;
++}
++
++void CoveSidebarLibraryView::LoadSavedPinFavicons() {
++  auto* service = FaviconServiceFactory::GetForProfile(
++      browser_->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (!service || !pins || row_pin_ids_.empty()) return;
++  std::map<std::string, base::WeakPtr<SidebarDragRow>> visible;
++  for (const auto& [row, id] : row_pin_ids_)
++    visible[id] = static_cast<SidebarDragRow*>(row)->GetWeakPtr();
++  std::map<std::string, size_t> occurrences;
++  for (const auto& value : *pins) {
++    const auto* pin = value.GetIfDict();
++    if (const auto* id = pin ? pin->FindString("id") : nullptr) ++occurrences[*id];
++  }
++  using Binding = std::tuple<size_t, std::string, base::WeakPtr<SidebarDragRow>>;
++  std::map<GURL, std::vector<Binding>> requests;
++  for (size_t index = 0; index < pins->size(); ++index) {
++    const auto* pin = (*pins)[index].GetIfDict();
++    const auto* id = pin ? pin->FindString("id") : nullptr;
++    const auto* home = pin ? pin->FindString("url") : nullptr;
++    if (!id || !home || occurrences[*id] != 1 || !visible.contains(*id)) continue;
++    const GURL url(*home);
++    if (url.SchemeIsHTTPOrHTTPS() || url.SchemeIsFile())
++      requests[url].emplace_back(index, *id, visible.at(*id));
++  }
++  // Only rendered rows request cached icons. Shared URLs use one cache read;
++  // each result touches its own live row, never the entire saved list.
++  for (auto& [url, bindings] : requests) {
++    service->GetFaviconImageForPageURL(url,
++        base::BindOnce([](base::WeakPtr<CoveSidebarLibraryView> library,
++                         GURL home, std::vector<Binding> rows,
++                         const favicon_base::FaviconImageResult& result) {
++          if (!library) return;
++          for (const auto& [index, id, row] : rows)
++            if (row) library->OnPinFaviconLoaded(index, id, home, row.get(), result);
++        }, weak_factory_.GetWeakPtr(), url, std::move(bindings)),
++        &pin_favicon_tasks_);
++  }
++}
++
++void CoveSidebarLibraryView::OnPinFaviconLoaded(
++    size_t pin_index, std::string pin_id, GURL home_url, views::LabelButton* row,
++    const favicon_base::FaviconImageResult& result) {
++  if (result.image.IsEmpty()) return;
++  const auto row_id = row_pin_ids_.find(row);
++  if (row_id == row_pin_ids_.end() || row_id->second != pin_id) return;
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  if (!pins || pin_index >= pins->size()) return;
++  const auto* pin = (*pins)[pin_index].GetIfDict();
++  if (!pin || !pin->FindString("id") || *pin->FindString("id") != pin_id ||
++      !pin->FindString("url") || GURL(*pin->FindString("url")) != home_url) return;
++  cached_pin_icons_[pin_id] = ui::ImageModel::FromImage(result.image);
++  // The current live-page icon remains authoritative, including if it arrived
++  // while the saved-home cache read was in flight.
++  row->SetImageModel(views::Button::STATE_NORMAL, PinIconForId(pin_id));
+ }
+ 
+ std::unique_ptr<views::View> CoveSidebarLibraryView::CreateSpaceFooter() {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -20,6 +20,8 @@
+ #include "ui/views/drag_controller.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
++#include "base/task/cancelable_task_tracker.h"
++#include "ui/base/models/image_model.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+ #include "components/prefs/pref_change_registrar.h"
+@@ -31,9 +33,13 @@
+ 
+ class BrowserWindowInterface;
+ class GURL;
++namespace favicon_base {
++struct FaviconImageResult;
++}
+ 
+ namespace views {
+ class MenuRunner;
++class LabelButton;
+ }  // namespace views
+ 
+ // Sidebar library for the active Cove space: pinned pages, folders, and the
+@@ -178,6 +184,11 @@
+   void Rebuild();
+   void RebuildSpaceFooter();
+   void UpdatePinRowAppearance();
++  void LoadSavedPinFavicons();
++  ui::ImageModel PinIconForId(const std::string& pin_id) const;
++  void OnPinFaviconLoaded(size_t pin_index, std::string pin_id, GURL home_url,
++                         views::LabelButton* row,
++                         const favicon_base::FaviconImageResult& result);
+   void ShowLibraryMenu();
+   bool HasArchivableTabs() const;
+   void ArchiveToday();
+@@ -239,6 +250,9 @@
+   std::optional<DragLocation> live_drop_;
+   base::OnceClosureList tab_drag_destroy_callbacks_;
+   std::map<views::View*, std::string> row_pin_ids_;
++  base::CancelableTaskTracker pin_favicon_tasks_;
++  std::map<std::string, ui::ImageModel> cached_pin_icons_;
++  std::map<std::string, tabs::TabHandle> bound_pin_handles_;
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
+   views::ViewTracker menu_button_;
