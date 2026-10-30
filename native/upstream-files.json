@@ -52,6 +52,7 @@
   "chrome/browser/ui/unload_controller.cc": "3bb34ef06e99738258db3699f49af9e6ce69f2c602543b757206bcfecdf95b2a",
   "chrome/browser/ui/views/bubble/webui_bubble_dialog_view.cc": "15ceaae9aced658d7ed83bd8ba412ac0ce9c72f9ffd0c221bbcfb7efaf651fb9",
   "chrome/browser/ui/views/bubble/webui_bubble_manager.cc": "0cfd73aeb6d44ec573aa26b2e6b9a7cec07fb860e35e7b24e77589daf7cdab1c",
+  "chrome/browser/ui/views/frame/browser_frame_view.h": "3d01658f5f8358b42ef78c9bcb030dfff9f65e4804dbe0aab7b23ad3b1b44f15",
   "chrome/browser/ui/views/frame/browser_frame_view_mac.h": "f623b01156735d7e4d3657808afb2c2a2ef5875e5edbaa207c88d0be0b82ba0d",
   "chrome/browser/ui/views/frame/browser_frame_view_mac.mm": "7c8c99cb64c7d676ab65979253a249940a11b61ea455eb952103613578aed77d",
   "chrome/browser/ui/views/frame/browser_view.cc": "1f50fd9bd07c94240a180e004fdec4469356f256fc936936363541f740942e0a",

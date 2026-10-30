@@ -1,0 +1,232 @@
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -0,0 +1,117 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#import <Cocoa/Cocoa.h>
++
++#include "base/command_line.h"
++#include "base/files/file_util.h"
++#include "base/test/run_until.h"
++#include "base/test/test_future.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/tab_search_bubble_host.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "ui/gfx/scoped_animation_duration_scale_mode.h"
++#include "ui/snapshot/snapshot.h"
++#include "ui/views/widget/widget.h"
++
++class CoveCaptionButtonsBrowserTest : public InProcessBrowserTest {
++ protected:
++  void ExpectHidden(bool hidden) {
++    NSWindow* window = BrowserView::GetBrowserViewForBrowser(browser())
++                           ->GetWidget()
++                           ->GetNativeWindow()
++                           .GetNativeNSWindow();
++    ASSERT_TRUE(window);
++    for (NSWindowButton button :
++         {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
++      EXPECT_EQ(hidden,
++                static_cast<bool>([window standardWindowButton:button].hidden));
++    }
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       ControlsFollowShortcutBeforeAnimationCompletes) {
++  gfx::ScopedAnimationDurationScaleMode animations(
++      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  ASSERT_TRUE(controller);
++  controller->RequestCollapse(false);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return controller->GetCollapseState() ==
++           tabs::VerticalTabStripCollapseState::kExpanded;
++  }));
++  ExpectHidden(false);
++  for (int i = 0; i < 3; ++i) {
++    // Exercise the same native command as Cmd+S. Do not run a layout or pump
++    // events before checking AppKit: the bug is the intermediate visible frame.
++    chrome::ToggleCollapseVerticalTabs(browser());
++    ExpectHidden(true);
++    ASSERT_TRUE(
++        base::test::RunUntil([&] { return controller->IsCollapsed(); }));
++    ExpectHidden(true);
++    chrome::ToggleCollapseVerticalTabs(browser());
++    ExpectHidden(false);
++    ASSERT_TRUE(base::test::RunUntil([&] {
++      return controller->GetCollapseState() ==
++             tabs::VerticalTabStripCollapseState::kExpanded;
++    }));
++    ExpectHidden(false);
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       PaletteDismissalKeepsSidebarState) {
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* controller = tabs::VerticalTabStripStateController::From(browser());
++  ASSERT_TRUE(controller);
++  controller->RequestCollapse(false);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return controller->GetCollapseState() ==
++           tabs::VerticalTabStripCollapseState::kExpanded;
++  }));
++  for (const char* title : {"Project notes", "Calendar", "Documentation",
++                            "Research", "Design reference"}) {
++    auto* contents = chrome::AddAndReturnTabAt(
++        browser(),
++        GURL(std::string("data:text/html,<title>") + title + "</title>"), -1,
++        false);
++    ASSERT_TRUE(contents);
++    ASSERT_TRUE(content::WaitForLoadStop(contents));
++  }
++  auto* host = view->GetTabSearchBubbleHost();
++  ASSERT_TRUE(host);
++  host->ShowTabSearchBubble(true);
++  auto* palette = host->native_palette_widget_for_testing();
++  ASSERT_TRUE(palette);
++  ASSERT_TRUE(palette->IsVisible());
++
++  // Optional rendered artifact from this test's isolated browser, for visual
++  // inspection alongside the user's reference. Normal test runs write nothing.
++  const base::FilePath image =
++      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
++          "cove-palette-snapshot");
++  if (!image.empty()) {
++    base::test::TestFuture<scoped_refptr<base::RefCountedMemory>> snapshot;
++    ui::GrabWindowSnapshotAsPNG(
++        palette->GetNativeWindow(),
++        gfx::Rect(palette->GetWindowBoundsInScreen().size()),
++        snapshot.GetCallback());
++    auto data = snapshot.Take();
++    ASSERT_TRUE(data);
++    ASSERT_FALSE(base::span(*data).empty());
++    ASSERT_TRUE(base::WriteFile(image, base::span(*data)));
++  }
++
++  chrome::ToggleCollapseVerticalTabs(browser());
++  EXPECT_FALSE(palette->IsVisible());
++  EXPECT_EQ(tabs::VerticalTabStripCollapseState::kExpanded,
++            controller->GetCollapseState());
++  ExpectHidden(false);
++}
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view.h b/chrome/browser/ui/views/frame/browser_frame_view.h
+--- a/chrome/browser/ui/views/frame/browser_frame_view.h
++++ b/chrome/browser/ui/views/frame/browser_frame_view.h
+@@ -78,6 +78,9 @@
+   // Called when the browser window's tab strip state changes.
+   virtual void OnTabStripStateChanged();
+ 
++  // Synchronize native controls at the start of a sidebar transition.
++  virtual void UpdateCoveCaptionButtonsVisibility() {}
++
+   // Returns whether there are caption buttons at the leading edge of the
+   // browser frame (i.e. on the left for LtR languages, such as on macOS).
+   //
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.h b/chrome/browser/ui/views/frame/browser_frame_view_mac.h
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.h
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.h
+@@ -44,6 +44,7 @@
+   // BrowserFrameView:
+   void OnFullscreenStateChanged() override;
+   void OnTabStripStateChanged() override;
++  void UpdateCoveCaptionButtonsVisibility() override;
+   bool CaptionButtonsOnLeadingEdge() const override;
+   BrowserLayoutParams GetBrowserLayoutParams() const override;
+   int GetTopInset(bool restored) const override;
+@@ -94,7 +95,6 @@
+   void LayoutWindowControlsOverlay();
+ 
+   void UpdateCaptionButtonPlaceholderContainerBackground();
+-  void UpdateCoveCaptionButtonsVisibility();
+ 
+   // Toggle the visibility of the web_app_frame_toolbar_view() for PWAs with
+   // window controls overlay display override when entering full screen or when
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1494,8 +1494,13 @@
+ bool BrowserView::ShouldShowCoveCaptionButtons() const {
+   if (IsFullscreen() || !ShouldDrawVerticalTabStrip() ||
+       !vertical_tab_strip_region_view_) return true;
+-  return !IsVerticalTabStripCollapsed() ||
+-         vertical_tab_strip_region_view_->is_expanded_on_hover();
++  // The controller commits collapse only after the animation finishes. Native
++  // buttons must instead follow the requested state from its first frame.
++  return !vertical_tab_strip_region_view_->is_target_collapsed() ||
++         (vertical_tab_strip_region_view_->is_expanded_on_hover() &&
++          tabs::VerticalTabStripStateController::From(browser_)
++                  ->GetCollapseState() ==
++              tabs::VerticalTabStripCollapseState::kCollapsed);
+ }
+ 
+ bool BrowserView::GetIncognito() const {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -42,6 +42,7 @@
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/browser_frame_view.h"
+ #include "chrome/browser/ui/views/frame/custom_corners_background.h"
+ #include "chrome/browser/ui/views/frame/frame_separator.h"
+ #include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
+@@ -945,6 +946,8 @@
+       collapse ? TabStripAnimations::kCollapse : TabStripAnimations::kExpand;
+   BrowserAnimationController::From(browser_view()->browser())
+       ->Start(TabStripAnimations::kVerticalTabStrip, motion);
++  browser_view()->browser_widget()->GetFrameView()
++      ->UpdateCoveCaptionButtonsVisibility();
+ }
+ 
+ void VerticalTabStripRegionView::SetOrganizerPanelShowPercent(double percent) {
+@@ -1388,6 +1391,8 @@
+ 
+ void VerticalTabStripRegionView::AnimateExpandOnHover(bool expand) {
+   is_expanded_on_hover_ = expand;
++  browser_view()->browser_widget()->GetFrameView()
++      ->UpdateCoveCaptionButtonsVisibility();
+   ResetExpandOnHoverTimers();
+ 
+   if (expand) {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -160,6 +160,7 @@
+   }
+ 
+   bool is_expanded_on_hover() const { return is_expanded_on_hover_; }
++  bool is_target_collapsed() const { return target_collapse_state_.collapsed; }
+   ShadowFrameView* shadow_frame() { return shadow_frame_; }
+   int uncollapsed_width() const {
+     return target_collapse_state_.uncollapsed_width;
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1621,6 +1621,7 @@
+       "base/chrome_test_launcher.h",
+       "../browser/ui/cove/cove_session_browsertest.cc",
+       "../browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc",
++      "../browser/ui/views/cove/cove_caption_buttons_browsertest.mm",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     deps = [
+@@ -1672,6 +1673,7 @@
+       "//testing/gtest",
+       "//ui/base",
+       "//ui/compositor",
++      "//ui/snapshot",
+     ]
+     data_deps = [ "//chrome:packed_resources" ]
+   }
