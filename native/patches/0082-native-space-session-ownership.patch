@@ -1,0 +1,1737 @@
+diff --git a/chrome/app/BUILD.gn b/chrome/app/BUILD.gn
+--- a/chrome/app/BUILD.gn
++++ b/chrome/app/BUILD.gn
+@@ -143,6 +143,7 @@
+   testonly = true
+   visibility = [
+     "//chrome/test:test_support",
++    "//chrome/test:cove_session_browsertests",
+     "//chrome/test/base:chrome_test_suite",
+     "//chrome/test/base/chromeos/crosier:test_support",
+   ]
+diff --git a/chrome/browser/sessions/BUILD.gn b/chrome/browser/sessions/BUILD.gn
+--- a/chrome/browser/sessions/BUILD.gn
++++ b/chrome/browser/sessions/BUILD.gn
+@@ -137,6 +137,7 @@
+       "//chrome/browser/search",
+       "//chrome/browser/tab_group_sync:factories",
+       "//chrome/browser/ui:browser_init_state",
++      "//chrome/browser/ui:cove_space_close_handler",
+       "//chrome/browser/ui:browser_manager_service",
+       "//chrome/browser/ui:browser_tabrestore",
+       "//chrome/browser/ui:session_crashed_bubble",
+diff --git a/chrome/browser/sessions/session_restore.cc b/chrome/browser/sessions/session_restore.cc
+--- a/chrome/browser/sessions/session_restore.cc
++++ b/chrome/browser/sessions/session_restore.cc
+@@ -15,6 +15,8 @@
+ #include <string>
+ #include <string_view>
+ #include <utility>
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/command_line.h"
+ #include "base/containers/flat_map.h"
+@@ -505,6 +507,8 @@
+     NotifySessionServiceOfRestoredTabs(browser,
+                                        browser->GetTabStripModel()->count());
+ 
++    if (auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost()))
++      cove->FinishSessionRestore();
+     // Since FinishedTabCreation() is not called here, |this| will leak if we
+     // are not in sychronous mode.
+     DCHECK(synchronous_);
+@@ -576,6 +580,18 @@
+       SessionRestoreDelegate::RestoreTabs(restored_tabs, restore_started_);
+     }
+ 
++    // Defer partitioning until all native collection restoration and startup
++    // replacement has completed. RestoredTab owns weak content references.
++    for (const auto& restored : restored_tabs) {
++      if (auto* contents = restored.contents()) {
++        auto* tab = tabs::TabInterface::GetFromContents(contents);
++        auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
++        if (owner) {
++          if (auto* cove = CoveSpaceCloseHandler::Get(owner->GetUnownedUserDataHost()))
++            cove->FinishSessionRestore();
++        }
++      }
++    }
+     if (!synchronous_) {
+       // If we're not synchronous we need to delete ourself.
+       // NOTE: we must use DeleteLater here as most likely we're in a callback
+@@ -868,6 +884,10 @@
+ #endif
+       }
+ 
++      if (auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost())) {
++        const auto active = window->extra_data.find(kCoveWindowSessionKey);
++        cove->BeginSessionRestore(active == window->extra_data.end() ? "" : active->second);
++      }
+       // 2. Track TYPE_NORMAL browsers.
+       if (is_normal_window) {
+         has_normal_browser = true;
+@@ -1249,6 +1269,8 @@
+         // there is a crash prior to or during model initialization.
+         session_service->AddSavedTabGroupsMapping(
+             new_tab_group_id, session_tab_group->saved_guid.value());
++        if (auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost()))
++          cove->RememberSavedGroup(new_tab_group_id, session_tab_group->saved_guid.value());
+       }
+ 
+       TabGroup* model_tab_group =
+@@ -1358,6 +1380,10 @@
+             InitialWebUIWindowMetricsManager::From(browser_window)) {
+       manager->SetWindowCreationInfo(
+           waap::NewWindowCreationSource::kSessionRestore, now);
++    }
++    if (auto* cove = CoveSpaceCloseHandler::Get(browser_window->GetUnownedUserDataHost())) {
++      const auto active = extra_data.find(kCoveWindowSessionKey);
++      cove->BeginSessionRestore(active == extra_data.end() ? "" : active->second);
+     }
+     g_is_any_session_restored = true;
+     return browser_window;
+diff --git a/chrome/browser/sessions/session_service.cc b/chrome/browser/sessions/session_service.cc
+--- a/chrome/browser/sessions/session_service.cc
++++ b/chrome/browser/sessions/session_service.cc
+@@ -11,6 +11,8 @@
+ #include <string>
+ #include <utility>
+ #include <vector>
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/command_line.h"
+ #include "base/debug/alias.h"
+@@ -659,6 +661,11 @@
+       sessions::SessionTabHelper::FromWebContents(tab);
+   SessionID session_id(session_tab_helper->session_id());
+ 
++  if (const auto* state = GetCoveTabSessionState(tab)) {
++    command_storage_manager()->AppendRebuildCommand(
++        sessions::CreateAddTabExtraDataCommand(session_id, kCoveTabSessionKey,
++                                                EncodeCoveTabSessionState(*state)));
++  }
+   const blink::UserAgentOverride& ua_override = tab->GetUserAgentOverride();
+ 
+   if (!ua_override.ua_string_override.empty()) {
+@@ -685,6 +692,22 @@
+ 
+ void SessionService::ScheduleResetCommands() {
+   DCHECK(is_saving_enabled());
++  bool cove_mutating = false;
++  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
++      [this, &cove_mutating](BrowserWindowInterface* browser) {
++        if (browser->GetProfile() == profile()) {
++          auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost());
++          cove_mutating = cove && cove->IsSessionMutationInProgress();
++        }
++        return !cove_mutating;
++      });
++  if (cove_mutating) {
++    // Never clear a valid journal while ownership is between native models.
++    // The normal save hook will rebuild once the synchronous mutation ends.
++    set_rebuild_on_next_save(true);
++    command_storage_manager()->StartSaveTimer();
++    return;
++  }
+   command_storage_manager()->set_pending_reset(true);
+   command_storage_manager()->ClearPendingCommands();
+   tab_to_available_range()->clear();
+diff --git a/chrome/browser/sessions/session_service_base.cc b/chrome/browser/sessions/session_service_base.cc
+--- a/chrome/browser/sessions/session_service_base.cc
++++ b/chrome/browser/sessions/session_service_base.cc
+@@ -10,6 +10,8 @@
+ #include <set>
+ #include <utility>
+ #include <vector>
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/command_line.h"
+ #include "base/feature_list.h"
+@@ -647,7 +649,7 @@
+                                  : tab->GetController().GetEntryAtIndex(i);
+     DCHECK(entry);
+     if (ShouldTrackURLForRestore(entry->GetVirtualURL()) &&
+-        !entry->IsInitialEntry()) {
++        (!entry->IsInitialEntry() || IsCoveEmptyCanvas(tab))) {
+       // Don't try to persist initial NavigationEntry, as it is not actually
+       // associated with any navigation and will just result in about:blank on
+       // session restore.
+@@ -686,6 +688,8 @@
+   DCHECK(is_saving_enabled_);
+   DCHECK(browser);
+   DCHECK(browser->GetSessionID().is_valid());
++  auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost());
++  auto cove_snapshot = cove ? cove->GetSessionSnapshot() : std::nullopt;
+ 
+   command_storage_manager()->AppendRebuildCommand(
+       sessions::CreateSetWindowBoundsCommand(
+@@ -724,7 +728,26 @@
+   command_storage_manager()->AppendRebuildCommand(
+       sessions::CreateSetSelectedTabInWindowCommand(
+           browser->GetSessionID(),
+-          browser->GetTabStripModel()->active_index()));
++          cove_snapshot ? cove_snapshot->selected_index
++                        : browser->GetTabStripModel()->active_index()));
++  if (cove_snapshot) {
++    command_storage_manager()->AppendRebuildCommand(
++        sessions::CreateAddWindowExtraDataCommand(browser->GetSessionID(),
++            kCoveWindowSessionKey, cove_snapshot->active_space));
++    for (const auto& [id, visual] : cove_snapshot->groups) {
++      std::optional<std::string> saved_guid;
++      if (auto guid = cove_snapshot->saved_groups.find(id);
++          guid != cove_snapshot->saved_groups.end()) saved_guid = guid->second;
++      if (!saved_guid) if (auto* sync = tab_groups::TabGroupSyncServiceFactory::GetForProfile(browser->GetProfile())) {
++        if (auto group = sync->GetGroup(id)) saved_guid = group->saved_guid().AsLowercaseString();
++      }
++      command_storage_manager()->AppendRebuildCommand(
++          sessions::CreateTabGroupMetadataUpdateCommand(id, &visual, std::move(saved_guid)));
++    }
++    for (const auto& [id, visual] : cove_snapshot->splits)
++      command_storage_manager()->AppendRebuildCommand(
++          sessions::CreateSplitTabDataUpdateCommand(id, &visual));
++  }
+ 
+   // Set the visual data for each tab group.
+   TabStripModel* tab_strip = browser->GetTabStripModel();
+@@ -773,6 +796,17 @@
+     }
+   }
+ 
++  if (cove_snapshot) {
++    int journal_index = 0;
++    for (const auto& entry : cove_snapshot->tabs) {
++      auto* tab = entry.tab.get();
++      BuildCommandsForTab(browser->GetSessionID(), tab->GetContents(),
++                          journal_index++, tab->GetGroup(), tab->GetSplit(),
++                          entry.pinned, tab_to_available_range);
++    }
++    windows_to_track->insert(browser->GetSessionID());
++    return;
++  }
+   int index = 0;
+   for (const tabs::TabInterface* tab_interface : *tab_strip) {
+     WebContents* tab = tab_interface->GetContents();
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -468,6 +468,7 @@
+       "//chrome/browser:browser_public_dependencies",
+     ]
+     deps = [
++      ":cove_space_close_handler",
+       ":browser_window_header",
+       ":tab_ui_helper",
+       "//base",
+@@ -529,6 +530,7 @@
+       "//chrome/browser:browser_public_dependencies",
+     ]
+     deps = [
++      ":cove_space_close_handler",
+       ":browser_commands",
+       ":browser_init_state",
+       ":browser_tab_strip",
+@@ -577,7 +579,13 @@
+       "cove_space_close_handler.cc",
+       "cove_space_close_handler.h",
+     ]
+-    public_deps = [ "//ui/base/unowned_user_data" ]
++    public_deps = [
++      "//base",
++      "//chrome/browser/ui/cove:session_metadata",
++      "//components/split_tabs",
++      "//components/tab_groups",
++      "//ui/base/unowned_user_data",
++    ]
+     deps = [ "//content/public/browser" ]
+   }
+ 
+diff --git a/chrome/browser/ui/animation/BUILD.gn b/chrome/browser/ui/animation/BUILD.gn
+--- a/chrome/browser/ui/animation/BUILD.gn
++++ b/chrome/browser/ui/animation/BUILD.gn
+@@ -77,12 +77,14 @@
+   sources = [
+     "browser_animation_controller_unittest.cc",
+     "cove_animation_test_main.cc",
++    "../cove/cove_session_metadata_unittest.cc",
+     "../views/cove/cove_folder_model_unittest.cc",
+     "../views/tabs/vertical/cove_space_swipe_state_unittest.cc",
+   ]
+   deps = [
+     ":animation",
+     "//chrome/browser/ui/views/cove:folder_model",
++    "//chrome/browser/ui/cove:session_metadata",
+     "//chrome/browser/ui/views/tabs/vertical:cove_space_swipe_state",
+     "//base/test:test_support",
+     "//chrome/browser/ui/browser_window",
+diff --git a/chrome/browser/ui/browser_live_tab_context.cc b/chrome/browser/ui/browser_live_tab_context.cc
+--- a/chrome/browser/ui/browser_live_tab_context.cc
++++ b/chrome/browser/ui/browser_live_tab_context.cc
+@@ -9,6 +9,8 @@
+ #include <numeric>
+ #include <optional>
+ #include <utility>
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/check_deref.h"
+ #include "base/strings/string_number_conversions.h"
+@@ -157,6 +159,8 @@
+ 
+ void BrowserLiveTabContext::ShowBrowserWindow() {
+   base_window_->Show();
++  if (auto* cove = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
++    cove->FinishSessionRestore();
+ }
+ 
+ SessionID BrowserLiveTabContext::GetSessionID() const {
+@@ -201,12 +205,20 @@
+   glic::PopulateGlicExtraData(tab_strip_model_->GetTabAtIndex(index),
+                               &extra_data);
+ 
++  if (auto* cove = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
++    cove->GetSessionSnapshot();  // Stamp the active selection before capture.
++  if (const auto* state = GetCoveTabSessionState(tab_strip_model_->GetWebContentsAt(index)))
++    extra_data[kCoveTabSessionKey] = EncodeCoveTabSessionState(*state);
+   return extra_data;
+ }
+ 
+ std::map<std::string, std::string>
+ BrowserLiveTabContext::GetExtraDataForWindow() const {
+   std::map<std::string, std::string> data;
++  if (auto* cove = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++    if (auto snapshot = cove->GetSessionSnapshot())
++      data[kCoveWindowSessionKey] = snapshot->active_space;
++  }
+ 
+   auto* controller =
+       tabs::VerticalTabStripStateController::From(&browser_.get());
+@@ -420,6 +432,10 @@
+           tab_groups::OpeningSource::kOpenedFromTabRestore);
+     }
+ 
++    if (group_id && saved_group_id) {
++      if (auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost()))
++        cove->RememberSavedGroup(*group_id, saved_group_id->AsLowercaseString());
++    }
+     if (is_restoring_group_or_window) {
+       // Open the saved tab group as-is if the tab is being restored from a
+       // group or window context. This is to enforce that SavedTabGroups are
+@@ -564,6 +580,10 @@
+   BrowserWindowInterface* browser =
+       CreateBrowserWindow(std::move(*create_params));
+ 
++  if (auto* cove = CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost())) {
++    const auto active = extra_data.find(kCoveWindowSessionKey);
++    cove->BeginSessionRestore(active == extra_data.end() ? "" : active->second);
++  }
+   return BrowserLiveTabContext::From(browser);
+ }
+ 
+diff --git a/chrome/browser/ui/browser_tabrestore.cc b/chrome/browser/ui/browser_tabrestore.cc
+--- a/chrome/browser/ui/browser_tabrestore.cc
++++ b/chrome/browser/ui/browser_tabrestore.cc
+@@ -7,6 +7,8 @@
+ #include <map>
+ #include <memory>
+ #include <utility>
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/containers/span.h"
+ #include "build/build_config.h"
+@@ -82,6 +84,7 @@
+   apps::SetAppIdForWebContents(browser->GetProfile(), web_contents.get(),
+                                extension_app_id);
+ 
++  RestoreCoveTabSessionState(web_contents.get(), extra_data);
+   glic::RestoreGlicStateFromExtraData(web_contents.get(), extra_data);
+   send_tab_to_self::SendTabToSelfActivationTracker::RestoreFromExtraData(
+       web_contents.get(), extra_data);
+diff --git a/chrome/browser/ui/cove/BUILD.gn b/chrome/browser/ui/cove/BUILD.gn
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/BUILD.gn
+@@ -0,0 +1,7 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
++source_set("session_metadata") {
++  sources = [ "cove_session_metadata.cc", "cove_session_metadata.h" ]
++  public_deps = [ "//base" ]
++}
+diff --git a/chrome/browser/ui/cove/cove_session_browsertest.cc b/chrome/browser/ui/cove/cove_session_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_session_browsertest.cc
+@@ -0,0 +1,398 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include <map>
++#include <set>
++#include "base/run_loop.h"
++#include "base/test/bind.h"
++#include "chrome/browser/prefs/session_startup_pref.h"
++#include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
++#include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
++#include "chrome/browser/sessions/session_restore_test_helper.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "components/keep_alive_registry/scoped_keep_alive.h"
++#include "components/keep_alive_registry/keep_alive_types.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/sessions/session_service_factory.h"
++#include "chrome/browser/sessions/session_service_test_helper.h"
++#include "chrome/browser/ui/browser_live_tab_context.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/browser_tabrestore.h"
++#include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/tabs/split_tab_metrics.h"
++#include "chrome/browser/ui/tabs/tab_group_model.h"
++#include "components/tabs/public/tab_group.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "components/sessions/content/session_tab_helper.h"
++#include "components/prefs/pref_service.h"
++#include "components/sessions/core/command_storage_manager.h"
++#include "components/sessions/core/session_command.h"
++#include "components/sessions/core/serialized_navigation_entry.h"
++#include "components/sessions/core/session_service_commands.h"
++#include "components/sessions/core/session_types.h"
++#include "components/tabs/public/tab_interface.h"
++#include "components/tabs/public/split_tab_data.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "content/public/browser/navigation_controller.h"
++#include "ui/base/window_open_disposition.h"
++
++class CoveSessionBrowserTest : public InProcessBrowserTest {
++ protected:
++  CoveSpaceCloseHandler* Library(BrowserWindowInterface* window) {
++    return CoveSpaceCloseHandler::Get(window->GetUnownedUserDataHost());
++  }
++  void Switch(const std::string& id) {
++    Library(browser())->FocusSpace(id);
++    base::RunLoop().RunUntilIdle();
++  }
++  void ReadRebuild(std::vector<std::unique_ptr<sessions::SessionWindow>>& windows) {
++    auto* service = SessionServiceFactory::GetForProfile(browser()->GetProfile());
++    service->ResetFromCurrentBrowsers();
++    SessionServiceTestHelper helper(service);
++    SessionID active = SessionID::InvalidValue();
++    std::string platform;
++    std::set<SessionID> discarded;
++    sessions::RestoreSessionFromCommands(helper.command_storage_manager()->pending_commands(),
++                                         &windows, &active, &platform, &discarded);
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, JournalResetRetainsParkedHistoryAndOwnership) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Personal</title>")));
++  auto* personal = browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(personal, "history.pushState({}, '', '#kept')"));
++  const int entries = personal->GetController().GetEntryCount();
++  Switch("work");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Work</title>")));
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  ASSERT_EQ(2u, windows[0]->tabs.size());
++  EXPECT_EQ("work", windows[0]->extra_data.at(kCoveWindowSessionKey));
++  std::set<int> indices;
++  std::set<std::string> owners;
++  for (const auto& tab : windows[0]->tabs) {
++    indices.insert(tab->tab_visual_index);
++    auto state = DecodeCoveTabSessionState(tab->extra_data.at(kCoveTabSessionKey));
++    ASSERT_TRUE(state);
++    owners.insert(state->space);
++    if (state->space == "personal") EXPECT_EQ(entries, static_cast<int>(tab->navigations.size()));
++  }
++  EXPECT_EQ((std::set<int>{0, 1}), indices);
++  EXPECT_EQ((std::set<std::string>{"personal", "work"}), owners);
++  Switch("personal");
++  EXPECT_EQ(personal, browser()->tab_strip_model()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, ResetIncludesParkedSplitAndMarkedBlankPane) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
++  auto* model = browser()->tab_strip_model();
++  MarkCoveEmptyCanvas(model->GetActiveWebContents());
++  auto* right = chrome::AddAndReturnTabAt(browser(), GURL("data:text/html,<title>Right</title>"), -1, true);
++  ASSERT_TRUE(right);
++  const auto group = model->AddToNewGroup({0, 1});
++  const auto split = model->AddToNewSplit({0, 1},
++      split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kStacked, 0.37),
++      split_tabs::SplitTabCreatedSource::kExtensionsApi);
++  Switch("work");
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  EXPECT_EQ(3u, windows[0]->tabs.size());
++  ASSERT_EQ(1u, windows[0]->tab_groups.size());
++  EXPECT_EQ(group, windows[0]->tab_groups[0]->id);
++  ASSERT_EQ(1u, windows[0]->split_tabs.size());
++  EXPECT_EQ(split, windows[0]->split_tabs[0]->id_);
++  EXPECT_EQ(split_tabs::SplitTabLayout::kStacked, windows[0]->split_tabs[0]->split_visual_data_.split_layout());
++  EXPECT_DOUBLE_EQ(0.37, windows[0]->split_tabs[0]->split_visual_data_.split_ratio());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, WindowMetadataIsIndependent) {
++  auto* second = CreateBrowser(browser()->GetProfile());
++  Library(second)->FocusSpace("work");
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ("personal", BrowserLiveTabContext::From(browser())->GetExtraDataForWindow().at(kCoveWindowSessionKey));
++  EXPECT_EQ("work", BrowserLiveTabContext::From(second)->GetExtraDataForWindow().at(kCoveWindowSessionKey));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, MalformedOwnershipKeepsIntactSplitAndAllPages) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>One</title>")));
++  auto* model = browser()->tab_strip_model();
++  ASSERT_TRUE(chrome::AddAndReturnTabAt(browser(), GURL("data:text/html,<title>Two</title>"), -1, true));
++  auto* library = Library(browser());
++  library->BeginSessionRestore("work");
++  RestoreCoveTabSessionState(model->GetWebContentsAt(0),
++      {{kCoveTabSessionKey, EncodeCoveTabSessionState(CoveTabSessionState{"personal", "", 0, true, true})}});
++  RestoreCoveTabSessionState(model->GetWebContentsAt(1),
++      {{kCoveTabSessionKey, EncodeCoveTabSessionState(CoveTabSessionState{"missing", "", 1})}});
++  const auto split = model->AddToNewSplit({0, 1}, split_tabs::SplitTabVisualData(),
++      split_tabs::SplitTabCreatedSource::kExtensionsApi);
++  library->FinishSessionRestore();
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(2, model->count());
++  EXPECT_EQ(split, model->GetTabAtIndex(0)->GetSplit());
++  EXPECT_EQ(split, model->GetTabAtIndex(1)->GetSplit());
++  EXPECT_EQ("work", GetCoveTabSessionState(model->GetWebContentsAt(0))->space);
++  EXPECT_EQ("work", GetCoveTabSessionState(model->GetWebContentsAt(1))->space);
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, ReconstructedHistoryReturnsToOriginalSpace) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Kept</title>")));
++  auto* original = browser()->tab_strip_model()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(original, "history.pushState({}, '', '#kept')"));
++  const int history_count = original->GetController().GetEntryCount();
++  Switch("work");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Work</title>")));
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  auto* restored = CreateBrowser(browser()->GetProfile());
++  auto* model = restored->GetTabStripModel();
++  auto* initial = model->GetActiveWebContents();
++  Library(restored)->BeginSessionRestore("work");
++  for (const auto& tab : windows[0]->tabs) {
++    ASSERT_TRUE(chrome::AddRestoredTab(restored, tab->navigations, model->count(),
++        tab->current_navigation_index, tab->extension_app_id, std::nullopt,
++        tab->tab_visual_index == windows[0]->selected_tab_index, tab->pinned,
++        base::TimeTicks(), base::Time(), nullptr, tab->user_agent_override,
++        tab->extra_data, true, true));
++  }
++  if (initial && model->count() > 1) chrome::CloseWebContents(restored, initial, false);
++  Library(restored)->FinishSessionRestore();
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(1, model->count());
++  EXPECT_EQ("work", GetCoveTabSessionState(model->GetActiveWebContents())->space);
++  Library(restored)->FocusSpace("personal");
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(1, model->count());
++  EXPECT_EQ(history_count, model->GetActiveWebContents()->GetController().GetEntryCount());
++  EXPECT_EQ("kept", model->GetActiveWebContents()->GetVisibleURL().ref());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, ParkedGroupVisualsSurviveJournalReset) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Grouped</title>")));
++  auto* model = browser()->GetTabStripModel();
++  const auto group = model->AddToNewGroup({0});
++  model->ChangeTabGroupVisuals(group, tab_groups::TabGroupVisualData(
++      u"Kept group", tab_groups::TabGroupColorId::kPurple, true));
++  Switch("work");
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  ASSERT_EQ(1u, windows[0]->tab_groups.size());
++  EXPECT_EQ(u"Kept group", windows[0]->tab_groups[0]->visual_data.title());
++  EXPECT_TRUE(windows[0]->tab_groups[0]->visual_data.is_collapsed());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, CleanCloseRestoresOwnershipAndHistoryThroughSessionRestore) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Original</title>")));
++  ASSERT_TRUE(content::ExecJs(browser()->tab_strip_model()->GetActiveWebContents(),
++                              "history.pushState({}, '', '#kept')"));
++  Switch("work");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Work</title>")));
++  auto* profile = browser()->GetProfile();
++  SessionStartupPref::SetStartupPref(profile, SessionStartupPref(SessionStartupPref::LAST));
++  ScopedKeepAlive keep_alive(KeepAliveOrigin::SESSION_RESTORE, KeepAliveRestartOption::DISABLED);
++  ScopedProfileKeepAlive profile_keep_alive(profile, ProfileKeepAliveOrigin::kBrowserWindow);
++  CloseBrowserSynchronously(browser());
++  SessionServiceTestHelper helper(profile);
++  helper.SetForceBrowserNotAliveWithNoWindows(true);
++  ui_test_utils::AllBrowserTabAddedWaiter waiter;
++  SessionRestoreTestHelper restore_observer;
++  chrome::NewEmptyWindow(profile);
++  auto* restored = GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(waiter.Wait());
++  ASSERT_TRUE(restored);
++  restore_observer.Wait();
++  base::RunLoop().RunUntilIdle();
++  auto* library = Library(restored);
++  ASSERT_TRUE(library);
++  auto snapshot = library->GetSessionSnapshot();
++  ASSERT_TRUE(snapshot);
++  EXPECT_EQ("work", snapshot->active_space);
++  EXPECT_EQ(2u, snapshot->tabs.size());
++  EXPECT_EQ(1, restored->GetTabStripModel()->count());
++  library->FocusSpace("personal");
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(1, restored->GetTabStripModel()->count());
++  auto* personal = restored->GetTabStripModel()->GetActiveWebContents();
++  EXPECT_EQ(2, personal->GetController().GetEntryCount());
++  EXPECT_EQ("kept", personal->GetVisibleURL().ref());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, ResetDefersWhileNativeOwnershipIsMutating) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Retained</title>")));
++  auto* service = SessionServiceFactory::GetForProfile(browser()->GetProfile());
++  service->ResetFromCurrentBrowsers();
++  SessionServiceTestHelper helper(service);
++  const size_t before = helper.command_storage_manager()->pending_commands().size();
++  ASSERT_GT(before, 0u);
++  auto* library = Library(browser());
++  library->BeginSessionRestore("work");
++  service->ResetFromCurrentBrowsers();
++  EXPECT_EQ(before, helper.command_storage_manager()->pending_commands().size());
++  library->FinishSessionRestore();
++  base::RunLoop().RunUntilIdle();
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  EXPECT_EQ(2u, windows[0]->tabs.size());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest, RestoredNavigatedPinKeepsItsSavedHomeAndId) {
++  const GURL home("data:text/html,<title>Pin home</title>");
++  const GURL away("data:text/html,<title>Navigated pin</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* original_model = browser()->GetTabStripModel();
++  original_model->SetTabPinned(original_model->active_index(), true);
++  base::RunLoop().RunUntilIdle();
++  auto initial_state = *GetCoveTabSessionState(original_model->GetActiveWebContents());
++  ASSERT_FALSE(initial_state.pin.empty());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), away));
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  ASSERT_EQ(1u, windows[0]->tabs.size());
++  const auto& saved = *windows[0]->tabs[0];
++  auto* restored = CreateBrowser(browser()->GetProfile());
++  auto* model = restored->GetTabStripModel();
++  auto* initial = model->GetActiveWebContents();
++  Library(restored)->BeginSessionRestore("personal");
++  ASSERT_TRUE(chrome::AddRestoredTab(restored, saved.navigations, 0,
++      saved.current_navigation_index, "", std::nullopt, true, true,
++      base::TimeTicks(), base::Time(), nullptr, saved.user_agent_override,
++      saved.extra_data, true, true));
++  if (initial && model->count() > 1) chrome::CloseWebContents(restored, initial, false);
++  Library(restored)->FinishSessionRestore();
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(1, model->count());
++  EXPECT_TRUE(model->GetActiveTab()->IsPinned());
++  EXPECT_EQ(away, model->GetActiveWebContents()->GetVisibleURL());
++  EXPECT_EQ(initial_state.pin, GetCoveTabSessionState(model->GetActiveWebContents())->pin);
++  const auto* spaces = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar").FindList("spaces");
++  ASSERT_TRUE(spaces);
++  const auto* pins = spaces->front().GetDict().FindList("pins");
++  ASSERT_TRUE(pins);
++  ASSERT_EQ(1u, pins->size());
++  EXPECT_EQ(home.spec(), *pins->front().GetDict().FindString("url"));
++  EXPECT_EQ(initial_state.pin, *pins->front().GetDict().FindString("id"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest,
++                       ReopeningBackgroundTabKeepsNewForegroundSelection) {
++  const GURL first("data:text/html,<title>First stays open</title>");
++  const GURL background_url("data:text/html,<title>Reopened background</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), first));
++  auto* model = browser()->GetTabStripModel();
++  auto* original_active = model->GetActiveWebContents();
++  auto* background =
++      chrome::AddAndReturnTabAt(browser(), background_url, -1, false);
++  ASSERT_TRUE(background);
++  ASSERT_TRUE(content::WaitForLoadStop(background));
++  ASSERT_EQ(original_active, model->GetActiveWebContents());
++  base::RunLoop().RunUntilIdle();
++  auto snapshot = Library(browser())->GetSessionSnapshot();
++  ASSERT_TRUE(snapshot);
++  ASSERT_TRUE(GetCoveTabSessionState(background));
++  ASSERT_FALSE(GetCoveTabSessionState(background)->active);
++  model->CloseWebContentsAt(
++      model->GetIndexOfWebContents(background),
++      TabCloseTypes::CLOSE_USER_GESTURE |
++          TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(1, model->count());
++  ASSERT_EQ(original_active, model->GetActiveWebContents());
++
++  ui_test_utils::AllBrowserTabAddedWaiter waiter;
++  chrome::RestoreTab(browser());
++  auto* reopened = waiter.Wait();
++  ASSERT_TRUE(reopened);
++  base::RunLoop().RunUntilIdle();
++  ASSERT_EQ(2, model->count());
++  EXPECT_EQ(reopened, model->GetActiveWebContents());
++  EXPECT_EQ(background_url, reopened->GetVisibleURL());
++  ASSERT_TRUE(GetCoveTabSessionState(reopened));
++  EXPECT_TRUE(GetCoveTabSessionState(reopened)->active);
++  EXPECT_FALSE(HasRestoredCoveTabSessionState(reopened));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest,
++                       DiskJournalRetainsRepeatedSpaceSwitchHistory) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Disk personal</title>")));
++  auto* personal = browser()->GetTabStripModel()->GetActiveWebContents();
++  Switch("work");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Disk work</title>")));
++  auto* work = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_NE(personal, work);
++  for (int i = 0; i < 3; ++i) {
++    Switch("personal");
++    ASSERT_EQ(personal, browser()->GetTabStripModel()->GetActiveWebContents());
++    ASSERT_TRUE(content::ExecJs(personal, content::JsReplace(
++        "history.pushState({}, '', $1)", "#personal-" + std::to_string(i))));
++    Switch("work");
++    ASSERT_EQ(work, browser()->GetTabStripModel()->GetActiveWebContents());
++    ASSERT_TRUE(content::ExecJs(work, content::JsReplace(
++        "history.pushState({}, '', $1)", "#work-" + std::to_string(i))));
++  }
++  const std::map<std::string, int> expected_history = {
++      {"personal", personal->GetController().GetEntryCount()},
++      {"work", work->GetController().GetEntryCount()}};
++  auto* service = SessionServiceFactory::GetForProfile(browser()->GetProfile());
++  service->ResetFromCurrentBrowsers();
++  SessionServiceTestHelper helper(service);
++  helper.SaveNow();
++  auto* manager = helper.command_storage_manager();
++  manager->MoveCurrentSessionToLastSession();
++  std::vector<std::unique_ptr<sessions::SessionCommand>> disk_commands;
++  bool read_error = true;
++  base::RunLoop read_loop;
++  manager->GetLastSessionCommands(base::BindLambdaForTesting(
++      [&](std::vector<std::unique_ptr<sessions::SessionCommand>> commands,
++          sessions::CommandStorageReadStatus status) {
++        read_error = sessions::IsCommandStorageReadError(status);
++        disk_commands = std::move(commands);
++        read_loop.Quit();
++      }));
++  read_loop.Run();
++  ASSERT_FALSE(read_error);
++  ASSERT_FALSE(disk_commands.empty());
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  SessionID active = SessionID::InvalidValue();
++  std::string platform;
++  std::set<SessionID> discarded;
++  sessions::RestoreSessionFromCommands(disk_commands, &windows, &active,
++                                       &platform, &discarded);
++  EXPECT_TRUE(discarded.empty());
++  ASSERT_EQ(1u, windows.size());
++  ASSERT_EQ(2u, windows[0]->tabs.size());
++  EXPECT_EQ("work", windows[0]->extra_data.at(kCoveWindowSessionKey));
++  std::set<int> indices;
++  std::set<std::string> owners;
++  for (const auto& tab : windows[0]->tabs) {
++    indices.insert(tab->tab_visual_index);
++    auto state = DecodeCoveTabSessionState(tab->extra_data.at(kCoveTabSessionKey));
++    ASSERT_TRUE(state);
++    ASSERT_TRUE(expected_history.contains(state->space));
++    owners.insert(state->space);
++    EXPECT_EQ(expected_history.at(state->space),
++              static_cast<int>(tab->navigations.size()));
++    ASSERT_GE(tab->current_navigation_index, 0);
++    ASSERT_LT(static_cast<size_t>(tab->current_navigation_index),
++              tab->navigations.size());
++    EXPECT_EQ(state->space + "-2",
++              tab->navigations[tab->current_navigation_index].virtual_url().ref());
++  }
++  EXPECT_EQ((std::set<int>{0, 1}), indices);
++  EXPECT_EQ((std::set<std::string>{"personal", "work"}), owners);
++  EXPECT_EQ(work, browser()->GetTabStripModel()->GetActiveWebContents());
++  Switch("personal");
++  EXPECT_EQ(personal, browser()->GetTabStripModel()->GetActiveWebContents());
++}
+diff --git a/chrome/browser/ui/cove/cove_session_metadata.cc b/chrome/browser/ui/cove/cove_session_metadata.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_session_metadata.cc
+@@ -0,0 +1,50 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/cove/cove_session_metadata.h"
++#include <utility>
++#include "base/json/json_reader.h"
++#include "base/json/json_writer.h"
++#include "base/values.h"
++
++bool IsValidCoveSessionId(std::string_view id) {
++  return !id.empty() && id.size() <= 512 && id.find('\0') == std::string_view::npos;
++}
++std::string EncodeCoveTabSessionState(const CoveTabSessionState& state) {
++  base::DictValue dict;
++  dict.Set("version", 1);
++  dict.Set("space", state.space);
++  dict.Set("pin", state.pin);
++  dict.Set("order", state.order);
++  dict.Set("active", state.active);
++  dict.Set("selected", state.selected);
++  dict.Set("anchor", state.anchor);
++  dict.Set("canvas", state.canvas);
++  dict.Set("focused_group", state.focused_group);
++  return base::WriteJson(dict).value_or("");
++}
++std::optional<CoveTabSessionState> DecodeCoveTabSessionState(std::string_view data) {
++  if (data.size() > 8192) return std::nullopt;
++  auto dict = base::JSONReader::ReadDict(data, base::JSON_PARSE_RFC);
++  if (!dict || dict->FindInt("version") != 1) return std::nullopt;
++  const auto* space = dict->FindString("space");
++  const auto* pin = dict->FindString("pin");
++  const auto order = dict->FindInt("order");
++  if (!space || !IsValidCoveSessionId(*space) || !pin ||
++      (!pin->empty() && !IsValidCoveSessionId(*pin)) || !order ||
++      *order < 0 || *order > 1000000) return std::nullopt;
++  CoveTabSessionState state;
++  state.space = *space;
++  state.pin = *pin;
++  state.order = *order;
++  for (auto [name, target] : {std::pair{"active", &state.active},
++                            {"selected", &state.selected},
++                            {"anchor", &state.anchor},
++                            {"canvas", &state.canvas},
++                            {"focused_group", &state.focused_group}}) {
++    auto value = dict->FindBool(name);
++    if (!value) return std::nullopt;
++    *target = *value;
++  }
++  return state;
++}
+diff --git a/chrome/browser/ui/cove/cove_session_metadata.h b/chrome/browser/ui/cove/cove_session_metadata.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_session_metadata.h
+@@ -0,0 +1,26 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_COVE_COVE_SESSION_METADATA_H_
++#define CHROME_BROWSER_UI_COVE_COVE_SESSION_METADATA_H_
++#include <optional>
++#include <string>
++#include <string_view>
++
++inline constexpr char kCoveTabSessionKey[] = "cove.space.v1";
++inline constexpr char kCoveWindowSessionKey[] = "cove.active_space.v1";
++struct CoveTabSessionState {
++  std::string space;
++  std::string pin;
++  int order = 0;
++  bool active = false;
++  bool selected = false;
++  bool anchor = false;
++  bool canvas = false;
++  bool focused_group = false;
++  bool operator==(const CoveTabSessionState&) const = default;
++};
++std::string EncodeCoveTabSessionState(const CoveTabSessionState& state);
++std::optional<CoveTabSessionState> DecodeCoveTabSessionState(std::string_view data);
++bool IsValidCoveSessionId(std::string_view id);
++#endif
+diff --git a/chrome/browser/ui/cove/cove_session_metadata_unittest.cc b/chrome/browser/ui/cove/cove_session_metadata_unittest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_session_metadata_unittest.cc
+@@ -0,0 +1,47 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/cove/cove_session_metadata.h"
++#include "testing/gtest/include/gtest/gtest.h"
++
++TEST(CoveSessionMetadataTest, RoundTripsStableNonUuidIdsAndSelection) {
++  CoveTabSessionState state{"personal", "pin-7", 19, true, true, true, true};
++  state.focused_group = true;
++  EXPECT_EQ(state, DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++}
++TEST(CoveSessionMetadataTest, PreservesUnicodeAndEmptyPin) {
++  CoveTabSessionState state{"work/研究", "", 0, false, true, false, false};
++  EXPECT_EQ(state, DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++}
++TEST(CoveSessionMetadataTest, RejectsInvalidSchemaAndMissingFields) {
++  for (const char* input : {"", "null", "[]", "{}", "{\"version\":2}",
++                            "{\"version\":1,\"space\":\"work\"}"})
++    EXPECT_FALSE(DecodeCoveTabSessionState(input));
++}
++TEST(CoveSessionMetadataTest, RejectsInvalidIdsAndOrder) {
++  CoveTabSessionState state{"work"};
++  state.order = -1;
++  EXPECT_FALSE(DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++  state.order = 1000001;
++  EXPECT_FALSE(DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++  state.order = 0;
++  state.space.clear();
++  EXPECT_FALSE(DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++  state.space = std::string(513, 'x');
++  EXPECT_FALSE(DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++  state.space = std::string("wo\0rk", 5);
++  EXPECT_FALSE(DecodeCoveTabSessionState(EncodeCoveTabSessionState(state)));
++}
++TEST(CoveSessionMetadataTest, RejectsWrongFieldTypesAndOversizeInput) {
++  auto encoded = EncodeCoveTabSessionState(CoveTabSessionState{"work"});
++  auto start = encoded.find("\"canvas\":false");
++  ASSERT_NE(std::string::npos, start);
++  encoded.replace(start, 14, "\"canvas\":\"no\"");
++  EXPECT_FALSE(DecodeCoveTabSessionState(encoded));
++  EXPECT_FALSE(DecodeCoveTabSessionState(std::string(8193, ' ')));
++}
++TEST(CoveSessionMetadataTest, IgnoresUnknownFieldsWithoutRepairingInput) {
++  auto encoded = EncodeCoveTabSessionState(CoveTabSessionState{"work"});
++  encoded.insert(1, "\"future\":{\"data\":17},");
++  EXPECT_EQ("work", DecodeCoveTabSessionState(encoded)->space);
++}
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -12,6 +12,13 @@
+ #include "url/gurl.h"
+ 
+ namespace {
++
++class CoveSessionData : public base::SupportsUserData::Data {
++ public:
++  CoveTabSessionState state;
++  bool restored = false;
++};
++const void* CoveSessionKey() { static int key; return &key; }
+ 
+ class CoveEmptyCanvasMarker : public base::SupportsUserData::Data {};
+ 
+@@ -49,3 +56,37 @@
+   return IsBareAboutBlank(contents) &&
+          contents->GetUserData(CoveEmptyCanvasUserDataKey());
+ }
++
++std::optional<CoveSessionSnapshot> CoveSpaceCloseHandler::GetSessionSnapshot() const {
++  return std::nullopt;
++}
++const CoveTabSessionState* GetCoveTabSessionState(content::WebContents* contents) {
++  auto* data = contents ? static_cast<CoveSessionData*>(
++      contents->GetUserData(CoveSessionKey())) : nullptr;
++  return data ? &data->state : nullptr;
++}
++void SetCoveTabSessionState(content::WebContents* contents, CoveTabSessionState state) {
++  auto data = std::make_unique<CoveSessionData>();
++  data->state = std::move(state);
++  contents->SetUserData(CoveSessionKey(), std::move(data));
++}
++void RestoreCoveTabSessionState(content::WebContents* contents,
++                               const std::map<std::string, std::string>& extra) {
++  auto found = extra.find(kCoveTabSessionKey);
++  if (found == extra.end()) return;
++  auto state = DecodeCoveTabSessionState(found->second);
++  if (!state) return;
++  auto data = std::make_unique<CoveSessionData>();
++  data->state = std::move(*state);
++  data->restored = true;
++  contents->SetUserData(CoveSessionKey(), std::move(data));
++}
++bool HasRestoredCoveTabSessionState(content::WebContents* contents) {
++  auto* data = contents ? static_cast<CoveSessionData*>(
++      contents->GetUserData(CoveSessionKey())) : nullptr;
++  return data && data->restored;
++}
++
++bool CoveSpaceCloseHandler::IsSessionMutationInProgress() const {
++  return false;
++}
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -5,7 +5,16 @@
+ #ifndef CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+ #define CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+ 
++#include <map>
++#include <optional>
+ #include <string>
++
++#include "base/memory/raw_ptr.h"
++#include "chrome/browser/ui/cove/cove_session_metadata.h"
++#include "components/split_tabs/split_tab_id.h"
++#include "components/split_tabs/split_tab_visual_data.h"
++#include "components/tab_groups/tab_group_id.h"
++#include "components/tab_groups/tab_group_visual_data.h"
+ #include <vector>
+ 
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+@@ -20,6 +29,26 @@
+ 
+ void MarkCoveEmptyCanvas(content::WebContents* contents);
+ bool IsCoveEmptyCanvas(content::WebContents* contents);
++
++// Synchronous, copied metadata; tab pointers are borrowed for this call only.
++struct CoveSessionTab {
++  raw_ptr<tabs::TabInterface> tab;
++  bool pinned = false;
++};
++struct CoveSessionSnapshot {
++  std::vector<CoveSessionTab> tabs;
++  std::map<tab_groups::TabGroupId, tab_groups::TabGroupVisualData> groups;
++  std::map<split_tabs::SplitTabId, split_tabs::SplitTabVisualData> splits;
++  std::map<tab_groups::TabGroupId, std::string> saved_groups;
++  std::string active_space;
++  int selected_index = 0;
++};
++const CoveTabSessionState* GetCoveTabSessionState(content::WebContents* contents);
++void SetCoveTabSessionState(content::WebContents* contents,
++                           CoveTabSessionState state);
++void RestoreCoveTabSessionState(content::WebContents* contents,
++                               const std::map<std::string, std::string>& data);
++bool HasRestoredCoveTabSessionState(content::WebContents* contents);
+ 
+ struct CoveSpaceInfo {
+   std::string id;
+@@ -39,6 +68,12 @@
+   virtual void PrepareForClose() = 0;
+   virtual void CancelClose() = 0;
+   virtual void OnEmptyCanvasMarked() {}
++  virtual std::optional<CoveSessionSnapshot> GetSessionSnapshot() const;
++  virtual bool IsSessionMutationInProgress() const;
++  virtual void BeginSessionRestore(const std::string& active_space) {}
++  virtual void FinishSessionRestore() {}
++  virtual void RememberSavedGroup(const tab_groups::TabGroupId& id,
++                                  const std::string& guid) {}
+   // Native commands use this window-scoped bridge without depending on Views.
+   virtual bool CanExecuteArcCommand(int command_id) const;
+   virtual void ExecuteArcCommand(int command_id) {}
+diff --git a/chrome/browser/ui/sessions/BUILD.gn b/chrome/browser/ui/sessions/BUILD.gn
+--- a/chrome/browser/ui/sessions/BUILD.gn
++++ b/chrome/browser/ui/sessions/BUILD.gn
+@@ -22,6 +22,7 @@
+ 
+   deps = [
+     "//chrome/browser/profiles:profile",
++    "//chrome/browser/ui:cove_space_close_handler",
+     "//chrome/browser/sessions",
+     "//chrome/browser/ui/browser_window:create_browser_window",
+     "//chrome/browser/ui/tabs:tab_strip",
+diff --git a/chrome/browser/ui/sessions/session_service_browser_helper.cc b/chrome/browser/ui/sessions/session_service_browser_helper.cc
+--- a/chrome/browser/ui/sessions/session_service_browser_helper.cc
++++ b/chrome/browser/ui/sessions/session_service_browser_helper.cc
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/sessions/session_service_browser_helper.h"
++
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ 
+ #include "base/check_deref.h"
+ #include "base/time/time.h"
+@@ -62,6 +64,7 @@
+     const BrowserWindowCreateParams* create_params,
+     ui::UnownedUserDataHost& host)
+     : scoped_unowned_user_data_(host, *this),
++      host_(host),
+       tab_strip_model_(CHECK_DEREF(tab_strip_model)),
+       session_id_(session_id),
+       browser_type_(browser_type),
+@@ -88,6 +91,8 @@
+     TabStripModel* tab_strip_model,
+     const TabStripModelChange& change,
+     const TabStripSelectionChange& selection) {
++  auto* cove = CoveSpaceCloseHandler::Get(*host_);
++  const bool cove_mutating = cove && cove->IsSessionMutationInProgress();
+   switch (change.type()) {
+     case TabStripModelChange::kInserted: {
+       for (const auto& contents : change.GetInsert()->contents) {
+@@ -100,7 +105,7 @@
+         if (service) {
+           service->TabInserted(contents.contents);
+           int new_active_index = tab_strip_model->active_index();
+-          if (contents.index < new_active_index) {
++          if (!cove_mutating && contents.index < new_active_index) {
+             service->SetSelectedTabInWindow(session_id_, new_active_index);
+           }
+         }
+@@ -117,7 +122,7 @@
+ 
+         if (!tab_strip_model->closing_all()) {
+           SessionServiceBase* service_existing = GetSessionServiceIfExisting();
+-          if (service_existing) {
++          if (service_existing && !cove_mutating) {
+             service_existing->SetSelectedTabInWindow(
+                 session_id_, tab_strip_model->active_index());
+           }
+@@ -145,7 +150,7 @@
+       if (session_service) {
+         session_service->TabInserted(replace->new_contents);
+         int new_active_index = tab_strip_model->active_index();
+-        if (replace->index < new_active_index) {
++        if (!cove_mutating && replace->index < new_active_index) {
+           session_service->SetSelectedTabInWindow(session_id_,
+                                                   new_active_index);
+         }
+@@ -170,7 +175,7 @@
+   // creation of sessions. If sessions doesn't exist, the change will be picked
+   // up by sessions when created.
+   SessionServiceBase* service = GetSessionServiceIfExisting();
+-  if (service && !tab_strip_model->closing_all()) {
++  if (service && !cove_mutating && !tab_strip_model->closing_all()) {
+     service->SetSelectedTabInWindow(session_id_,
+                                     tab_strip_model->active_index());
+     service->SetLastActiveTime(
+@@ -278,6 +283,23 @@
+ }
+ 
+ void SessionServiceBrowserHelper::SyncHistoryWithTabs(int index) {
++  if (auto* cove = CoveSpaceCloseHandler::Get(*host_)) {
++    if (cove->IsSessionMutationInProgress()) return;
++    if (auto snapshot = cove->GetSessionSnapshot()) {
++      auto* service = SessionServiceFactory::GetForProfile(&*profile_);
++      if (!service) return;
++      int journal_index = 0;
++      for (const auto& entry : snapshot->tabs) {
++        auto* contents = entry.tab->GetContents();
++        const auto id = sessions::SessionTabHelper::IdForTab(contents);
++        service->SetTabIndexInWindow(session_id_, id, journal_index++);
++        service->SetPinnedState(session_id_, id, entry.pinned);
++        service->SetTabGroup(session_id_, id, entry.tab->GetGroup());
++        service->SetSplitTab(session_id_, id, entry.tab->GetSplit());
++      }
++      return;
++    }
++  }
+   SessionServiceBase* service = GetSessionService();
+ 
+   SessionService* session_service =
+diff --git a/chrome/browser/ui/sessions/session_service_browser_helper.h b/chrome/browser/ui/sessions/session_service_browser_helper.h
+--- a/chrome/browser/ui/sessions/session_service_browser_helper.h
++++ b/chrome/browser/ui/sessions/session_service_browser_helper.h
+@@ -103,6 +103,7 @@
+       std::nullopt;
+ #endif
+ 
++  const raw_ref<ui::UnownedUserDataHost> host_;
+   const raw_ref<TabStripModel> tab_strip_model_;
+   const SessionID session_id_;
+   const BrowserWindowInterface::Type browser_type_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -3,11 +3,15 @@
+ // found in the LICENSE file.
+ 
+ #include "base/logging.h"
++#include "base/feature_list.h"
++#include "chrome/browser/ui/ui_features.h"
++#include "chrome/browser/ui/tabs/tab_group_model.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
+ #include <algorithm>
+ #include <optional>
++#include <set>
+ #include <utility>
+ #include <variant>
+ 
+@@ -22,6 +26,13 @@
+ #include "base/uuid.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
++#include "components/saved_tab_groups/public/tab_group_sync_service.h"
++#include "components/saved_tab_groups/public/saved_tab_group.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/sessions/session_service_factory.h"
++#include "components/sessions/content/session_tab_helper.h"
++#include "components/tabs/public/split_tab_data.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/navigator/browser_navigator.h"
+@@ -227,6 +238,7 @@
+       items;
+   std::vector<tabs::TabHandle> handles;
+   ui::ListSelectionModel selection;
++  std::optional<tab_groups::TabGroupId> focused_group;
+ };
+ 
+ CoveSidebarLibraryView::CoveSidebarLibraryView(BrowserWindowInterface* browser)
+@@ -294,11 +306,21 @@
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
+   }
++  if (change.type() == TabStripModelChange::kInserted ||
++      change.type() == TabStripModelChange::kReplaced) {
++    for (auto* tab : *browser_->GetTabStripModel()) {
++      if (HasRestoredCoveTabSessionState(tab->GetContents())) {
++        restoring_session_ = true;
++        break;
++      }
++    }
++  }
++  QueueSessionSync();
+   UpdatePinRowAppearance();
+-  if (!switching_space_ && !closing_active_space_) {
++  if (!restoring_session_ && !switching_space_ && !closing_active_space_) {
+     UpdateArchiveButtonState();
+   }
+-  if (switching_space_ || closing_active_space_) {
++  if (restoring_session_ || switching_space_ || closing_active_space_) {
+     return;
+   }
+   if (change.type() != TabStripModelChange::kInserted) {
+@@ -336,6 +358,7 @@
+ 
+ void CoveSidebarLibraryView::OnEmptyCanvasMarked() {
+   InvalidateEmptyCanvasCleanup();
++  QueueSessionSync();
+   if (pinned_coverage_changed_) {
+     pinned_coverage_changed_.Run();
+   }
+@@ -351,6 +374,14 @@
+     return;
+   }
+   const int handle = tab->GetHandle().raw_value();
++  if (HasRestoredCoveTabSessionState(tab->GetContents())) {
++    const auto* state = GetCoveTabSessionState(tab->GetContents());
++    if (state && !state->pin.empty())
++      tab_pin_ids_[handle] = {state->space, state->pin};
++    return;
++  }
++  if (restoring_session_) return;
++  QueueSessionSync();
+   if (!tab->IsPinned()) {
+     // This notification runs inside the tab-strip pin mutation. Only update
+     // the persisted record here, never re-enter model selection/pin methods.
+@@ -447,6 +478,7 @@
+ }
+ 
+ void CoveSidebarLibraryView::Rebuild() {
++  QueueSessionSync();
+   row_pin_ids_.clear();
+   row_folder_ids_.clear();
+   RemoveAllChildViews();
+@@ -729,7 +761,7 @@
+ }
+ 
+ void CoveSidebarLibraryView::ScheduleEmptyCanvasCleanup() {
+-  if (switching_space_ || closing_active_space_) {
++  if (restoring_session_ || switching_space_ || closing_active_space_) {
+     return;
+   }
+   QueueEmptyCanvasCleanup();
+@@ -756,7 +788,7 @@
+     return;
+   }
+   empty_canvas_cleanup_posted_ = false;
+-  if (switching_space_ || closing_active_space_) {
++  if (restoring_session_ || switching_space_ || closing_active_space_) {
+     return;
+   }
+ 
+@@ -928,9 +960,11 @@
+ 
+ std::unique_ptr<CoveSidebarLibraryView::SpaceTabs>
+ CoveSidebarLibraryView::CaptureCurrentTabs() const {
++  StampCurrentSessionTabs();
+   auto space = std::make_unique<SpaceTabs>();
+   TabStripModel* model = browser_->GetTabStripModel();
+   space->selection = model->selection_model().GetListSelectionModel();
++  space->focused_group = model->GetFocusedGroup();
+   for (int i = 0; i < model->count(); ++i) {
+     space->handles.push_back(model->GetTabAtIndex(i)->GetHandle());
+   }
+@@ -1000,6 +1034,10 @@
+   }
+   restored.set_active(index_for(space.selection.active()));
+   restored.set_anchor(index_for(space.selection.anchor()));
++  if (space.focused_group && model->group_model() &&
++      model->group_model()->ContainsTabGroup(*space.focused_group) &&
++      base::FeatureList::IsEnabled(features::kTabGroupsFocusing))
++    model->EnterFocusMode(*space.focused_group);
+   if (restored.active()) {
+     model->SetSelectionFromModel(restored);
+   } else if (!model->empty()) {
+@@ -1201,7 +1239,7 @@
+ }
+ 
+ void CoveSidebarLibraryView::SwitchSpace(std::string space_id) {
+-  if (switching_space_ || closing_active_space_ ||
++  if (restoring_session_ || switching_space_ || closing_active_space_ ||
+       active_space_id_ == space_id) {
+     return;
+   }
+@@ -1211,9 +1249,10 @@
+     return;
+   }
+   // Copy fallback data before updating preferences, which may invalidate it.
+-  base::ListValue fallback = target->FindList("tabs")
++  base::ListValue fallback = !restored_session_ownership_ && target->FindList("tabs")
+                                  ? target->FindList("tabs")->Clone()
+                                  : base::ListValue();
++  StampCurrentSessionTabs();
+   base::AutoReset<bool> switching(&switching_space_, true);
+   SaveActiveSnapshot();
+   int current_index = -1, target_index = -1;
+@@ -1318,6 +1357,7 @@
+   }
+   Rebuild();
+   QueueEmptyCanvasCleanup();
++  QueueSessionSync();
+ }
+ 
+ bool CoveSidebarLibraryView::HasPendingTabs() const {
+@@ -1334,6 +1374,7 @@
+     return;
+   }
+   InvalidateEmptyCanvasCleanup();
++  StampCurrentSessionTabs();
+   base::AutoReset<bool> switching(&switching_space_, true);
+   SaveActiveSnapshot();
+   closing_active_space_ = CaptureCurrentTabs();
+@@ -1743,6 +1784,270 @@
+                           views::MenuAnchorPosition::kTopLeft, source_type);
+ }
+ 
++void CoveSidebarLibraryView::StampCurrentSessionTabs() const {
++  if (restoring_session_ || switching_space_ || closing_active_space_) return;
++  auto* model = browser_->GetTabStripModel();
++  if (auto* sync = tab_groups::TabGroupSyncServiceFactory::GetForProfile(browser_->GetProfile())) {
++    for (auto* tab : *model) {
++      if (auto id = tab->GetGroup()) {
++        if (auto group = sync->GetGroup(*id))
++          saved_group_ids_[*id] = group->saved_guid().AsLowercaseString();
++      }
++    }
++  }
++  const auto& selection = model->selection_model().GetListSelectionModel();
++  for (int i = 0; i < model->count(); ++i) {
++    auto* tab = model->GetTabAtIndex(i);
++    if (HasRestoredCoveTabSessionState(tab->GetContents())) continue;
++    CoveTabSessionState state;
++    state.space = active_space_id_;
++    state.order = i;
++    state.active = selection.active() == static_cast<size_t>(i);
++    state.anchor = selection.anchor() == static_cast<size_t>(i);
++    state.selected = selection.IsSelected(i);
++    state.canvas = IsCoveEmptyCanvas(tab->GetContents());
++    state.focused_group = tab->GetGroup().has_value() && tab->GetGroup() == model->GetFocusedGroup();
++    const auto pin = tab_pin_ids_.find(tab->GetHandle().raw_value());
++    if (tab->IsPinned() && pin != tab_pin_ids_.end() &&
++        pin->second.first == active_space_id_) state.pin = pin->second.second;
++    SetCoveTabSessionState(tab->GetContents(), std::move(state));
++  }
++}
++
++std::optional<CoveSessionSnapshot> CoveSidebarLibraryView::GetSessionSnapshot() const {
++  if (browser_->GetProfile()->IsOffTheRecord()) return std::nullopt;
++  StampCurrentSessionTabs();
++  CoveSessionSnapshot snapshot;
++  snapshot.active_space = active_space_id_;
++  snapshot.selected_index = browser_->GetTabStripModel()->active_index();
++  std::set<int> seen;
++  const auto add = [&](tabs::TabInterface* tab, bool pinned) {
++    if (!tab || !seen.insert(tab->GetHandle().raw_value()).second) return;
++    snapshot.tabs.push_back({tab, pinned});
++    for (auto* parent = tab->GetParentCollection(); parent;
++         parent = parent->GetParentCollection()) {
++      if (parent->type() == tabs::TabCollection::Type::GROUP) {
++        const auto* group = static_cast<const tabs::TabGroupTabCollection*>(parent);
++        snapshot.groups.emplace(group->GetTabGroupId(),
++                                 *group->GetTabGroup()->visual_data());
++      } else if (parent->type() == tabs::TabCollection::Type::SPLIT) {
++        const auto* split = static_cast<const tabs::SplitTabCollection*>(parent);
++        snapshot.splits.emplace(split->GetSplitTabId(),
++                                 *split->data()->visual_data());
++      }
++    }
++  };
++  for (auto* tab : *browser_->GetTabStripModel()) add(tab, tab->IsPinned());
++  for (const auto& [id, space] : inactive_spaces_) {
++    for (const auto& item : space->items) {
++      if (const auto* tab = std::get_if<std::unique_ptr<DetachedTab>>(&item)) {
++        if (*tab) add((*tab)->tab.get(), (*tab)->was_pinned_at_time_of_removal);
++      } else {
++        const auto& owned = std::get<std::unique_ptr<DetachedTabCollection>>(item);
++        if (!owned) continue;
++        const auto& collection = *owned;
++        std::visit([&](const auto& root) {
++          for (auto* tab : *root) add(tab, collection.pinned_);
++        }, collection.collection_);
++      }
++    }
++  }
++  snapshot.saved_groups = saved_group_ids_;
++  return snapshot;
++}
++
++bool CoveSidebarLibraryView::IsSessionMutationInProgress() const {
++  return switching_space_ || restoring_session_;
++}
++
++void CoveSidebarLibraryView::QueueSessionSync() {
++  if (session_sync_posted_) return;
++  session_sync_posted_ = true;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
++      base::BindOnce(&CoveSidebarLibraryView::SyncSession, weak_factory_.GetWeakPtr()));
++}
++
++void CoveSidebarLibraryView::SyncSession() {
++  session_sync_posted_ = false;
++  if (IsSessionMutationInProgress() || closing_active_space_ ||
++      browser_->GetProfile()->IsOffTheRecord()) return;
++  auto* service = SessionServiceFactory::GetForProfile(browser_->GetProfile());
++  if (!service) return;
++  auto snapshot = GetSessionSnapshot();
++  if (!snapshot) return;
++  const auto window = browser_->GetSessionID();
++  for (size_t i = 0; i < snapshot->tabs.size(); ++i) {
++    const auto& entry = snapshot->tabs[i];
++    auto* contents = entry.tab->GetContents();
++    const auto id = sessions::SessionTabHelper::IdForTab(contents);
++    service->SetTabIndexInWindow(window, id, static_cast<int>(i));
++    service->SetPinnedState(window, id, entry.pinned);
++    service->SetTabGroup(window, id, entry.tab->GetGroup());
++    service->SetSplitTab(window, id, entry.tab->GetSplit());
++    if (const auto* state = GetCoveTabSessionState(contents))
++      service->AddTabExtraData(window, id, kCoveTabSessionKey,
++                               EncodeCoveTabSessionState(*state));
++  }
++  for (const auto& [id, visual] : snapshot->groups) {
++    auto guid = snapshot->saved_groups.find(id);
++    if (guid != snapshot->saved_groups.end())
++      service->SetTabGroupMetadata(window, id, &visual, guid->second);
++    else service->SetTabGroupMetadata(window, id, &visual);
++  }
++  for (const auto& [id, visual] : snapshot->splits)
++    service->SetSplitTabData(window, id, &visual);
++  service->AddWindowExtraData(window, kCoveWindowSessionKey, active_space_id_);
++  service->SetSelectedTabInWindow(window, snapshot->selected_index);
++}
++
++void CoveSidebarLibraryView::RememberSavedGroup(
++    const tab_groups::TabGroupId& id, const std::string& guid) {
++  if (!guid.empty()) saved_group_ids_[id] = guid;
++}
++
++void CoveSidebarLibraryView::BeginSessionRestore(const std::string& active_space) {
++  if (browser_->GetProfile()->IsOffTheRecord()) return;
++  StampCurrentSessionTabs();
++  restoring_session_ = true;
++  restore_window_space_ = true;
++  if (FindSpace(browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref), active_space)) {
++    active_space_id_ = active_space;
++    restored_session_ownership_ = true;
++  }
++  InvalidateEmptyCanvasCleanup();
++}
++
++void CoveSidebarLibraryView::FinishSessionRestore() {
++  if (!restoring_session_ || restore_posted_) return;
++  restore_posted_ = true;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
++      base::BindOnce(&CoveSidebarLibraryView::PartitionRestoredTabs,
++                     weak_factory_.GetWeakPtr()));
++}
++
++void CoveSidebarLibraryView::PartitionRestoredTabs() {
++  restore_posted_ = false;
++  if (!restoring_session_ || closing_active_space_) return;
++  const auto& prefs = browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  auto* model = browser_->GetTabStripModel();
++  // Reopening an entry into a live window honors Chromium's new foreground
++  // selection, rather than whether that tab happened to be active when closed.
++  // Full-window restoration still uses each Space's historical selection.
++  std::optional<tabs::TabHandle> foreground_restored;
++  const auto foreground_selection =
++      model->selection_model().GetListSelectionModel();
++  if (!restore_window_space_ && model->GetActiveTab()) {
++    foreground_restored = model->GetActiveTab()->GetHandle();
++    if (const auto* state =
++            GetCoveTabSessionState(model->GetActiveWebContents());
++        state && HasRestoredCoveTabSessionState(model->GetActiveWebContents()) &&
++        FindSpace(prefs, state->space)) {
++      active_space_id_ = state->space;
++    }
++  }
++  // Resolve each intact native collection to one owner. Corrupt mixed ownership
++  // falls back together rather than splitting a group or dropping a page.
++  std::map<tab_groups::TabGroupId, std::string> groups;
++  std::map<split_tabs::SplitTabId, std::string> splits;
++  std::map<int, CoveTabSessionState> states;
++  for (auto* tab : *model) {
++    CoveTabSessionState state;
++    if (const auto* saved = GetCoveTabSessionState(tab->GetContents())) {
++      state = *saved;
++    } else {
++      const int index = model->GetIndexOfTab(tab);
++      state.order = index;
++      state.active = tab == model->GetActiveTab();
++      state.selected = model->selection_model().GetListSelectionModel().IsSelected(index);
++      state.anchor = model->selection_model().GetListSelectionModel().anchor() == static_cast<size_t>(index);
++    }
++    if (HasRestoredCoveTabSessionState(tab->GetContents())) restored_session_ownership_ = true;
++    if (!FindSpace(prefs, state.space)) state.space = active_space_id_;
++    const auto merge = [&](auto& owners, auto id) {
++      auto [found, inserted] = owners.emplace(id, state.space);
++      if (!inserted && found->second != state.space) found->second = active_space_id_;
++    };
++    if (tab->GetGroup()) merge(groups, *tab->GetGroup());
++    else if (tab->GetSplit()) merge(splits, *tab->GetSplit());
++    states.emplace(tab->GetHandle().raw_value(), std::move(state));
++  }
++  std::map<std::string, std::unique_ptr<SpaceTabs>> restored;
++  for (auto* tab : *model) {
++    auto& state = states.at(tab->GetHandle().raw_value());
++    if (tab->GetGroup()) state.space = groups.at(*tab->GetGroup());
++    else if (tab->GetSplit()) state.space = splits.at(*tab->GetSplit());
++    if (foreground_restored && state.space == active_space_id_) {
++      const int index = model->GetIndexOfTab(tab);
++      state.active = tab == foreground_restored->Get();
++      state.selected = foreground_selection.IsSelected(index);
++      state.anchor =
++          foreground_selection.anchor() == static_cast<size_t>(index);
++    }
++    auto& space = restored[state.space];
++    if (!space) space = std::make_unique<SpaceTabs>();
++    const size_t index = space->handles.size();
++    space->handles.push_back(tab->GetHandle());
++    if (state.selected) space->selection.AddIndexToSelection(index);
++    if (state.active) {
++      space->selection.set_active(index);
++      space->selection.AddIndexToSelection(index);
++    }
++    if (state.anchor) space->selection.set_anchor(index);
++    if (state.focused_group && tab->GetGroup()) space->focused_group = tab->GetGroup();
++    if (state.canvas) MarkCoveEmptyCanvas(tab->GetContents());
++    if (!state.pin.empty() && tab->IsPinned())
++      tab_pin_ids_[tab->GetHandle().raw_value()] = {state.space, state.pin};
++    SetCoveTabSessionState(tab->GetContents(), state);
++  }
++  base::AutoReset<bool> switching(&switching_space_, true);
++  // Keep a real attached tab throughout detachment. This is never historical
++  // user data and is cleaned up only after the selected Space is attached.
++  NavigateParams params(browser_, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED);
++  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++  Navigate(&params);
++  auto* canvas = params.navigated_or_inserted_contents.get();
++  if (!canvas) { restoring_session_ = false; QueueSessionSync(); return; }
++  MarkCoveEmptyCanvas(canvas);
++  for (auto& [id, space] : restored) {
++    DetachSpaceTabs(*space);
++    // Sort whole detached units by saved per-Space order. Their native group
++    // and split membership remains intact.
++    const auto order = [](const auto& item) {
++      int result = 1000001;
++      const auto inspect = [&](tabs::TabInterface* tab) {
++        if (const auto* state = GetCoveTabSessionState(tab->GetContents()))
++          result = std::min(result, state->order);
++      };
++      if (const auto* tab = std::get_if<std::unique_ptr<DetachedTab>>(&item)) inspect((*tab)->tab.get());
++      else std::visit([&](const auto& root) { for (auto* tab : *root) inspect(tab); },
++                     std::get<std::unique_ptr<DetachedTabCollection>>(item)->collection_);
++      return result;
++    };
++    std::stable_sort(space->items.begin(), space->items.end(),
++        [&](const auto& a, const auto& b) { return order(a) < order(b); });
++  }
++  // Existing parked ownership is retained when reopening an entry into a live window.
++  for (auto& [id, space] : restored) {
++    auto existing = inactive_spaces_.find(id);
++    if (existing != inactive_spaces_.end()) {
++      for (auto& item : existing->second->items) space->items.push_back(std::move(item));
++      for (const auto& handle : existing->second->handles) space->handles.push_back(handle);
++    }
++    inactive_spaces_[id] = std::move(space);
++  }
++  if (auto active = inactive_spaces_.find(active_space_id_); active != inactive_spaces_.end()) {
++    auto space = std::move(active->second);
++    inactive_spaces_.erase(active);
++    InsertSpaceTabs(*space);
++    RestoreSelection(*space);
++  }
++  restoring_session_ = false;
++  restore_window_space_ = false;
++  Rebuild();
++  QueueEmptyCanvasCleanup();
++  QueueSessionSync();
++}
++
+ BEGIN_METADATA(CoveSidebarLibraryView)
+ END_METADATA
+ 
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -66,6 +66,12 @@
+   void PrepareForClose() override;
+   void CancelClose() override;
+   void OnEmptyCanvasMarked() override;
++  std::optional<CoveSessionSnapshot> GetSessionSnapshot() const override;
++  bool IsSessionMutationInProgress() const override;
++  void BeginSessionRestore(const std::string& active_space) override;
++  void FinishSessionRestore() override;
++  void RememberSavedGroup(const tab_groups::TabGroupId& id,
++                          const std::string& guid) override;
+ 
+   // views::View:
+   void AddedToWidget() override;
+@@ -92,6 +98,10 @@
+   void ExecuteCommand(int command_id, int event_flags) override;
+ 
+  private:
++  void StampCurrentSessionTabs() const;
++  void QueueSessionSync();
++  void SyncSession();
++  void PartitionRestoredTabs();
+   std::string ActivePinId() const;
+   void ResetPinHomes(bool entire_space);
+   struct SpaceTabs;
+@@ -144,12 +154,18 @@
+   std::map<std::string, std::unique_ptr<SpaceTabs>> inactive_spaces_;
+   std::unique_ptr<SpaceTabs> closing_active_space_;
+   bool switching_space_ = false;
++  bool restoring_session_ = false;
++  bool restored_session_ownership_ = false;
++  bool restore_window_space_ = false;
++  bool restore_posted_ = false;
++  bool session_sync_posted_ = false;
+   bool syncing_pins_ = false;
+   bool empty_canvas_cleanup_posted_ = false;
+   int empty_canvas_cleanup_generation_ = 0;
+   base::RepeatingClosure pinned_coverage_changed_;
+   base::RepeatingCallback<void(int)> begin_space_transition_;
+   base::RepeatingClosure finish_space_transition_;
++  mutable std::map<tab_groups::TabGroupId, std::string> saved_group_ids_;
+   std::map<int, std::pair<std::string, std::string>> tab_pin_ids_;
+   std::map<views::View*, std::string> row_pin_ids_;
+   views::ViewTracker space_footer_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+@@ -10,6 +10,7 @@
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/split_tab_metrics.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/unload_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+@@ -35,8 +36,8 @@
+                  button->GetViewAccessibility().GetCachedName() == text)) {
+     return button;
+   }
+-  for (auto* child : view->children()) {
+-    if (auto* button = FindButton(child, text)) {
++  for (const auto& child : view->children()) {
++    if (auto* button = FindButton(child.get(), text)) {
+       return button;
+     }
+   }
+@@ -76,7 +77,7 @@
+   )"));
+   const int history_count = contents->GetController().GetEntryCount();
+   model->SetTabPinned(0, true);
+-  auto* restore = TabRestoreServiceFactory::GetForProfile(browser()->profile());
++  auto* restore = TabRestoreServiceFactory::GetForProfile(browser()->GetProfile());
+   ASSERT_TRUE(restore);
+   const size_t archived_count = restore->entries().size();
+ 
+@@ -182,7 +183,7 @@
+       browser(), GURL("data:text/html,<title>Personal page</title>")));
+   auto* personal = browser()->GetTabStripModel()->GetActiveWebContents();
+   Switch(browser(), u"Work");
+-  auto* second = CreateBrowser(browser()->profile());
++  auto* second = CreateBrowser(browser()->GetProfile());
+   Switch(second, u"Personal");
+   // The profile-wide last-used default is now Personal, but the first window
+   // still needs to switch its own Work tab strip back to its own live Personal.
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1611,6 +1611,71 @@
+ }
+ 
+ if (!is_android) {
++  if (is_mac) {
++  test("cove_session_browsertests") {
++    sources = [
++      "//chrome/app/chrome_crash_reporter_client.cc",
++      "//chrome/app/chrome_crash_reporter_client_mac.mm",
++      "base/browser_tests_main.cc",
++      "base/chrome_test_launcher.cc",
++      "base/chrome_test_launcher.h",
++      "../browser/ui/cove/cove_session_browsertest.cc",
++      "../browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc",
++    ]
++    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
++    deps = [
++      "//base",
++      "//base/test:test_support",
++      "//chrome:packed_resources",
++      "//chrome:resources",
++      "//chrome:strings",
++      "//chrome/browser",
++      "//chrome/browser/profiles:profile",
++      "//chrome/browser/profiles/keep_alive",
++      "//chrome/browser/prefs",
++      "//chrome/browser/prefs:util",
++      "//chrome/app:test_support",
++      "//chrome/app:chrome_crash_reporter_client",
++      "//chrome/browser/first_run:test_support",
++      "//chrome/browser/ui/views/frame:browser_view_header",
++      "//components/crash/core/app:app",
++      "//components/prefs",
++      "//chrome/browser/ui:browser_commands",
++      "//components/keep_alive_registry",
++      "//ui/views:test_support",
++      "//chrome/browser/sessions",
++      "//chrome/browser/sessions:test_support",
++      "//chrome/browser/ui:browser_live_tab_context",
++      "//chrome/browser/ui:browser_tabrestore",
++      "//chrome/browser/ui",
++      "//chrome/browser/ui:cove_space_close_handler",
++      "//chrome/browser/ui/browser_window",
++      "//chrome/browser/ui/tabs:tab_strip",
++      "//chrome/test/base:chrome_test_suite",
++      "//chrome/app_shim",
++      "//chrome/browser:chrome_browser_main",
++      "//chrome/browser:chrome_content_browser_client",
++      "//chrome/browser:chrome_browser_application_mac",
++      "//chrome/browser:main_extra_parts",
++      "//chrome/renderer",
++      "//chrome/utility",
++      "//services/test/echo:lib",
++      "//testing/libfuzzer:fuzztest_init_support",
++      "//chrome/test/base:in_process_browser_test",
++      "//chrome/test/base:ui_test_utils",
++      "//components/sessions",
++      "//components/split_tabs",
++      "//components/tabs:public",
++      "//content/public/browser",
++      "//content/public/common",
++      "//content/test:test_support",
++      "//testing/gtest",
++      "//ui/base",
++      "//ui/compositor",
++    ]
++    data_deps = [ "//chrome:packed_resources" ]
++  }
++  }
+   test("browser_tests") {
+     use_xvfb = use_xvfb_in_this_config
+ 
