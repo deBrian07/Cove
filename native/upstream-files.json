@@ -58,6 +58,8 @@
   "chrome/browser/ui/views/frame/browser_frame_view_mac.mm": "7c8c99cb64c7d676ab65979253a249940a11b61ea455eb952103613578aed77d",
   "chrome/browser/ui/views/frame/browser_view.cc": "1f50fd9bd07c94240a180e004fdec4469356f256fc936936363541f740942e0a",
   "chrome/browser/ui/views/frame/browser_view.h": "0672990c45e87d45d3b0918a1fa46d14b1de078203f93c9d8ba0bd42036af766",
+  "chrome/browser/ui/views/frame/custom_corners.cc": "fe24a6e206c08b4b37886999515eebf120e2636b92c9b56f93255ce900e94e84",
+  "chrome/browser/ui/views/frame/custom_corners.h": "bf295ac6bd212332379874d39b2f24ad72f5afd59d6a4404d37732438e28aabc",
   "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc": "8c03acb9e4290cbd81be06c76319b831c765d6e4876d3c8b478e4b1d1eaf6287",
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc": "6b3cd1a1933601f9f677dc1dc58a0fc39eefa0e30c273001ec08fb6562b07378",
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h": "053e5ca31d3b78ab07d44469ceeeb4ddac2c2f9c03caf7793840c52342851289",
@@ -66,6 +68,8 @@
   "chrome/browser/ui/views/tab_search_bubble_host.h": "836b3ff500e9a31511f8685afd391967b84a8baaee94a3904f3258ffe719948d",
   "chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc": "dce5ddef1269d5a62063cb8e2d35cbb2311531f89e9aa240846d0122b8a23c52",
   "chrome/browser/ui/views/tabs/common/BUILD.gn": "1ae31ed12ef49bc5f3cd30c8c9ece35549c4f310ff89dfae467aeb93c22bf674",
+  "chrome/browser/ui/views/tabs/common/dragged_tabs_container.cc": "b054f6b1923c9a11a0b5035bcbff221214eae9c6c41f1d355f7e9caf06016d96",
+  "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h": "a90c0af161084a3d437e4267f1b8d2f5b284652da1e6bb2c45f5c15a9bb47c8c",
   "chrome/browser/ui/views/tabs/common/tab_strip_view.cc": "c517b80c8d476f912efc7b464af02e9f3895d1259df9fd5283073f29684a05b0",
   "chrome/browser/ui/views/tabs/common/tab_strip_view.h": "00da4fe11c6b1dc69cfd892df347bebfb38316ac1652947fa0edc2e10cf2bc96",
   "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc": "6843d99c6479957395f123a17cb14f51ddfec8acc108e9770f9e21edfc4388e2",
@@ -87,5 +91,6 @@
   "chrome/test/data/webui/tab_search/tab_search_page_test.ts": "c2260f7697a45f1fbe1537de5f6ff9d37e824d426d6cbc4fe906875e8f25b2ba",
   "chrome/test/data/webui/tab_search/test_tab_search_api_proxy.ts": "ad724dc88b96126f5fd13ae03fa2dd1d67343474a1b50a84fbad30b6a56d2e63",
   "ui/views/BUILD.gn": "fb0c603ac10a7c42492453ad4953351add8925bd5b135849bee689475f302397",
+  "ui/views/controls/scroll_view.cc": "3a2b71a6a950420c2aa43411cd6d72968491ab07897113e6e5b1ea765b2e6efa",
   "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433"
 }
