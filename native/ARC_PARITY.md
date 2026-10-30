@@ -2,9 +2,9 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 83-patch app builds and passes renderer smoke, 67 focused native tests and 36 tooling tests. Seventeen distinct browser cases passed after fixes: 16 in the full rerun and one corrected fixture in a focused rerun. Patches 0082–0083 add Space ownership, complete parked-page journals and pending blank-canvas persistence. Disk readback, exact clean-close history, pin homes, collection retention and unload reparking passed. Full separate-process restart/crash and migration acceptance remain.
+The current 87-patch app builds and passes renderer smoke, 67 focused native tests, 36 tooling tests and one clean 23-case browser run. Patches 0084–0086 synchronize native controls with collapse, match the command-bar reference and prevent focused sidebar fields/leftover hover timers from reopening an explicit collapse. Patch 0087 adds native settings using real profile/preferences services and existing settings pages.
 
-The running QA window was captured with the sidebar expanded and collapsed; the old hidden-sidebar caption strip is gone. CUA's repeated app-changed/get_app_state guard now refuses further input despite refresh/rebinding. Native menus, repeated shortcuts, caption hit testing, fullscreen and physical swipes still need actual UI acceptance. The three appearance browser regressions remain source-only. See [VALIDATION.md](VALIDATION.md) for precise evidence and [HANDOFF.md](HANDOFF.md) for continuation.
+Palette and six-section settings compositor renders were inspected. Native tests inspect actual NSWindow visibility and real command paths. Physical hover/re-entry, keyboard feel, caption hit testing, menus and fullscreen still need a manual pass; no CUA input tools were available. PRE_/process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md).
 
 ## Spaces and organization
 
@@ -71,6 +71,12 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 | Little Arc | Missing | Lightweight external-link window, routing, promotion and global shortcut |
 | Picture-in-picture and media | Chromium capability exists | Arc mini audio/video surfaces and cross-tab controls need implementation |
 
+## Native settings
+
+Cmd+, opens Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Repeated opening and closing, preference persistence, real command routing and view cleanup pass browser tests.
+
+The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. Peek/Little Arc settings are not represented by dummy switches.
+
 ## Remaining product functions
 
 These need their own native work and acceptance; they are not covered by the current sidebar patches:
@@ -79,9 +85,9 @@ These need their own native work and acceptance; they are not covered by the cur
 - Boosts, site-specific styling and element hiding.
 - Capture tools, saved captures and Easel workflows where supported by the target Arc version.
 - Live folders and calendar/service integrations.
-- Cross-device sidebar sync and conflict recovery. This requires an independent Cove service and account/security design.
+- Cross-device sidebar sync and conflict recovery. Future work must honor the user’s preference to reuse Google identity rather than introducing a separate Cove account; current Google account links do not provide sidebar sync.
 - Arc Max-style optional remote features, with explicit data controls and an independent service rather than Arc backend access.
-- Arc import, first-run migration, sidebar backup/restore and settings organization.
+- Arc import, first-run migration and sidebar backup/restore. Native settings organization is now implemented in 0087; broader settings coverage remains.
 - Complete profile, password/autofill, extension and download surfaces. Chromium supplies the engines; engine availability alone is not UI parity.
 - Signed standalone packages, updates and Chromium security maintenance.
 
@@ -114,6 +120,6 @@ The command bar targets approximately 760px width, a 64px query field and five 4
 3. Split rows, pane headers, split-by-drag and additional layouts.
 4. Peek, Little Arc, MRU switching and editable shortcuts.
 5. Appearance/Boosts, capture/library/media and integration features.
-6. Independent sync/services, import/recovery and release packaging.
+6. Optional sync using existing identity, import/recovery and release packaging.
 
 Reliability checks follow each functional batch. Avoid spending the whole session polishing one popup while major Arc workflows are absent.

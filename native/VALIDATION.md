@@ -1,6 +1,18 @@
 # Native validation — 2026-10-29
 
-## Current 83-patch build: automated acceptance passed; manual UI limited
+## Current 87-patch acceptance
+
+Native app build and renderer smoke pass. Generated and built configuration identities both equal `d84450259b7d916dcf65b7d72b57c0956be7071856f39a675edd832d5db0f44e`. All 87 patches pass original-file SHA/application verification. All 23 browser cases passed in one clean run with retries disabled: 17 session/Space cases, three caption/sidebar cases and three settings cases. All 67 focused native tests and 36 tooling tests pass.
+
+The new browser cases inspect all three NSWindow controls before pumping collapse animation events, repeat collapse/expansion, preserve sidebar state on command-bar dismissal, clear focused address fields and remain hidden beyond the hover delay, preserve startup URLs when changing restore mode, persist download preferences across settings-window reopening, render all six sections and exercise the actual Settings command followed by a Chromium settings destination. Closing the native settings window releases its widgets/views; the harness's accessibility leak check passes.
+
+The command bar and six settings sections were inspected from their actual compositor output. Paths: `/tmp/cove-native87-final-palette.png`, `/tmp/cove-native87-final-settings/`. These are own-window rendered artifacts, not desktop captures or complete AppKit titlebar screenshots. ScreenCaptureKit -3811 and plain-View incomplete artifacts in earlier development logs do not establish visual acceptance.
+
+Final run: `/tmp/cove-native87-browser-tests.log`, summary `/tmp/cove-native87-browser-results.json` (23 SUCCESS, zero retries). Build: `/tmp/cove-native87-polish-build.log` and `/tmp/cove-native87-build-accepted.log`; smoke: `/tmp/cove-native87-smoke.log`; tooling: `/tmp/cove-native87-tooling.log`; focused: `/tmp/cove-native86-focused-tests.log`; verifier: `/tmp/cove-native87-verify.json`. Earlier settings failures were corrected before the clean full run.
+
+QA87 is open in its isolated profile. No CUA tools were available in this session. Physical hover/keyboard, fullscreen, caption hit testing and menu acceptance remain pending, as do PRE_/process-kill recovery and broader migration checks. Saved normal/Arc/prototype browser data remains intact. Google account access is a profile-local web link; no separate Cove account, OAuth identity layer or cloud/sidebar sync was added.
+
+## Previous accepted 83-patch build: automated acceptance passed; manual UI limited
 
 The native app and bounded browser-test target compile and link. Final native renderer smoke passed. Both configuration records equal `6ed21115f2e1f16a4890e5ca46382f445f5191d52de228c634254f34696cb5ca`. All 83 patches passed original-file SHA/application verification. All 67 focused native tests and 36 tooling tests passed. Patch 0082 adds session ownership; 0083 preserves the real pending about:blank navigation of a newly marked canvas during an immediate journal reset.
 

@@ -1,6 +1,25 @@
 # Cove continuation — 2026-10-29
 
-## Current work: Space/session ownership and executed browser tests (0082–0083)
+## Current 87-patch build: sidebar collapse, command bar and native settings
+
+The complete series through 0087 builds and passes renderer smoke. Both `generated_config` and `built_config` equal `d84450259b7d916dcf65b7d72b57c0956be7071856f39a675edd832d5db0f44e`. All **23 browser cases passed in one clean run**, with retries disabled, including all prior session/Space cases and six new caption/settings cases. All 67 focused native tests and 36 tooling tests passed. All 87 patches passed original-file SHA256 and sequential application verification. The final accepted build reused `out/Cove`; its last receipt was a successful no-op build.
+
+- `85473d8` / 0084 synchronizes Mac window controls at sidebar transition start and hover reveal/exit, rather than waiting for controller animation completion. It retains fullscreen/AppKit handling and contextual command-bar dismissal.
+- `e3b6088` / 0085 gives the native command bar five 48 DIP single-line rows, a 64 DIP search field with an icon/divider, charcoal background, blue selection, inline muted details and readable selected action hints. The generic keyboard-instruction footer is removed.
+- `2608595` / 0086 fixes the reported delayed sidebar reopening. Explicit collapse cancels hover timers, suppresses a stationary sidebar pointer and moves focus out of native sidebar fields into page content. A later deliberate field-focus request still reveals the sidebar. No page navigation or profile reset is involved.
+- `739487f` / 0087 routes Settings / Cmd+, to a native Cove window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It reuses real startup, quit, download, appearance and sidebar preferences, profile management and Chromium settings pages. Startup toggling preserves custom startup URLs. The shortcut list reports current native bindings; editing bindings remains unfinished. Window/action lifetime regressions pass without leaked accessibility objects.
+
+The user explicitly wants **no separate Cove account**. Profiles includes a Google account link opened in that browser profile, plus existing profile management. This does not implement Google OAuth ownership of Cove, Chrome Sync or cross-device sidebar sync. Do not add a mandatory Cove account in future work.
+
+Final evidence: `/tmp/cove-native87-browser-tests.log`, `/tmp/cove-native87-browser-results.json` (23/23), `/tmp/cove-native86-focused-tests.log` (67), `/tmp/cove-native87-tooling.log` (36), `/tmp/cove-native87-verify.json`, `/tmp/cove-native87-polish-build.log`, `/tmp/cove-native87-build-accepted.log` and `/tmp/cove-native87-smoke.log`. Earlier 87 logs include corrected compiler findings, an initial settings lifetime leak and failed artifact attempts; they are not final acceptance.
+
+Rendered native compositor artifacts were inspected: `/tmp/cove-native87-final-palette.png` and six files under `/tmp/cove-native87-final-settings/`. These copy only the test window's compositor, include layered controls and do not capture the desktop or AppKit titlebar. Earlier ScreenCaptureKit capture failed with -3811, and a plain View paint omitted layers. Do not use those old images as final evidence. Optional harness switches are `--cove-palette-snapshot=/tmp/example.png` and `--cove-settings-snapshots=/tmp/example-settings`.
+
+The running app now uses the separate QA profile `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native87` and `/tmp/cove-native87-ui.log`. QA83 remains intact. The user quit Cove normally before builds; when they reopened it to report the second bug, our owned compile was interrupted and resumed only after they quit again. This session did not launch, migrate or replace saved normal/Arc/prototype profiles. No CUA input tools were available. Browser tests execute the real command path and inspect actual NSWindow button visibility, but physical hover/re-entry, keyboard feel, native titlebar, fullscreen and menu acceptance still need a manual pass. Do not call this exact Arc parity.
+
+Full PRE_/process-kill recovery, saved-group sync, Space/profile assignment, dragging, split headers, Peek, Little Arc and editable shortcuts remain unfinished. Reuse the existing checkout/build and keep the SSD connected. Never run stale `/tmp` editing scripts; the versioned series is the source of truth.
+
+## Previous Space/session ownership acceptance (0082–0083)
 
 Patch 0082 is committed as `38efda9`. It adds versioned/bounded tab ownership, per-window active Space metadata, read-only attached/parked journal snapshots, window-wide indices, group/split visuals and saved-group IDs, and deferred native partitioning after restore. It also preserves saved pin homes and Chromium's new foreground selection when reopening a formerly background tab.
 
