@@ -2,9 +2,9 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 94-patch native app builds and passes renderer smoke, 36 tooling tests and one clean 51-execution browser run with retries disabled (including the PRE_ restart phase). The 75 focused model/animation tests last passed on 0089; those implementations are unchanged. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
+The current 95-patch native app builds and passes renderer smoke, 36 tooling tests and one clean 54-execution browser run with retries disabled (including the PRE_ restart phase). The 75 focused model/animation tests last passed on 0089; those implementations are unchanged. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
 
-Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, keyboard feel and fullscreen still need a manual pass. Single-window PRE_/fresh-process restoration now passes; multi-window/group/split and actual process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
+Patch 0095 adds consistent saved-row spacing/indentation, blue folder icons and local cached icons for closed pins, with stale-callback and live-icon precedence regressions. Its final static sidebar compositor render was inspected; the default-motion snapshot occurs mid-expansion. Desktop checks passed Cmd+T typing, palette dismissal with Cmd+S, persistent collapse and typing while collapsed. No latency or physical drag/trackpad acceptance is claimed. Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, trackpad transitions, broader keyboard flows and fullscreen still need a manual pass. Single-window PRE_/fresh-process restoration now passes; multi-window/group/split and actual process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
 
 ## Spaces and organization
 
@@ -35,9 +35,10 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
 | Favorites | Profile-wide saved URLs/grid; 0091 adds reorder, URL drops and live-tab creation, including first-Favorite target | Physical drag acceptance and Arc-style shared live Favorite ownership remain |
-| Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
+| Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action; 0095 adds aligned blue folder rows | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
 | Move and reorder whole folders | 0089–0090 add mixed saved order, native dragging, insertion feedback and common menu ordering; cycle/stale-target tests pass | 0094 passes unified long-list scrolling/reveal and scrolled live-folder-drop regressions. Physical drag, edge autoscroll and cross-Space moves remain |
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
+| Closed saved-pin site icons | 0095 reads local cached icons for rendered rows; live icons take priority, stale callbacks are rejected | Missing cache data retains a globe; exact Arc folder artwork/font tuning remain |
 | Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
 | Recently used tab switcher | Missing | MRU overlay and modifier-release selection, beyond sequential Chromium tab cycling |
@@ -47,11 +48,11 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 
 | Function | Cove status | Remaining acceptance or implementation |
 | --- | --- | --- |
-| Native Cmd+T input and URL/search submission | Implemented; native input previously exercised | Final immediate-input acceptance remains incomplete because automation can reactivate the parent window |
+| Native Cmd+T input and URL/search submission | Implemented; current desktop checks accept text with sidebar shown/hidden, Cmd+S/Escape dismiss safely; submission previously exercised | Measured cold/warm latency and broader activation/multi-window acceptance remain |
 | Open tabs and recently closed results | Native stable handles/session IDs | Parked tabs in inactive Spaces are not yet searched or activated directly |
 | Actions mode | Native `/` or `>` mode | 0076 expands browser and library actions; verify enabled-state and actual effects |
 | Common browser actions | 0076 adds window/private-window, navigation, find, downloads, history, preferences, extensions, developer tools, fullscreen, save/print, zoom and open-file entries | Native Chromium operations are reused; Arc-specific panel layouts are separate work |
-| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists | Keep context behavior and verify after feature changes |
+| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; current desktop checks pass Cmd+S palette dismissal and persistent sidebar collapse | Broader shortcut combinations, split contexts and editable bindings remain |
 | Editable keybindings | Missing | User-defined bindings, conflict reporting, reset and persistence |
 | Full address suggestions | Partial | Current native bar classifies destinations; history/bookmark/online suggestion ranking is incomplete |
 
