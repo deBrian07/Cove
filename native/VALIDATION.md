@@ -1,5 +1,35 @@
 # Native validation — 2026-10-30
 
+## Current accepted 93-patch build: reported drag/folder fixes and fresh-process restoration
+
+The user's pin-drag tear-off and missing right-click New Folder fixes are committed/pushed in 0092 (`76a3bb0`; validation `628bb01`). The previous direct-to-folder tests missed the real pointer journey. The new tests walk every pixel through New Tab/separators/padding, retain the existing window and pages, and check cancellation/empty pin areas. A right-click dispatched through the test widget opens the real native menu and naming dialog twice. See the 92 section below for implementation and earlier fixture failures.
+
+Patch 0093 adds a real PRE_/fresh-process restoration pair. With one window, Work active and three saved pages, the new process restores exact history URLs/counts/indices, the selected personal tab, a navigated pin's original home and stable ID, nested/collapsed folders, mixed saved order and Favorites with unknown fields. The fixture verifies that the PRE_ PID differs. It does not manually reconstruct the session in the same process and does not use a real saved browser profile. This patch changes test coverage only; product behavior remains the accepted 92 implementation.
+
+All **47 browser cases passed in one clean final run, with retries disabled**. The two restart phases also passed separately after correcting the fixture's startup. The default browser-test harness appends an about:blank URL argument, so this fixture disables that injected argument to model a normal restore launch; the expected three restored pages remains unchanged. The initial post-process wait failure is retained in `/tmp/cove-native93-restart-tests.log`, not counted as acceptance. The final source uses normal SessionRestore completion and INFO-level test-only snapshot diagnostics. No product workaround was added to make the restart test pass.
+
+All 93 patches pass original-file SHA256/sequential-application verification; all 36 tooling tests pass. The last 75 focused native model/animation cases passed on 0089, and those implementations remain unchanged. Final app/test build, accepted build receipt and isolated renderer smoke pass. Generated/built identities match `0e0ad2341ae96cac6cca6beda735ce9fa58d3d85dcd02e9a649d8e87597433e0`. Final evidence: `/tmp/cove-native93-browser-tests.log`, `/tmp/cove-native93-browser-results.json` (46 SUCCESS entries with the PRE_ phase folded into its dependent result; all 47 executions pass, no retries), `/tmp/cove-native93-final-build.log`, `/tmp/cove-native93-build-accepted.log`, `/tmp/cove-native93-smoke.log`, `/tmp/cove-native93-tooling.log`, `/tmp/cove-native93-verify.json`. The passing focused restart pair is `/tmp/cove-native93-restart-fixed-tests.log` and `/tmp/cove-native93-restart-fixed-results.json`.
+
+Cove remains closed because the user asked to continue source work. For the next interactive pass, reuse the preserved isolated QA profile `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native91`; the suffix records its creation build and reuse preserves the user's QA session. Launch without a URL argument and with `--restore-last-session` to avoid adding another blank tab. No QA93 window has been launched. Existing normal/Arc/prototype profiles and other QA profiles remain intact. Before future linking, identify the live profile and request normal Quit, then verify exit; never force quit, replace running app files or remove profiles. No CUA input tools were available. The earlier normal application Quit was a lifecycle request for the sole owned QA process, not a workaround for an automation input guard.
+
+### Continue here
+
+The user requested sustained Arc-parity work and a reliable handoff before the token limit. Do not claim perfect/100% parity. First manually check the reported drag route and background right-click in the updated app when normal input tools are available. Native fixture results are not hardware mouse/trackpad/fullscreen acceptance.
+
+The next source issue to investigate is long saved-list accessibility: `CoveSidebarLibraryView` is directly inside `space_rows_view_` in `chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc`, with preferred-size rows and a clipping ancestor but no saved-library scroll container. Many pins/folders can consume the visible area and hide later saved rows or Today tabs. Add a regression with a long nested/collapsed list, ensure both the last saved row and live tabs remain reachable, then implement scrolling without losing native drag handles, transforms, focus or Space-slide clipping. Existing native tab-list scroll views already have drag synchronization; an outer/unified scroller must account for that. Do not blindly cap/hide data. Drag-edge autoscroll and hover-revealed saved-row drag lifetime need dedicated acceptance. No patch 0094 has been started.
+
+Grouped/split/multi-tab and cross-Space live organization, multi-window/group/split fresh-process restoration and actual process-kill recovery, saved-group sync, pane headers/joined rows, Peek, Little Arc and editable shortcuts remain. Keep the no-separate-Cove-account preference. See ARC_PARITY.md for the full list.
+
+Reuse `/Volumes/CoveBuild/checkout/chromium/src` and out/Cove, jobs=2; keep the SSD connected. Never edit source/patch/config inputs while GN/Ninja runs, and never run two Ninja instances against that output. Versioned patches are authoritative. `/tmp/cove92-export.py` exports 92 against `/tmp/cove92-before/`; `/tmp/cove93-export.py` exports 93 against `/tmp/cove93-before/`. Do not rerun non-idempotent install/edit scripts. Session tests are in `chrome/browser/ui/cove/cove_session_browsertest.cc`, not under views/cove. Main sidebar/drag source is under views/cove, views/frame and views/tabs/dragging.
+
+For future relevant changes, the full bounded browser filter includes the restart fixture:
+
+```text
+CoveSessionBrowserTest.*:CoveSessionRestartBrowserTest.*:CoveSidebarLibraryBrowserTest.*:CoveCaptionButtonsBrowserTest.*:CoveSettingsBrowserTest.*:CoveSidebarDragBrowserTest.*:CoveFavoritesDragBrowserTest.*:CoveLiveTabDragBrowserTest.*
+```
+
+Use `--test-launcher-jobs=1 --test-launcher-retry-limit=0 --use-mock-keychain`. Optional `--cove-sidebar-snapshot=/tmp/example.png` copies only the fixture's compositor. Do not rerun unchanged passing checks merely to resume. Run `python3 scripts/chromium/handoff.py` first to refresh Git, process and build state.
+
 ## Accepted 92-patch build: pin-drag route and right-click folder creation
 
 The user reproduced a QA91 failure after the earlier direct-to-folder tests passed: dragging toward pins could detach a tab into a window, and blank-sidebar right-click had no New Folder action. Patch 0092 covers the missing pointer journey through New Tab, separators and padding. The visible sidebar keeps the native drag attached across those non-drop surfaces; pinning remains bounded to saved-row targets. Even an unsaveable internal page no longer starts a window move just because it is the only tab. Leaving the sidebar retains upstream tear-off behavior.
