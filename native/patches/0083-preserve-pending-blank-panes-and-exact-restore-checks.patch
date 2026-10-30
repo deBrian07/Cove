@@ -1,0 +1,136 @@
+diff --git a/chrome/browser/sessions/session_service_base.cc b/chrome/browser/sessions/session_service_base.cc
+--- a/chrome/browser/sessions/session_service_base.cc
++++ b/chrome/browser/sessions/session_service_base.cc
+@@ -61,6 +61,7 @@
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/session_storage_namespace_handle.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
++#include "url/url_constants.h"
+ 
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/app_controller_mac.h"
+@@ -648,6 +649,17 @@
+                                  ? tab->GetController().GetPendingEntry()
+                                  : tab->GetController().GetEntryAtIndex(i);
+     DCHECK(entry);
++    // A newly created Cove canvas can still have the empty initial entry while
++    // its explicit about:blank navigation is pending outside the history list.
++    // Persist that real pending blank entry, never an arbitrary pending URL or
++    // an unmarked initial page, so an immediate reset retains the blank pane.
++    if (i == current_index && entry->IsInitialEntry() && IsCoveEmptyCanvas(tab)) {
++      NavigationEntry* pending_entry = tab->GetController().GetPendingEntry();
++      if (pending_entry &&
++          pending_entry->GetVirtualURL() == GURL(url::kAboutBlankURL)) {
++        entry = pending_entry;
++      }
++    }
+     if (ShouldTrackURLForRestore(entry->GetVirtualURL()) &&
+         (!entry->IsInitialEntry() || IsCoveEmptyCanvas(tab))) {
+       // Don't try to persist initial NavigationEntry, as it is not actually
+diff --git a/chrome/browser/ui/cove/cove_session_browsertest.cc b/chrome/browser/ui/cove/cove_session_browsertest.cc
+--- a/chrome/browser/ui/cove/cove_session_browsertest.cc
++++ b/chrome/browser/ui/cove/cove_session_browsertest.cc
+@@ -41,6 +41,7 @@
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
+ #include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/navigation_entry.h"
+ #include "ui/base/window_open_disposition.h"
+ 
+ class CoveSessionBrowserTest : public InProcessBrowserTest {
+@@ -97,10 +98,15 @@
+   MarkCoveEmptyCanvas(model->GetActiveWebContents());
+   auto* right = chrome::AddAndReturnTabAt(browser(), GURL("data:text/html,<title>Right</title>"), -1, true);
+   ASSERT_TRUE(right);
++  ASSERT_EQ(2, model->count());
+   const auto group = model->AddToNewGroup({0, 1});
+   const auto split = model->AddToNewSplit({0, 1},
+       split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kStacked, 0.37),
+       split_tabs::SplitTabCreatedSource::kExtensionsApi);
++  // Protect the intentional blank pane with its native collection before
++  // pumping navigation; ordinary unorganized canvases are cleaned up.
++  ASSERT_TRUE(content::WaitForLoadStop(right));
++  ASSERT_EQ(2, model->count());
+   Switch("work");
+   std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
+   ReadRebuild(windows);
+@@ -195,6 +201,15 @@
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Original</title>")));
+   ASSERT_TRUE(content::ExecJs(browser()->tab_strip_model()->GetActiveWebContents(),
+                               "history.pushState({}, '', '#kept')"));
++  auto& original_controller =
++      browser()->GetTabStripModel()->GetActiveWebContents()->GetController();
++  const int original_history_count = original_controller.GetEntryCount();
++  const int original_history_index = original_controller.GetCurrentEntryIndex();
++  std::vector<GURL> original_history_urls;
++  for (int i = 0; i < original_history_count; ++i) {
++    original_history_urls.push_back(
++        original_controller.GetEntryAtIndex(i)->GetVirtualURL());
++  }
+   Switch("work");
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,<title>Work</title>")));
+   auto* profile = browser()->GetProfile();
+@@ -222,7 +237,13 @@
+   base::RunLoop().RunUntilIdle();
+   ASSERT_EQ(1, restored->GetTabStripModel()->count());
+   auto* personal = restored->GetTabStripModel()->GetActiveWebContents();
+-  EXPECT_EQ(2, personal->GetController().GetEntryCount());
++  auto& restored_controller = personal->GetController();
++  ASSERT_EQ(original_history_count, restored_controller.GetEntryCount());
++  EXPECT_EQ(original_history_index, restored_controller.GetCurrentEntryIndex());
++  for (int i = 0; i < original_history_count; ++i) {
++    EXPECT_EQ(original_history_urls[i],
++              restored_controller.GetEntryAtIndex(i)->GetVirtualURL());
++  }
+   EXPECT_EQ("kept", personal->GetVisibleURL().ref());
+ }
+ 
+@@ -396,3 +417,31 @@
+   Switch("personal");
+   EXPECT_EQ(personal, browser()->GetTabStripModel()->GetActiveWebContents());
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSessionBrowserTest,
++                       ImmediateJournalResetRetainsNewMarkedBlankCanvas) {
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Existing personal page</title>")));
++  // Do not pump the event loop after creating Work: an initial empty history
++  // entry with a pending about:blank must be saved as well as a committed one.
++  Library(browser())->FocusSpace("work");
++  auto* canvas = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(canvas);
++  ASSERT_TRUE(IsCoveEmptyCanvas(canvas));
++  std::vector<std::unique_ptr<sessions::SessionWindow>> windows;
++  ReadRebuild(windows);
++  ASSERT_EQ(1u, windows.size());
++  ASSERT_EQ(2u, windows[0]->tabs.size());
++  bool found_canvas = false;
++  for (const auto& tab : windows[0]->tabs) {
++    const auto state =
++        DecodeCoveTabSessionState(tab->extra_data.at(kCoveTabSessionKey));
++    ASSERT_TRUE(state);
++    if (state->space != "work") continue;
++    found_canvas = true;
++    EXPECT_TRUE(state->canvas);
++    ASSERT_EQ(1u, tab->navigations.size());
++    EXPECT_EQ(GURL("about:blank"), tab->navigations[0].virtual_url());
++  }
++  EXPECT_TRUE(found_canvas);
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+@@ -166,11 +166,12 @@
+   base::test::TestFuture<bool> confirmed;
+   ASSERT_TRUE(unload->RunBeforeUnloadForShutdown(
+       false, confirmed.GetRepeatingCallback()));
+-  ASSERT_TRUE(confirmed.Get());
++  ASSERT_TRUE(confirmed.Take());
+   EXPECT_FALSE(library->HasPendingTabs());
+   EXPECT_EQ(2, browser()->GetTabStripModel()->count());
+   EXPECT_EQ(1, content::EvalJs(contents, "window.beforeUnloadCount"));
+   unload->ResetBeforeUnloadForShutdown();
++  EXPECT_FALSE(confirmed.Take());
+   EXPECT_TRUE(library->HasPendingTabs());
+   EXPECT_EQ(1, browser()->GetTabStripModel()->count());
+   Switch(browser(), u"Personal");

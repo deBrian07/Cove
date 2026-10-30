@@ -80,3 +80,4 @@
 0080-arc-style-hidden-window-frame.patch
 0081-separate-webpage-and-browser-appearance.patch
 0082-native-space-session-ownership.patch
+0083-preserve-pending-blank-panes-and-exact-restore-checks.patch
