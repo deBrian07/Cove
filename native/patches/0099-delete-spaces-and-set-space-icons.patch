@@ -1,0 +1,654 @@
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.cc b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+--- a/chrome/browser/ui/views/cove/cove_name_dialog.cc
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.cc
+@@ -32,6 +32,8 @@
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeAccentField);
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeHighlightField);
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveThemeSaveButton);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveIconField);
++DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCoveIconSaveButton);
+ 
+ class CoveNameDialogDelegate final : public ui::DialogModelDelegate {
+  public:
+@@ -225,3 +227,128 @@
+   constrained_window::ShowBrowserModal(std::move(model),
+                                       parent->GetNativeWindow());
+ }
++
++bool IsValidCoveSpaceIcon(const std::u16string& icon) {
++  if (icon.size() > kCoveSpaceIconMaxLength) {
++    return false;
++  }
++  for (char16_t c : icon) {
++    if (base::IsUnicodeWhitespace(c)) {
++      return false;
++    }
++  }
++  return true;
++}
++
++namespace {
++
++class CoveIconDialogDelegate final : public ui::DialogModelDelegate {
++ public:
++  explicit CoveIconDialogDelegate(
++      base::OnceCallback<void(std::u16string)> accept)
++      : accept_(std::move(accept)) {}
++  ~CoveIconDialogDelegate() override = default;
++
++  void Initialize() {
++    text_changed_subscription_ =
++        dialog_model()->GetTextfieldByUniqueId(kCoveIconField)
++            ->AddOnFieldChangedCallback(base::BindRepeating(
++                &CoveIconDialogDelegate::UpdateSaveEnabled,
++                base::Unretained(this)));
++    UpdateSaveEnabled();
++  }
++
++  bool Accept() {
++    std::u16string icon = TrimmedIcon();
++    if (!accept_ || !IsValidCoveSpaceIcon(icon)) {
++      return false;
++    }
++    auto accept = std::move(accept_);
++    std::move(accept).Run(std::move(icon));
++    return true;
++  }
++
++ private:
++  std::u16string TrimmedIcon() {
++    std::u16string icon;
++    base::TrimWhitespace(
++        dialog_model()->GetTextfieldByUniqueId(kCoveIconField)->text(),
++        base::TRIM_ALL, &icon);
++    return icon;
++  }
++
++  void UpdateSaveEnabled() {
++    dialog_model()->SetButtonEnabled(
++        dialog_model()->GetButtonByUniqueId(kCoveIconSaveButton),
++        IsValidCoveSpaceIcon(TrimmedIcon()));
++  }
++
++  base::OnceCallback<void(std::u16string)> accept_;
++  base::CallbackListSubscription text_changed_subscription_;
++};
++
++}  // namespace
++
++void ShowCoveIconDialog(views::View* anchor,
++                        std::u16string initial_icon,
++                        base::OnceCallback<void(std::u16string)> accept) {
++  if (!anchor || !anchor->GetWidget() || !accept) {
++    return;
++  }
++  views::Widget* parent = anchor->GetWidget()->GetPrimaryWindowWidget();
++  if (!parent || !parent->GetNativeWindow()) {
++    return;
++  }
++  auto delegate = std::make_unique<CoveIconDialogDelegate>(std::move(accept));
++  auto* const delegate_ptr = delegate.get();
++  auto model =
++      ui::DialogModel::Builder(std::move(delegate))
++          .SetInternalName("CoveIconDialog")
++          .SetTitle(u"Change Space Icon")
++          .SetAccessibleTitle(u"Change Space Icon")
++          .AddParagraph(ui::DialogModelLabel(
++              u"Type an emoji or a short symbol. Press Control-Command-Space "
++              u"for the emoji picker. Leave it empty to use a dot."))
++          .AddTextfield(kCoveIconField, u"Icon", std::move(initial_icon),
++                        ui::DialogModelTextfield::Params().SetAccessibleName(
++                            u"Space icon"))
++          .SetInitiallyFocusedField(kCoveIconField)
++          .AddOkButton(
++              base::BindRepeating(&CoveIconDialogDelegate::Accept,
++                                  base::Unretained(delegate_ptr)),
++              ui::DialogModel::Button::Params()
++                  .SetId(kCoveIconSaveButton)
++                  .SetLabel(l10n_util::GetStringUTF16(IDS_SAVE)))
++          .AddCancelButton(base::DoNothing())
++          .Build();
++  delegate_ptr->Initialize();
++  constrained_window::ShowBrowserModal(std::move(model),
++                                      parent->GetNativeWindow());
++}
++
++void ShowCoveConfirmDialog(views::View* anchor,
++                           std::u16string title,
++                           std::u16string message,
++                           std::u16string confirm_label,
++                           base::OnceClosure confirm) {
++  if (!anchor || !anchor->GetWidget() || !confirm) {
++    return;
++  }
++  views::Widget* parent = anchor->GetWidget()->GetPrimaryWindowWidget();
++  if (!parent || !parent->GetNativeWindow()) {
++    return;
++  }
++  auto model =
++      ui::DialogModel::Builder()
++          .SetInternalName("CoveConfirmDialog")
++          .SetTitle(title)
++          .SetAccessibleTitle(std::move(title))
++          .AddParagraph(ui::DialogModelLabel(std::move(message)))
++          .AddOkButton(std::move(confirm),
++                       ui::DialogModel::Button::Params().SetLabel(
++                           std::move(confirm_label)))
++          .AddCancelButton(base::DoNothing())
++          .Build();
++  constrained_window::ShowBrowserModal(std::move(model),
++                                      parent->GetNativeWindow());
++}
+diff --git a/chrome/browser/ui/views/cove/cove_name_dialog.h b/chrome/browser/ui/views/cove/cove_name_dialog.h
+--- a/chrome/browser/ui/views/cove/cove_name_dialog.h
++++ b/chrome/browser/ui/views/cove/cove_name_dialog.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
+ #define CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
+ 
++#include <cstddef>
+ #include <string>
+ 
+ #include "base/functional/callback_forward.h"
+@@ -33,4 +34,22 @@
+     base::OnceCallback<void(std::u16string, std::u16string, std::u16string)>
+         accept);
+ 
++// Edits a Space's footer icon. `accept` receives the trimmed text, which is
++// empty when the user clears the field to return to the default dot.
++void ShowCoveIconDialog(views::View* anchor,
++                        std::u16string initial_icon,
++                        base::OnceCallback<void(std::u16string)> accept);
++
++// Asks before a destructive action. `confirm` runs only for the confirm button.
++void ShowCoveConfirmDialog(views::View* anchor,
++                           std::u16string title,
++                           std::u16string message,
++                           std::u16string confirm_label,
++                           base::OnceClosure confirm);
++
++// Text accepted as a Space icon: empty, or at most kCoveSpaceIconMaxLength
++// UTF-16 units with no whitespace.
++inline constexpr size_t kCoveSpaceIconMaxLength = 8;
++bool IsValidCoveSpaceIcon(const std::u16string& icon);
++
+ #endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_NAME_DIALOG_H_
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -1248,3 +1248,104 @@
+   EXPECT_EQ("#445566", *custom->FindString("accent"));
+   EXPECT_EQ("#778899", *custom->FindString("highlight"));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SpaceMenuFollowsArcOrderAndDeletesParkedSpace) {
++  Seed();
++  const GURL kept("data:text/html,<title>Personal page</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), kept));
++  auto* personal_contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(personal_contents, "window.draft='personal'"));
++
++  auto* menu = library()->BuildSpaceMenuForTesting("work");
++  std::vector<std::u16string> labels;
++  for (size_t i = 0; i < menu->GetItemCount(); ++i) {
++    if (menu->GetTypeAt(i) != ui::MenuModel::TYPE_SEPARATOR) {
++      labels.push_back(menu->GetLabelAt(i));
++    }
++  }
++  const std::vector<std::u16string> expected = {
++      u"Change Space Icon…", u"Rename Space…", u"Edit Theme Colors…",
++      u"New Folder", u"Delete Space…"};
++  EXPECT_EQ(expected, labels);
++  EXPECT_TRUE(menu->IsEnabledAt(menu->GetItemCount() - 1));
++
++  library()->FocusSpace("work");
++  Layout();
++  ASSERT_EQ("work", library()->ActiveSpaceIdForTesting());
++  const GURL work_url("data:text/html,<title>Work page</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), work_url));
++  const auto work_tab =
++      browser()->GetTabStripModel()->GetActiveTab()->GetHandle();
++  library()->FocusSpace("personal");
++  Layout();
++  ASSERT_TRUE(library()->HasParkedSpaceForTesting("work"));
++  ASSERT_EQ(personal_contents,
++            browser()->GetTabStripModel()->GetActiveWebContents());
++  const int personal_count = browser()->GetTabStripModel()->count();
++
++  library()->DeleteSpaceForTesting("work");
++  Layout();
++  ASSERT_TRUE(base::test::RunUntil([&] { return work_tab.Get() == nullptr; }));
++  EXPECT_FALSE(library()->HasParkedSpaceForTesting("work"));
++  EXPECT_EQ("personal", library()->ActiveSpaceIdForTesting());
++  EXPECT_EQ(personal_count, browser()->GetTabStripModel()->count());
++  EXPECT_EQ("personal", content::EvalJs(personal_contents, "window.draft"));
++  EXPECT_EQ(1u, browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref)
++                    .FindList("spaces")->size());
++  EXPECT_EQ(nullptr, library()->SpaceButtonForTesting("work"));
++
++  menu = library()->BuildSpaceMenuForTesting("personal");
++  EXPECT_FALSE(menu->IsEnabledAt(menu->GetItemCount() - 1));
++  library()->DeleteSpaceForTesting("personal");
++  Layout();
++  EXPECT_EQ("personal", library()->ActiveSpaceIdForTesting());
++  EXPECT_EQ(personal_contents,
++            browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       DeletingShownSpaceLandsOnNeighbor) {
++  Seed();
++  const GURL kept("data:text/html,<title>Personal page</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), kept));
++  auto* personal_contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(personal_contents, "window.draft='personal'"));
++  library()->FocusSpace("work");
++  Layout();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Work page</title>")));
++  const auto work_tab =
++      browser()->GetTabStripModel()->GetActiveTab()->GetHandle();
++
++  library()->DeleteSpaceForTesting("work");
++  Layout();
++  EXPECT_EQ("personal", library()->ActiveSpaceIdForTesting());
++  ASSERT_TRUE(base::test::RunUntil([&] { return work_tab.Get() == nullptr; }));
++  EXPECT_EQ(personal_contents,
++            browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ("personal", content::EvalJs(personal_contents, "window.draft"));
++  EXPECT_EQ("personal", *browser()->GetProfile()->GetPrefs()
++                             ->GetDict(kSidebarPref).FindString("active"));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SpaceIconReplacesFooterDot) {
++  Seed();
++  library()->SetSpaceIconForTesting("work", u"\U0001F30A");
++  Layout();
++  auto* button = library()->SpaceButtonForTesting("work");
++  ASSERT_TRUE(button);
++  EXPECT_EQ(u"\U0001F30A", button->GetText());
++  ASSERT_TRUE(button->layer());
++  EXPECT_LT(button->layer()->opacity(), 1.0f);
++
++  library()->SetSpaceIconForTesting("work", u"no spaces");
++  Layout();
++  EXPECT_EQ(u"\U0001F30A", library()->SpaceButtonForTesting("work")->GetText());
++
++  library()->SetSpaceIconForTesting("work", u"");
++  Layout();
++  EXPECT_EQ(u"•", library()->SpaceButtonForTesting("work")->GetText());
++  EXPECT_EQ(nullptr, SavedSpace().FindString("icon"));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -132,6 +132,8 @@
+ constexpr int kMoveFolderDownCommand = 14;
+ constexpr int kMovePinToRootCommand = 15;
+ constexpr int kEditThemeCommand = 16;
++constexpr int kChangeSpaceIconCommand = 17;
++constexpr int kDeleteSpaceCommand = 18;
+ constexpr int kMovePinCommandBase = 100;
+ constexpr int kThemeCommandBase = 200;
+ constexpr int kMoveFolderCommandBase = 10000;
+@@ -764,6 +766,23 @@
+ }
+ 
+ void CoveSidebarLibraryView::Rebuild() {
++  if (!reconcile_posted_ && browser_ &&
++      !browser_->GetProfile()->IsOffTheRecord()) {
++    const auto& prefs =
++        browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++    bool stale = !active_space_id_.empty() && !FindSpace(prefs, active_space_id_);
++    for (const auto& [id, space] : inactive_spaces_) {
++      stale = stale || !FindSpace(prefs, id);
++    }
++    if (stale) {
++      // Space ownership changes cannot run inside the pref observer.
++      reconcile_posted_ = true;
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE,
++          base::BindOnce(&CoveSidebarLibraryView::ReconcileDeletedSpaces,
++                         weak_factory_.GetWeakPtr()));
++    }
++  }
+   if (row_drag_active_) {
+     rebuild_after_drag_ = true;
+     return;
+@@ -1108,10 +1127,20 @@
+       const auto palette = PaletteForSpace(*space);
+       const SkColor marker =
+           active ? palette.accent : MixColors(palette.accent, SK_ColorBLACK, 0.4f);
++      const auto* saved_icon = space->FindString("icon");
++      const std::u16string icon =
++          saved_icon ? base::UTF8ToUTF16(*saved_icon) : std::u16string();
++      const bool has_icon = !icon.empty() && IsValidCoveSpaceIcon(icon);
+       auto* dot =
+-          MakeRow(footer, active ? u"●" : u"•",
++          MakeRow(footer, has_icon ? icon : (active ? u"●" : u"•"),
+                   base::BindRepeating(&CoveSidebarLibraryView::SwitchSpace,
+                                       weak_factory_.GetWeakPtr(), id));
++      if (has_icon) {
++        // Emoji keep their own colors, so an inactive icon is dimmed instead.
++        dot->SetPaintToLayer();
++        dot->layer()->SetFillsBoundsOpaquely(false);
++        dot->layer()->SetOpacity(active ? 1.0f : 0.55f);
++      }
+       dot->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 2)));
+       dot->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+       dot->SetPreferredSize(gfx::Size(24, 28));
+@@ -2219,12 +2248,8 @@
+   }
+   if (const auto space = row_space_ids_.find(source);
+       space != row_space_ids_.end()) {
+-    context_space_id_ = space->second;
+     menu_runner_.reset();
+-    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+-    menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+-    menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space");
+-    AppendThemeMenu(menu_model_.get());
++    BuildSpaceMenu(space->second);
+     RunContextMenu(source, point, source_type);
+     return;
+   }
+@@ -3005,9 +3030,205 @@
+ END_METADATA
+ 
+ void CoveSidebarLibraryView::AppendThemeMenu(ui::SimpleMenuModel* menu) {
+-  menu->AddItem(kEditThemeCommand, u"Edit theme colors…");
++  menu->AddItem(kEditThemeCommand, u"Edit Theme Colors…");
++}
++
++void CoveSidebarLibraryView::BuildSpaceMenu(const std::string& space_id) {
++  context_space_id_ = space_id;
++  menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_model_->AddItem(kChangeSpaceIconCommand, u"Change Space Icon…");
++  menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space…");
++  AppendThemeMenu(menu_model_.get());
++  menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++  menu_model_->AddItem(kNewFolderCommand, u"New Folder");
++  menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++  menu_model_->AddItem(kDeleteSpaceCommand, u"Delete Space…");
++}
++
++ui::SimpleMenuModel* CoveSidebarLibraryView::BuildSpaceMenuForTesting(
++    const std::string& space_id) {
++  menu_space_id_ = active_space_id_;
++  context_folder_id_.clear();
++  context_pin_id_.clear();
++  menu_folder_ids_.clear();
++  menu_folder_moves_.clear();
++  BuildSpaceMenu(space_id);
++  return menu_model_.get();
++}
++
++views::LabelButton* CoveSidebarLibraryView::SpaceButtonForTesting(
++    const std::string& space_id) const {
++  for (const auto& [view, id] : row_space_ids_) {
++    if (id == space_id) {
++      return const_cast<views::LabelButton*>(
++          views::AsViewClass<views::LabelButton>(view));
++    }
++  }
++  return nullptr;
++}
++
++void CoveSidebarLibraryView::ConfirmDeleteSpace(std::string space_id) {
++  const auto* space = FindSpace(
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref), space_id);
++  const auto* name = space ? space->FindString("name") : nullptr;
++  if (!space || GetSpaces().size() < 2) {
++    return;
++  }
++  const std::u16string title =
++      u"Delete \u201c" + base::UTF8ToUTF16(name ? *name : "Space") +
++      u"\u201d?";
++  ShowCoveConfirmDialog(
++      this, title,
++      u"Its pinned tabs, folders and open tabs will be removed. Closed tabs "
++      u"can still be reopened from History.",
++      u"Delete Space",
++      base::BindOnce(&CoveSidebarLibraryView::CommitDeleteSpace,
++                     weak_factory_.GetWeakPtr(), std::move(space_id)));
++}
++
++void CoveSidebarLibraryView::CommitDeleteSpace(std::string space_id) {
++  if (!browser_ || browser_->GetProfile()->IsOffTheRecord() ||
++      switching_space_ || closing_active_space_ || restoring_session_) {
++    return;
++  }
++  const auto spaces = GetSpaces();
++  const auto doomed = std::ranges::find(spaces, space_id, &CoveSpaceInfo::id);
++  if (spaces.size() < 2 || doomed == spaces.end()) {
++    return;
++  }
++  if (space_id == active_space_id_) {
++    // Arc lands on the neighbor before the deleted Space; the first Space
++    // falls forward instead.
++    const auto neighbor = doomed == spaces.begin() ? doomed + 1 : doomed - 1;
++    SwitchSpace(neighbor->id);
++    if (active_space_id_ == space_id) {
++      return;
++    }
++  }
++  {
++    ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                                kCoveSidebarPref);
++    if (auto* list = update->FindList("spaces")) {
++      list->EraseIf([&](const base::Value& value) {
++        const auto* item = value.GetIfDict();
++        const auto* id = item ? item->FindString("id") : nullptr;
++        return id && *id == space_id;
++      });
++    }
++    if (const auto* active = update->FindString("active");
++        active && *active == space_id) {
++      update->Set("active", active_space_id_);
++    }
++  }
++  ReconcileDeletedSpaces();
++}
++
++void CoveSidebarLibraryView::ReconcileDeletedSpaces() {
++  reconcile_posted_ = false;
++  if (!browser_ || restoring_session_ || switching_space_ ||
++      closing_active_space_) {
++    return;
++  }
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  if (!FindSpace(root, active_space_id_)) {
++    // Another window deleted the Space this window shows.
++    const auto spaces = GetSpaces();
++    if (spaces.empty()) {
++      return;
++    }
++    SwitchSpace(spaces.front().id);
++    if (!FindSpace(browser_->GetProfile()->GetPrefs()->GetDict(
++                       kCoveSidebarPref),
++                   active_space_id_)) {
++      return;
++    }
++  }
++  std::vector<std::string> deleted;
++  const auto& current =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  for (const auto& [id, space] : inactive_spaces_) {
++    if (!FindSpace(current, id)) {
++      deleted.push_back(id);
++    }
++  }
++  std::erase_if(tab_pin_ids_, [&](const auto& binding) {
++    return !FindSpace(current, binding.second.first);
++  });
++  if (deleted.empty()) {
++    return;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  std::vector<tabs::TabHandle> before;
++  for (auto* tab : *model) {
++    before.push_back(tab->GetHandle());
++  }
++  {
++    // Parked pages rejoin the strip only to run Chromium's normal close path:
++    // beforeunload, unload handlers and recently-closed history.
++    base::AutoReset<bool> switching(&switching_space_, true);
++    for (const auto& id : deleted) {
++      auto found = inactive_spaces_.find(id);
++      auto space = std::move(found->second);
++      inactive_spaces_.erase(found);
++      InsertSpaceTabs(*space);
++    }
++  }
++  std::vector<tabs::TabHandle> closing;
++  for (auto* tab : *model) {
++    if (!std::ranges::contains(before, tab->GetHandle())) {
++      closing.push_back(tab->GetHandle());
++    }
++  }
++  for (const auto& handle : closing) {
++    tabs::TabInterface* tab = handle.Get();
++    if (!tab || !model->IsTabClosable(tab)) {
++      continue;
++    }
++    const int index = model->GetIndexOfTab(tab);
++    if (index == TabStripModel::kNoTab) {
++      continue;
++    }
++    model->CloseWebContentsAt(index,
++                              TabCloseTypes::CLOSE_USER_GESTURE |
++                                  TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++  }
++  UpdateArchiveButtonState();
++  QueueSessionSync();
+ }
+ 
++void CoveSidebarLibraryView::EditSpaceIcon(std::string space_id) {
++  const auto* space = FindSpace(
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref), space_id);
++  if (!space || !GetWidget()) {
++    return;
++  }
++  const auto* icon = space->FindString("icon");
++  ShowCoveIconDialog(
++      this, icon ? base::UTF8ToUTF16(*icon) : std::u16string(),
++      base::BindOnce(&CoveSidebarLibraryView::CommitSpaceIcon,
++                     weak_factory_.GetWeakPtr(), std::move(space_id)));
++}
++
++void CoveSidebarLibraryView::CommitSpaceIcon(std::string space_id,
++                                             std::u16string icon) {
++  base::TrimWhitespace(icon, base::TRIM_ALL, &icon);
++  if (!browser_ || !IsValidCoveSpaceIcon(icon)) {
++    return;
++  }
++  ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                              kCoveSidebarPref);
++  auto* space = FindSpace(*update, space_id);
++  if (!space) {
++    return;
++  }
++  if (icon.empty()) {
++    space->Remove("icon");
++  } else {
++    space->Set("icon", base::UTF16ToUTF8(icon));
++  }
++}
++
+ void CoveSidebarLibraryView::SetSpacePalette(const std::string& space_id,
+                                             size_t index) {
+   if (!browser_ || index >= std::size(kSpacePalettes)) {
+@@ -3096,9 +3317,14 @@
+ }
+ 
+ bool CoveSidebarLibraryView::IsCommandIdEnabled(int command_id) const {
+-  if (command_id == kEditThemeCommand) {
++  if (command_id == kEditThemeCommand ||
++      command_id == kChangeSpaceIconCommand) {
+     return true;
+   }
++  if (command_id == kDeleteSpaceCommand) {
++    return GetSpaces().size() > 1 && !switching_space_ &&
++           !closing_active_space_ && !restoring_session_;
++  }
+   if (command_id >= kThemeCommandBase &&
+       command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
+     return true;
+@@ -3146,6 +3372,16 @@
+     EditSpaceTheme();
+     return;
+   }
++  if (command_id == kChangeSpaceIconCommand) {
++    EditSpaceIcon(context_space_id_.empty() ? active_space_id_
++                                            : context_space_id_);
++    return;
++  }
++  if (command_id == kDeleteSpaceCommand) {
++    ConfirmDeleteSpace(context_space_id_.empty() ? active_space_id_
++                                                 : context_space_id_);
++    return;
++  }
+   if (command_id >= kThemeCommandBase &&
+       command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
+     SetSpacePalette(context_space_id_.empty() ? active_space_id_ : context_space_id_,
+@@ -3199,6 +3435,10 @@
+     return;
+   }
+   if (command_id == kNewFolderCommand) {
++    if (!context_space_id_.empty() && context_space_id_ != active_space_id_) {
++      SwitchSpace(context_space_id_);
++      if (context_space_id_ != active_space_id_) return;
++    }
+     const auto id = AddFolder();
+     if (!id.empty()) BeginRename(kRenameFolderCommand, id);
+     return;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -122,6 +122,20 @@
+                      std::move(highlight));
+   }
+   SkColor ActiveSidebarColorForTesting() const { return active_sidebar_; }
++  void DeleteSpaceForTesting(const std::string& space_id) {
++    CommitDeleteSpace(space_id);
++  }
++  void SetSpaceIconForTesting(const std::string& space_id, std::u16string icon) {
++    CommitSpaceIcon(space_id, std::move(icon));
++  }
++  void ReconcileDeletedSpacesForTesting() { ReconcileDeletedSpaces(); }
++  bool HasParkedSpaceForTesting(const std::string& space_id) const {
++    return inactive_spaces_.contains(space_id);
++  }
++  const std::string& ActiveSpaceIdForTesting() const { return active_space_id_; }
++  // Opens the Space-dot context menu model without running a native menu.
++  ui::SimpleMenuModel* BuildSpaceMenuForTesting(const std::string& space_id);
++  views::LabelButton* SpaceButtonForTesting(const std::string& space_id) const;
+   void BeginSpaceTransitionForTesting() { begin_space_transition_.Run(1); }
+   // Retargets the saved or live-tab indicator at a stationary screen pointer
+   // after the shared viewport scrolls. Uses the validated source already
+@@ -257,6 +271,15 @@
+   void CommitSpaceTheme(std::string space_id, std::u16string sidebar,
+                         std::u16string accent, std::u16string highlight);
+   void ReturnPinToSavedUrl(std::string pin_id);
++  void BuildSpaceMenu(const std::string& space_id);
++  void ConfirmDeleteSpace(std::string space_id);
++  // Switches away from `space_id` if it is shown, then removes it from prefs.
++  // Every window then closes that Space's parked tabs as recently-closed
++  // history in ReconcileDeletedSpaces(). The last Space cannot be deleted.
++  void CommitDeleteSpace(std::string space_id);
++  void ReconcileDeletedSpaces();
++  void EditSpaceIcon(std::string space_id);
++  void CommitSpaceIcon(std::string space_id, std::u16string icon);
+   void RemovePin(const std::string& pin_id);
+   void MovePinToFolder(const std::string& pin_id, const std::string& folder_id);
+ 
+@@ -302,6 +325,7 @@
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
+   std::map<const views::View*, std::string> row_space_ids_;
++  bool reconcile_posted_ = false;
+   std::string menu_space_id_;
+   std::map<int, std::string> menu_folder_moves_;
+   std::string context_folder_id_;
