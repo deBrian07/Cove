@@ -1,0 +1,535 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -1266,7 +1266,8 @@
+   }
+   const std::vector<std::u16string> expected = {
+       u"Change Space Icon…", u"Rename Space…", u"Edit Theme Colors…",
+-      u"New Folder", u"Delete Space…"};
++      u"New Folder", u"Export \u201cWork\u201d into Folder",
++      u"Delete Space…"};
+   EXPECT_EQ(expected, labels);
+   EXPECT_TRUE(menu->IsEnabledAt(menu->GetItemCount() - 1));
+ 
+@@ -1348,4 +1349,122 @@
+   Layout();
+   EXPECT_EQ(u"•", library()->SpaceButtonForTesting("work")->GetText());
+   EXPECT_EQ(nullptr, SavedSpace().FindString("icon"));
++}
++
++namespace {
++const base::DictValue* FindSaved(const base::DictValue& space, const char* key,
++                                 const std::string& id) {
++  for (const auto& value : *space.FindList(key)) {
++    const auto& item = value.GetDict();
++    if (*item.FindString("id") == id) return &item;
++  }
++  return nullptr;
++}
++
++const base::DictValue* FolderNamed(const base::DictValue& space,
++                                   const std::string& name) {
++  for (const auto& value : *space.FindList("folders")) {
++    const auto& item = value.GetDict();
++    if (*item.FindString("name") == name) return &item;
++  }
++  return nullptr;
+ }
++}  // namespace
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       ExportShownSpaceKeepsTabsAndNestsRows) {
++  const GURL home("data:text/html,<title>Exported pin</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* model = browser()->GetTabStripModel();
++  Seed();
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                kSidebarPref);
++    FindSpace(*update, "personal")->FindList("pins")->front().GetDict().Set(
++        "url", home.spec());
++    base::ListValue pins;
++    pins.Append(Pin("p", "Work P", "https://work-p.example/"));
++    FindSpace(*update, "work")->Set("pins", std::move(pins));
++  }
++  model->SetTabPinned(model->active_index(), true);
++  auto* pinned = model->GetActiveWebContents();
++  ASSERT_EQ("p", library()->ActivePinIdForTesting());
++  auto* loose = chrome::AddAndReturnTabAt(
++      browser(), GURL("data:text/html,<title>Loose</title>"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(loose));
++  ASSERT_TRUE(content::ExecJs(loose, "window.draft='loose'"));
++  Layout();
++
++  ASSERT_TRUE(library()->ExportSpaceForTesting("personal", "work"));
++  Layout();
++  EXPECT_EQ("work", library()->ActiveSpaceIdForTesting());
++  const auto& root =
++      browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref);
++  EXPECT_EQ(1u, root.FindList("spaces")->size());
++  const auto* work = root.FindList("spaces")->front().GetIfDict();
++  ASSERT_TRUE(work);
++  EXPECT_EQ("work", *work->FindString("id"));
++
++  const auto* wrapper = FolderNamed(*work, "Personal");
++  ASSERT_TRUE(wrapper);
++  const std::string wrapper_id = *wrapper->FindString("id");
++  EXPECT_EQ("", *wrapper->FindString("parent"));
++  EXPECT_EQ(wrapper_id, *FindSaved(*work, "folders", "a")->FindString("parent"));
++  EXPECT_EQ(wrapper_id, *FindSaved(*work, "folders", "b")->FindString("parent"));
++  EXPECT_EQ("a", *FindSaved(*work, "folders", "child")->FindString("parent"));
++  EXPECT_EQ(wrapper_id, *FindSaved(*work, "pins", "q")->FindString("folder"));
++  // The target already had a pin "p", so the exported one was renamed.
++  EXPECT_EQ("", *FindSaved(*work, "pins", "p")->FindString("folder"));
++  EXPECT_EQ(3u, work->FindList("pins")->size());
++  std::string exported_p;
++  for (const auto& value : *work->FindList("pins")) {
++    const auto& pin = value.GetDict();
++    if (*pin.FindString("url") == home.spec()) exported_p = *pin.FindString("id");
++  }
++  ASSERT_FALSE(exported_p.empty());
++  EXPECT_NE("p", exported_p);
++  EXPECT_EQ(wrapper_id,
++            *FindSaved(*work, "pins", exported_p)->FindString("folder"));
++  const auto rows = cove::SidebarOrder::Rows(*work, true);
++  ASSERT_FALSE(rows.empty());
++  EXPECT_EQ("p", rows.front().item.id);
++
++  EXPECT_NE(TabStripModel::kNoTab, model->GetIndexOfWebContents(loose));
++  EXPECT_EQ("loose", content::EvalJs(loose, "window.draft"));
++  const int pinned_index = model->GetIndexOfWebContents(pinned);
++  ASSERT_NE(TabStripModel::kNoTab, pinned_index);
++  EXPECT_TRUE(model->IsTabPinned(pinned_index));
++  model->ActivateTabAt(pinned_index);
++  EXPECT_EQ(exported_p, library()->ActivePinIdForTesting());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       ExportParkedSpaceMovesItsTabsIntoShownSpace) {
++  Seed();
++  auto* model = browser()->GetTabStripModel();
++  library()->FocusSpace("work");
++  Layout();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Work page</title>")));
++  auto* work_contents = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(work_contents, "window.draft='work'"));
++  library()->FocusSpace("personal");
++  Layout();
++  ASSERT_TRUE(library()->HasParkedSpaceForTesting("work"));
++  ASSERT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(work_contents));
++
++  ASSERT_TRUE(library()->ExportSpaceForTesting("work", "personal"));
++  Layout();
++  EXPECT_EQ("personal", library()->ActiveSpaceIdForTesting());
++  EXPECT_FALSE(library()->HasParkedSpaceForTesting("work"));
++  EXPECT_NE(TabStripModel::kNoTab, model->GetIndexOfWebContents(work_contents));
++  EXPECT_EQ("work", content::EvalJs(work_contents, "window.draft"));
++  EXPECT_TRUE(FolderNamed(SavedSpace(), "Work"));
++  EXPECT_FALSE(library()->ExportSpaceForTesting("personal", "personal"));
++  auto* menu = library()->BuildSpaceMenuForTesting("personal");
++  for (size_t i = 0; i < menu->GetItemCount(); ++i) {
++    if (menu->GetTypeAt(i) == ui::MenuModel::TYPE_SUBMENU) {
++      EXPECT_FALSE(menu->IsEnabledAt(i));
++    }
++  }
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -134,6 +134,10 @@
+ constexpr int kEditThemeCommand = 16;
+ constexpr int kChangeSpaceIconCommand = 17;
+ constexpr int kDeleteSpaceCommand = 18;
++constexpr int kExportSpaceMenuCommand = 19;
++constexpr int kExportSpaceCommandBase = 300;
++constexpr int kExportSpaceCommandLimit = 400;
++constexpr size_t kMaxSpaceRedirects = 32;
+ constexpr int kMovePinCommandBase = 100;
+ constexpr int kThemeCommandBase = 200;
+ constexpr int kMoveFolderCommandBase = 10000;
+@@ -3035,6 +3039,24 @@
+ 
+ void CoveSidebarLibraryView::BuildSpaceMenu(const std::string& space_id) {
+   context_space_id_ = space_id;
++  // The Space menu holds a raw pointer to the export submenu.
++  menu_model_.reset();
++  export_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++  menu_export_targets_.clear();
++  std::u16string name = u"Space";
++  for (const auto& space : GetSpaces()) {
++    if (space.id == space_id) {
++      name = space.name;
++      continue;
++    }
++    const int command =
++        kExportSpaceCommandBase + static_cast<int>(menu_export_targets_.size());
++    if (command >= kExportSpaceCommandLimit) {
++      break;
++    }
++    menu_export_targets_.push_back(space.id);
++    export_menu_model_->AddItem(command, space.name);
++  }
+   menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+   menu_model_->AddItem(kChangeSpaceIconCommand, u"Change Space Icon…");
+   menu_model_->AddItem(kRenameSpaceCommand, u"Rename Space…");
+@@ -3042,11 +3064,199 @@
+   menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+   menu_model_->AddItem(kNewFolderCommand, u"New Folder");
+   menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++  menu_model_->AddSubMenu(kExportSpaceMenuCommand,
++                          u"Export \u201c" + name + u"\u201d into Folder",
++                          export_menu_model_.get());
++  menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+   menu_model_->AddItem(kDeleteSpaceCommand, u"Delete Space…");
++}
++
++std::string CoveSidebarLibraryView::ExportedSpaceTarget(
++    const std::string& space_id) const {
++  const auto& root =
++      browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++  const auto* redirects = root.FindDict("space_redirects");
++  std::string current = space_id;
++  for (size_t hops = 0; redirects && hops < kMaxSpaceRedirects; ++hops) {
++    if (FindSpace(root, current)) {
++      return current == space_id ? std::string() : current;
++    }
++    const auto* entry = redirects->FindDict(current);
++    const auto* next = entry ? entry->FindString("space") : nullptr;
++    if (!next) {
++      break;
++    }
++    current = *next;
++  }
++  return FindSpace(root, current) && current != space_id ? current
++                                                         : std::string();
++}
++
++bool CoveSidebarLibraryView::CommitExportSpace(std::string source,
++                                               std::string target) {
++  if (!browser_ || browser_->GetProfile()->IsOffTheRecord() ||
++      switching_space_ || closing_active_space_ || restoring_session_ ||
++      source == target) {
++    return false;
++  }
++  {
++    const auto& root =
++        browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
++    if (!FindSpace(root, source) || !FindSpace(root, target)) {
++      return false;
++    }
++  }
++  if (active_space_id_ != target) {
++    SwitchSpace(target);
++    if (active_space_id_ != target) {
++      return false;
++    }
++  }
++  std::map<std::string, std::string> pin_ids;
++  {
++    ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                                kCoveSidebarPref);
++    auto* from = FindSpace(*update, source);
++    if (!from) {
++      return false;
++    }
++    base::DictValue moved = from->Clone();
++    auto* into = FindSpace(*update, target);
++    if (!into) {
++      return false;
++    }
++    const auto ids_in = [](const base::DictValue& space, const char* key) {
++      std::set<std::string> ids;
++      if (const auto* list = space.FindList(key)) {
++        for (const auto& value : *list) {
++          const auto* item = value.GetIfDict();
++          if (const auto* id = item ? item->FindString("id") : nullptr) {
++            ids.insert(*id);
++          }
++        }
++      }
++      return ids;
++    };
++    const auto taken_pins = ids_in(*into, "pins");
++    const auto taken_folders = ids_in(*into, "folders");
++    const auto fresh = [](const std::set<std::string>& taken,
++                          const std::string& id) {
++      return taken.contains(id) ? base::Uuid::GenerateRandomV4()
++                                      .AsLowercaseString()
++                                : id;
++    };
++    const cove::FolderTree source_tree(moved.FindList("folders"));
++    std::map<std::string, std::string> folder_ids;
++    for (const auto& row : source_tree.Rows(true)) {
++      folder_ids.emplace(row.id, fresh(taken_folders, row.id));
++    }
++    std::string wrapper = base::Uuid::GenerateRandomV4().AsLowercaseString();
++    const auto* source_name = moved.FindString("name");
++    base::DictValue folder;
++    folder.Set("id", wrapper);
++    folder.Set("name", source_name ? *source_name : "Space");
++    folder.Set("parent", "");
++    auto* folders = into->EnsureList("folders");
++    folders->Append(std::move(folder));
++    for (const auto& row : source_tree.Rows(true)) {
++      base::DictValue copy;
++      copy.Set("id", folder_ids.at(row.id));
++      copy.Set("name", base::UTF16ToUTF8(row.name));
++      copy.Set("parent",
++               row.parent.empty() ? wrapper : folder_ids.at(row.parent));
++      copy.Set("collapsed", row.collapsed);
++      folders->Append(std::move(copy));
++    }
++    auto* pins = into->EnsureList("pins");
++    if (auto* source_pins = moved.FindList("pins")) {
++      for (auto& value : *source_pins) {
++        auto* pin = value.GetIfDict();
++        const auto* id = pin ? pin->FindString("id") : nullptr;
++        if (!id || id->empty()) {
++          continue;
++        }
++        const std::string new_id = fresh(taken_pins, *id);
++        pin_ids.emplace(*id, new_id);
++        const auto* parent = pin->FindString("folder");
++        const auto folder_id =
++            parent ? folder_ids.find(*parent) : folder_ids.end();
++        base::DictValue copy = pin->Clone();
++        copy.Set("id", new_id);
++        copy.Set("folder", folder_id == folder_ids.end() ? wrapper
++                                                         : folder_id->second);
++        pins->Append(std::move(copy));
++      }
++    }
++    // Existing target rows keep their positions; the exported folder and its
++    // contents follow in their saved order.
++    base::ListValue order;
++    for (const auto& row : cove::SidebarOrder::Rows(*into, true)) {
++      const bool exported =
++          row.item.id == wrapper ||
++          (row.item.kind == cove::SidebarItemKind::kPin
++               ? std::ranges::any_of(pin_ids,
++                                     [&](const auto& entry) {
++                                       return entry.second == row.item.id;
++                                     })
++               : std::ranges::any_of(folder_ids, [&](const auto& entry) {
++                   return entry.second == row.item.id;
++                 }));
++      if (!exported) {
++        order.Append((row.item.kind == cove::SidebarItemKind::kPin ? "pin:"
++                                                                   : "folder:") +
++                     row.item.id);
++      }
++    }
++    order.Append("folder:" + wrapper);
++    for (const auto& row : cove::SidebarOrder::Rows(moved, true)) {
++      if (row.item.kind == cove::SidebarItemKind::kPin) {
++        if (const auto found = pin_ids.find(row.item.id);
++            found != pin_ids.end()) {
++          order.Append("pin:" + found->second);
++        }
++      } else if (const auto found = folder_ids.find(row.item.id);
++                 found != folder_ids.end()) {
++        order.Append("folder:" + found->second);
++      }
++    }
++    into->Set("sidebar_order", std::move(order));
++
++    base::DictValue redirect;
++    redirect.Set("space", target);
++    base::DictValue renamed;
++    for (const auto& [old_id, new_id] : pin_ids) {
++      if (old_id != new_id) {
++        renamed.Set(old_id, new_id);
++      }
++    }
++    redirect.Set("pins", std::move(renamed));
++    auto* redirects = update->EnsureDict("space_redirects");
++    redirects->Set(source, std::move(redirect));
++    while (redirects->size() > kMaxSpaceRedirects) {
++      std::string oldest;
++      for (const auto [id, entry] : *redirects) {
++        if (id != source) {
++          oldest = id;
++          break;
++        }
++      }
++      redirects->Remove(oldest);
++    }
++    if (auto* list = update->FindList("spaces")) {
++      list->EraseIf([&](const base::Value& value) {
++        const auto* item = value.GetIfDict();
++        const auto* id = item ? item->FindString("id") : nullptr;
++        return id && *id == source;
++      });
++    }
++  }
++  ReconcileDeletedSpaces();
++  return true;
+ }
+ 
+ ui::SimpleMenuModel* CoveSidebarLibraryView::BuildSpaceMenuForTesting(
+     const std::string& space_id) {
++  menu_runner_.reset();
+   menu_space_id_ = active_space_id_;
+   context_folder_id_.clear();
+   context_pin_id_.clear();
+@@ -3132,12 +3342,13 @@
+   const auto& root =
+       browser_->GetProfile()->GetPrefs()->GetDict(kCoveSidebarPref);
+   if (!FindSpace(root, active_space_id_)) {
+-    // Another window deleted the Space this window shows.
++    // Another window deleted or exported the Space this window shows.
+     const auto spaces = GetSpaces();
+     if (spaces.empty()) {
+       return;
+     }
+-    SwitchSpace(spaces.front().id);
++    const std::string exported = ExportedSpaceTarget(active_space_id_);
++    SwitchSpace(exported.empty() ? spaces.front().id : exported);
+     if (!FindSpace(browser_->GetProfile()->GetPrefs()->GetDict(
+                        kCoveSidebarPref),
+                    active_space_id_)) {
+@@ -3152,26 +3363,71 @@
+       deleted.push_back(id);
+     }
+   }
++  const auto* redirects = current.FindDict("space_redirects");
++  for (auto& [handle, binding] : tab_pin_ids_) {
++    // Follow each export hop, applying any pin IDs renamed on collision.
++    for (size_t hops = 0; hops < kMaxSpaceRedirects && redirects &&
++                          !FindSpace(current, binding.first);
++         ++hops) {
++      const auto* entry = redirects->FindDict(binding.first);
++      const auto* next = entry ? entry->FindString("space") : nullptr;
++      if (!next) {
++        break;
++      }
++      const auto* renamed = entry->FindDict("pins");
++      if (const auto* pin = renamed ? renamed->FindString(binding.second)
++                                    : nullptr) {
++        binding.second = *pin;
++      }
++      binding.first = *next;
++    }
++  }
+   std::erase_if(tab_pin_ids_, [&](const auto& binding) {
+     return !FindSpace(current, binding.second.first);
+   });
+   if (deleted.empty()) {
+     return;
+   }
++  // Kept tabs are re-recorded as they join, so they must not follow a
++  // deleted Space whose tabs are about to close.
++  std::ranges::stable_partition(deleted, [&](const std::string& id) {
++    return !ExportedSpaceTarget(id).empty();
++  });
+   TabStripModel* model = browser_->GetTabStripModel();
+   std::vector<tabs::TabHandle> before;
+   for (auto* tab : *model) {
+     before.push_back(tab->GetHandle());
+   }
+   {
+-    // Parked pages rejoin the strip only to run Chromium's normal close path:
+-    // beforeunload, unload handlers and recently-closed history.
++    // Exported pages join their new Space. Deleted pages rejoin the strip
++    // only to run Chromium's normal close path: beforeunload, unload handlers
++    // and recently-closed history.
+     base::AutoReset<bool> switching(&switching_space_, true);
+     for (const auto& id : deleted) {
+       auto found = inactive_spaces_.find(id);
+       auto space = std::move(found->second);
+       inactive_spaces_.erase(found);
++      const std::string exported = ExportedSpaceTarget(id);
++      if (!exported.empty() && exported != active_space_id_) {
++        if (auto parked = inactive_spaces_.find(exported);
++            parked != inactive_spaces_.end()) {
++          for (auto& item : space->items) {
++            parked->second->items.push_back(std::move(item));
++          }
++          for (const auto& handle : space->handles) {
++            parked->second->handles.push_back(handle);
++          }
++          continue;
++        }
++      }
+       InsertSpaceTabs(*space);
++      if (!exported.empty()) {
++        // Kept in the strip: a tab joining the shown Space, or a Space this
++        // window has not parked yet. Neither case closes a page.
++        for (auto* tab : *model) {
++          before.push_back(tab->GetHandle());
++        }
++      }
+     }
+   }
+   std::vector<tabs::TabHandle> closing;
+@@ -3324,7 +3580,16 @@
+   if (command_id == kDeleteSpaceCommand) {
+     return GetSpaces().size() > 1 && !switching_space_ &&
+            !closing_active_space_ && !restoring_session_;
++  }
++  if (command_id == kExportSpaceMenuCommand) {
++    return !menu_export_targets_.empty();
+   }
++  if (command_id >= kExportSpaceCommandBase &&
++      command_id < kExportSpaceCommandLimit) {
++    return static_cast<size_t>(command_id - kExportSpaceCommandBase) <
++               menu_export_targets_.size() &&
++           !switching_space_ && !closing_active_space_ && !restoring_session_;
++  }
+   if (command_id >= kThemeCommandBase &&
+       command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
+     return true;
+@@ -3382,6 +3647,15 @@
+                                                  : context_space_id_);
+     return;
+   }
++  if (command_id >= kExportSpaceCommandBase &&
++      command_id < kExportSpaceCommandLimit) {
++    const std::string target =
++        menu_export_targets_.at(command_id - kExportSpaceCommandBase);
++    CommitExportSpace(context_space_id_.empty() ? active_space_id_
++                                                : context_space_id_,
++                      target);
++    return;
++  }
+   if (command_id >= kThemeCommandBase &&
+       command_id < kThemeCommandBase + static_cast<int>(std::size(kSpacePalettes))) {
+     SetSpacePalette(context_space_id_.empty() ? active_space_id_ : context_space_id_,
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -129,6 +129,11 @@
+     CommitSpaceIcon(space_id, std::move(icon));
+   }
+   void ReconcileDeletedSpacesForTesting() { ReconcileDeletedSpaces(); }
++  bool ExportSpaceForTesting(const std::string& source,
++                             const std::string& target) {
++    return CommitExportSpace(source, target);
++  }
++  std::string ActivePinIdForTesting() const { return ActivePinId(); }
+   bool HasParkedSpaceForTesting(const std::string& space_id) const {
+     return inactive_spaces_.contains(space_id);
+   }
+@@ -278,6 +283,12 @@
+   // history in ReconcileDeletedSpaces(). The last Space cannot be deleted.
+   void CommitDeleteSpace(std::string space_id);
+   void ReconcileDeletedSpaces();
++  // Turns `source` into a folder named after it at the end of `target`, moves
++  // its open tabs there and removes `source`. Other windows follow the saved
++  // redirect in ReconcileDeletedSpaces() instead of closing those tabs.
++  bool CommitExportSpace(std::string source, std::string target);
++  // Resolves a removed Space to the Space it was exported into, if any.
++  std::string ExportedSpaceTarget(const std::string& space_id) const;
+   void EditSpaceIcon(std::string space_id);
+   void CommitSpaceIcon(std::string space_id, std::u16string icon);
+   void RemovePin(const std::string& pin_id);
+@@ -328,6 +339,8 @@
+   bool reconcile_posted_ = false;
+   std::string menu_space_id_;
+   std::map<int, std::string> menu_folder_moves_;
++  std::vector<std::string> menu_export_targets_;
++  std::unique_ptr<ui::SimpleMenuModel> export_menu_model_;
+   std::string context_folder_id_;
+   std::string context_space_id_;
+   std::string context_pin_id_;
