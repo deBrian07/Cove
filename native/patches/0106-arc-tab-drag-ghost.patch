@@ -1,0 +1,515 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -269,7 +269,16 @@
+ void CoveFavoritesView::SetTabDragActive(bool active) {
+   if (tab_drag_active_ == active) return;
+   tab_drag_active_ = active;
++  empty_drop_zone_revealed_ = false;
+   if (!active) OnTabDragEnded();
++  Rebuild();
++}
++
++void CoveFavoritesView::SetEmptyDropZoneRevealed(bool revealed) {
++  if (!tab_drag_active_ || empty_drop_zone_revealed_ == revealed) return;
++  empty_drop_zone_revealed_ = revealed;
++  if (!row_urls_.empty()) return;
++  if (!revealed) OnTabDragEnded();
+   Rebuild();
+ }
+ 
+@@ -292,14 +301,17 @@
+   const auto* attached = controller.GetAttachedContext();
+   if (!attached || attached->GetWidget() != GetWidget()) return nullptr;
+   auto* context = const_cast<TabDragContext*>(attached);
+-  if (!GetTabDragTarget(point_in_screen)) return context;
+   const auto& data = controller.GetSessionData();
+-  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
+-      data.group_header_drag_data_) return context;
+   content::WebContents* contents = nullptr;
+   for (const auto& entry : data.tab_drag_data_) {
+     if (entry.contents) contents = entry.contents;
+   }
++  if (auto* region = RegionForFavorites(browser_)) {
++    region->ShowCoveDragGhost(contents, point_in_screen);
++  }
++  if (!GetTabDragTarget(point_in_screen)) return context;
++  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
++      data.group_header_drag_data_) return context;
+   auto* tab = contents ? tabs::TabInterface::GetFromContents(contents) : nullptr;
+   if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
+       tab->GetSplit() || !IsFavoriteUrl(contents->GetVisibleURL())) return context;
+@@ -327,6 +339,7 @@
+ 
+ void CoveFavoritesView::OnTabDragExited(const gfx::Point& point_in_screen) {
+   OnTabDragEnded();
++  if (auto* region = RegionForFavorites(browser_)) region->HideCoveDragGhost();
+ }
+ 
+ void CoveFavoritesView::OnTabDragEnded() {
+@@ -670,8 +683,9 @@
+         return url && IsFavoriteUrl(GURL(*url));
+       }) : 0;
+   if (count == 0) {
+-    SetVisible(tab_drag_active_);
+-    if (tab_drag_active_) {
++    const bool show_drop_zone = tab_drag_active_ && empty_drop_zone_revealed_;
++    SetVisible(show_drop_zone);
++    if (show_drop_zone) {
+       layout->AddColumn(views::LayoutAlignment::kStretch,
+                         views::LayoutAlignment::kStretch, 1.0f,
+                         views::TableLayout::ColumnSize::kUsePreferred, 0,
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.h b/chrome/browser/ui/views/cove/cove_favorites_view.h
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.h
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.h
+@@ -58,6 +58,8 @@
+   base::WeakPtr<CoveFavoritesView> GetWeakPtr();
+ 
+   void SetTabDragActive(bool active);
++  // With no Favorites, the drop box shows only while this is set.
++  void SetEmptyDropZoneRevealed(bool revealed);
+   TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
+   void OnTabDragEntered() override;
+   TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
+@@ -133,6 +135,7 @@
+   bool source_drag_active_ = false;
+   std::unique_ptr<ExpandOnHoverLock> saved_drag_hover_lock_;
+   bool tab_drag_active_ = false;
++  bool empty_drop_zone_revealed_ = false;
+   std::optional<tabs::TabHandle> live_drag_handle_;
+   std::optional<FavoriteDrop> live_drop_;
+   base::OnceClosureList tab_drag_destroy_callbacks_;
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -6,6 +6,9 @@
+ #include <string>
+ 
+ #include "base/run_loop.h"
++#include "base/test/bind.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "ui/base/test/ui_controls.h"
+ #include "base/values.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+@@ -18,6 +21,7 @@
+ #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/common/root_tab_collection_node.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
+@@ -129,6 +133,16 @@
+     return BrowserView::GetBrowserViewForBrowser(browser());
+   }
+ 
++  VerticalTabStripRegionView* region() {
++    return views::AsViewClass<VerticalTabStripRegionView>(
++        browser_view()->tab_strip_view());
++  }
++
++  // Above the saved rows, where an empty Favorites box opens.
++  gfx::Point SidebarTop() {
++    return region()->GetBoundsInScreen().top_center() + gfx::Vector2d(0, 16);
++  }
++
+   views::View* DisplayedTabView(content::WebContents* contents) {
+     auto* region = views::AsViewClass<BaseTabStripRegionView>(browser_view()->tab_strip_view());
+     auto* root = region ? region->root_node_for_testing() : nullptr;
+@@ -245,8 +259,17 @@
+                 FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
+   EXPECT_EQ(original_bounds, widget->GetWindowBoundsInScreen());
+   EXPECT_TRUE(library()->CanDropTab());
++  auto* ghost = region()->cove_drag_ghost_for_testing();
++  ASSERT_TRUE(ghost);
++  EXPECT_TRUE(ghost->GetVisible());
++  const gfx::Rect ghost_bounds = ghost->GetBoundsInScreen();
++  const int pointer_y =
++      FindFolderRow(library())->GetBoundsInScreen().CenterPoint().y();
++  EXPECT_LE(ghost_bounds.y(), pointer_y);
++  EXPECT_GE(ghost_bounds.bottom(), pointer_y);
+   context->GetDragController()->EndDrag(EndDragReason::kComplete);
+   base::RunLoop().RunUntilIdle();
++  EXPECT_FALSE(ghost->GetVisible());
+ 
+   ASSERT_EQ(1, model->count());
+   ASSERT_TRUE(handle.Get());
+@@ -331,10 +354,16 @@
+   auto* context = browser_view()->tab_strip_view()->GetDragContext();
+   auto* source = context->GetTabForContents(contents);
+   ASSERT_TRUE(source);
+-  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(
+-      context, source,
+-      FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
++  const gfx::Rect folder_before = FindFolderRow(library())->GetBoundsInScreen();
++  ASSERT_NO_FATAL_FAILURE(BeginRealDrag(context, source,
++                                        folder_before.CenterPoint()));
+   widget->LayoutRootViewIfNecessary();
++  // Starting the drag must not push the rows down under the pointer.
++  EXPECT_FALSE(favorites->GetVisible());
++  EXPECT_EQ(folder_before, FindFolderRow(library())->GetBoundsInScreen());
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(SidebarTop()));
++  widget->LayoutRootViewIfNecessary();
+   ASSERT_TRUE(favorites->GetVisible());
+   ASSERT_EQ(1u, favorites->children().size());
+   EXPECT_EQ(
+@@ -387,6 +416,10 @@
+       context, source,
+       FindFolderRow(library())->GetBoundsInScreen().CenterPoint()));
+   browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  EXPECT_FALSE(favorites->GetVisible());
++  ASSERT_EQ(TabDragController::Liveness::kAlive,
++            context->GetDragController()->Drag(SidebarTop()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
+   ASSERT_TRUE(favorites->GetVisible());
+   const auto point = favorites->GetBoundsInScreen().CenterPoint();
+   ASSERT_EQ(TabDragController::Liveness::kAlive,
+@@ -637,6 +670,151 @@
+   const auto& pins = *PersonalSpace(browser()->GetProfile())->FindList("pins");
+   ASSERT_EQ(1u, pins.size());
+   EXPECT_EQ(kFolderId, *pins.front().GetDict().FindString("folder"));
++}
++
++class CoveRealMouseTabDragBrowserTest : public CoveLiveTabDragBrowserTest {
++ protected:
++  int BrowserCount() {
++    int count = 0;
++    GlobalBrowserCollection::GetInstance()->ForEach(
++        [&](BrowserWindowInterface*) {
++          ++count;
++          return true;
++        });
++    return count;
++  }
++
++  void SetUpOnMainThread() override {
++    CoveLiveTabDragBrowserTest::SetUpOnMainThread();
++    ui_controls::EnableUIControls();
++  }
++
++  void MoveMouse(const gfx::Point& point) {
++    base::RunLoop loop;
++    ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++        point.x(), point.y(), loop.QuitClosure()));
++    loop.Run();
++  }
++
++  void Button(ui_controls::MouseButtonState state) {
++    base::RunLoop loop;
++    ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
++        ui_controls::LEFT, state, loop.QuitClosure()));
++    loop.Run();
++  }
++
++  // Presses on `from`, moves in small steps the way a hand does, re-resolving
++  // the destination as the sidebar reflows, then releases there.
++  void MouseDrag(const gfx::Point& from,
++                 base::RepeatingCallback<gfx::Point()> to) {
++    ASSERT_NO_FATAL_FAILURE(MoveMouse(from));
++    ASSERT_NO_FATAL_FAILURE(Button(ui_controls::DOWN));
++    gfx::Point at = from;
++    for (int step = 0; step < 400 && at != to.Run(); ++step) {
++      const gfx::Point target = to.Run();
++      const gfx::Vector2d delta = target - at;
++      at += gfx::Vector2d(std::clamp(delta.x(), -6, 6),
++                          std::clamp(delta.y(), -6, 6));
++      ASSERT_NO_FATAL_FAILURE(MoveMouse(at));
++      browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++    }
++    ASSERT_NO_FATAL_FAILURE(Button(ui_controls::UP));
++    base::RunLoop().RunUntilIdle();
++  }
++};
++
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDragsTabIntoFolderPin) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* first = model->GetActiveWebContents();
++  auto* second = chrome::AddAndReturnTabAt(
++      browser(), embedded_test_server()->GetURL("/title2.html"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(second));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  const auto bounds = browser_view()->GetWidget()->GetWindowBoundsInScreen();
++  auto* tab = DisplayedTabView(second);
++  ASSERT_TRUE(tab);
++
++  ASSERT_NO_FATAL_FAILURE(MouseDrag(
++      tab->GetBoundsInScreen().CenterPoint(),
++      base::BindLambdaForTesting([&] {
++        return FindFolderRow(library())->GetBoundsInScreen().CenterPoint();
++      })));
++
++  EXPECT_EQ(1, BrowserCount());
++  EXPECT_EQ(bounds, browser_view()->GetWidget()->GetWindowBoundsInScreen());
++  ASSERT_EQ(2, model->count());
++  EXPECT_TRUE(tabs::TabInterface::GetFromContents(second)->IsPinned());
++  EXPECT_FALSE(tabs::TabInterface::GetFromContents(first)->IsPinned());
++  const auto* pins = PersonalSpace(browser()->GetProfile())->FindList("pins");
++  ASSERT_TRUE(pins);
++  ASSERT_EQ(1u, pins->size());
++  EXPECT_EQ(kFolderId, *pins->front().GetDict().FindString("folder"));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDragsTabIntoExistingFavorites) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(),
++                                "cove.sidebar");
++    base::ListValue favorites;
++    base::DictValue favorite;
++    favorite.Set("url", "https://favorite.example/");
++    favorite.Set("title", "Favorite");
++    favorites.Append(std::move(favorite));
++    update->Set("favorites", std::move(favorites));
++  }
++  base::RunLoop().RunUntilIdle();
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* second = chrome::AddAndReturnTabAt(
++      browser(), embedded_test_server()->GetURL("/title2.html"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(second));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* favorites = FindFavoritesView(browser_view());
++  ASSERT_TRUE(favorites);
++  ASSERT_TRUE(favorites->GetVisible());
++  auto* tab = DisplayedTabView(second);
++  ASSERT_TRUE(tab);
++  ASSERT_NO_FATAL_FAILURE(MouseDrag(
++      tab->GetBoundsInScreen().CenterPoint(), base::BindLambdaForTesting([&] {
++        return favorites->GetBoundsInScreen().CenterPoint();
++      })));
++  const auto* list = browser()->GetProfile()->GetPrefs()->GetDict(
++      "cove.sidebar").FindList("favorites");
++  ASSERT_TRUE(list);
++  EXPECT_EQ(2u, list->size());
++  EXPECT_EQ(1, BrowserCount());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDragsTabIntoFavorites) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* second = chrome::AddAndReturnTabAt(
++      browser(), embedded_test_server()->GetURL("/title2.html"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(second));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* favorites = FindFavoritesView(browser_view());
++  ASSERT_TRUE(favorites);
++  auto* tab = DisplayedTabView(second);
++  ASSERT_TRUE(tab);
++  const gfx::Point start = tab->GetBoundsInScreen().CenterPoint();
++
++  ASSERT_NO_FATAL_FAILURE(MouseDrag(
++      start, base::BindLambdaForTesting([&] {
++        // The empty Favorites box opens at the top of the sidebar.
++        return favorites->GetVisible()
++                   ? favorites->GetBoundsInScreen().CenterPoint()
++                   : SidebarTop();
++      })));
++
++  EXPECT_EQ(1, BrowserCount());
++  const auto& root =
++      browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar");
++  const auto* list = root.FindList("favorites");
++  ASSERT_TRUE(list) << root.DebugString();
++  EXPECT_EQ(1u, list->size());
++}
++
+ }  // namespace
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -3176,11 +3176,14 @@
+   if (!attached || attached->GetWidget() != GetWidget()) return nullptr;
+   auto* context = const_cast<TabDragContext*>(attached);
+   const auto& data = controller.GetSessionData();
+-  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
+-      data.group_header_drag_data_) return context;
+   content::WebContents* contents = nullptr;
+   for (const auto& entry : data.tab_drag_data_)
+     if (entry.contents) contents = entry.contents;
++  if (auto* region = RegionForLibrary(browser_)) {
++    region->ShowCoveDragGhost(contents, point_in_screen);
++  }
++  if (data.num_dragging_tabs() != 1 || !data.dragging_groups.empty() ||
++      data.group_header_drag_data_) return context;
+   auto* tab = contents ? tabs::TabInterface::GetFromContents(contents) : nullptr;
+   if (!tab || tab->GetBrowserWindowInterface() != browser_ || tab->GetGroup() ||
+       tab->GetSplit() || !contents->GetVisibleURL().is_valid() ||
+@@ -3196,6 +3199,7 @@
+ 
+ void CoveSidebarLibraryView::OnTabDragExited(const gfx::Point& point_in_screen) {
+   OnTabDragEnded();
++  if (auto* region = RegionForLibrary(browser_)) region->HideCoveDragGhost();
+ }
+ void CoveSidebarLibraryView::OnTabDragEnded() {
+   live_drag_handle_.reset();
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -65,12 +65,16 @@
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "chrome/grit/generated_resources.h"
++#include "base/strings/utf_string_conversions.h"
++#include "components/favicon/content/content_favicon_driver.h"
+ #include "components/tabs/public/tab_group.h"
++#include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/web_contents.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "ui/base/dragdrop/os_exchange_data.h"
+ #include "ui/base/interaction/element_tracker.h"
+ #include "ui/base/l10n/l10n_util.h"
++#include "ui/base/models/image_model.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/compositor/layer.h"
+ #include "ui/compositor/layer_tree_owner.h"
+@@ -87,6 +91,9 @@
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/controls/focus_ring.h"
++#include "ui/views/controls/image_view.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout.h"
+ #include "ui/views/controls/resize_area.h"
+ #include "ui/views/controls/scroll_view.h"
+ #include "ui/views/focus/focus_manager.h"
+@@ -1246,10 +1253,96 @@
+ 
+ void VerticalTabStripRegionView::SetCoveTabDragActive(bool active) {
+   if (favorites_view_) favorites_view_->SetTabDragActive(active);
++  if (active) {
++    cove_drag_start_x_ =
++        views::View::ConvertPointFromScreen(
++            this, display::Screen::Get()->GetCursorScreenPoint())
++            .x();
++  } else {
++    cove_drag_start_x_.reset();
++    HideCoveDragGhost();
++  }
+   InvalidateLayout();
+   if (GetWidget()) GetWidget()->LayoutRootViewIfNecessary();
+ }
+ 
++void VerticalTabStripRegionView::ShowCoveDragGhost(
++    content::WebContents* contents,
++    const gfx::Point& screen_point) {
++  if (!contents || !GetWidget() || !content_area_view_) {
++    HideCoveDragGhost();
++    return;
++  }
++  const gfx::Point point = views::View::ConvertPointFromScreen(this, screen_point);
++  if (favorites_view_ && space_clip_view_) {
++    // An empty Favorites box opens only once the pointer reaches the top of
++    // the sidebar, so starting a drag never shifts the rows under it. The
++    // threshold follows the clip as it moves, which keeps the box open while
++    // the pointer is over it.
++    const gfx::Rect clip = views::View::ConvertRectToTarget(
++        space_clip_view_->parent(), this, space_clip_view_->bounds());
++    favorites_view_->SetEmptyDropZoneRevealed(point.y() < clip.y() + 40);
++  }
++  if (!cove_drag_ghost_) {
++    auto ghost = std::make_unique<views::View>();
++    ghost->SetProperty(views::kViewIgnoredByLayoutKey, true);
++    ghost->SetCanProcessEventsWithinSubtree(false);
++    ghost->SetPaintToLayer();
++    ghost->layer()->SetFillsBoundsOpaquely(false);
++    ghost->layer()->SetOpacity(0.85f);
++    ghost->SetBackground(views::CreateRoundedRectBackground(
++        kColorTabBackgroundActiveFrameActive, 8));
++    auto* layout = ghost->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 10), 8));
++    layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    cove_drag_ghost_icon_ =
++        ghost->AddChildView(std::make_unique<views::ImageView>());
++    cove_drag_ghost_icon_->SetImageSize(gfx::Size(16, 16));
++    cove_drag_ghost_title_ = ghost->AddChildView(std::make_unique<views::Label>());
++    cove_drag_ghost_title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    cove_drag_ghost_title_->SetElideBehavior(gfx::ELIDE_TAIL);
++    cove_drag_ghost_title_->SetSubpixelRenderingEnabled(false);
++    layout->SetFlexForView(cove_drag_ghost_title_, 1);
++    auto* close = ghost->AddChildView(std::make_unique<views::ImageView>());
++    close->SetImage(ui::ImageModel::FromVectorIcon(
++        vector_icons::kCloseIcon, ui::kColorIconSecondary, 14));
++    cove_drag_ghost_ = AddChildView(std::move(ghost));
++  }
++  auto* driver = favicon::ContentFaviconDriver::FromWebContents(contents);
++  if (driver && driver->FaviconIsValid() && !driver->GetFavicon().IsEmpty()) {
++    cove_drag_ghost_icon_->SetImage(
++        ui::ImageModel::FromImage(driver->GetFavicon()));
++  } else {
++    cove_drag_ghost_icon_->SetImage(ui::ImageModel::FromVectorIcon(
++        vector_icons::kGlobeIcon, ui::kColorIcon, 16));
++  }
++  std::u16string title = contents->GetTitle();
++  if (title.empty()) {
++    title = base::UTF8ToUTF16(contents->GetVisibleURL().spec());
++  }
++  cove_drag_ghost_title_->SetText(title);
++
++  constexpr int kGhostHeight = 36;
++  const gfx::Rect lane = views::View::ConvertRectToTarget(
++      content_area_view_->parent(), this, content_area_view_->bounds());
++  const int ghost_width = std::max(0, lane.width() - 16);
++  const int x = lane.x() + 8 + point.x() - cove_drag_start_x_.value_or(point.x());
++  const int y = point.y() - kGhostHeight / 2;
++  cove_drag_ghost_->SetBounds(
++      std::clamp(x, 0, std::max(0, width() - ghost_width)),
++      std::clamp(y, 0, std::max(0, height() - kGhostHeight)), ghost_width,
++      kGhostHeight);
++  cove_drag_ghost_->SetVisible(true);
++  ReorderChildView(cove_drag_ghost_, children().size());
++}
++
++void VerticalTabStripRegionView::HideCoveDragGhost() {
++  if (cove_drag_ghost_) {
++    cove_drag_ghost_->SetVisible(false);
++  }
++}
++
+ views::ScrollView* VerticalTabStripRegionView::SharedRowsScrollView() const {
+   return space_rows_view_
+              ? views::ScrollView::GetScrollViewForContents(space_rows_view_)
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -50,8 +50,12 @@
+ 
+ namespace ui { class LayerTreeOwner; }
+ 
++namespace content { class WebContents; }
++
+ namespace views {
+ class AnimationAbortHandle;
++class ImageView;
++class Label;
+ class LabelButton;
+ class ResizeArea;
+ class ScrollView;
+@@ -100,6 +104,12 @@
+   // viewport's top or bottom edge band.
+   void NoteDragScreenPoint(const gfx::Point& screen_point);
+   void StopDragEdgeAutoscroll();
++  // A live tab cannot leave the native tab list, so over Favorites and saved
++  // rows a floating copy of its row follows the pointer instead.
++  void ShowCoveDragGhost(content::WebContents* contents,
++                         const gfx::Point& screen_point);
++  void HideCoveDragGhost();
++  views::View* cove_drag_ghost_for_testing() { return cove_drag_ghost_; }
+   void FireDragEdgeAutoscrollForTesting();
+   bool IsDragEdgeAutoscrollingForTesting() const;
+ 
+@@ -370,6 +380,10 @@
+   // Region-owned so a stationary drag keeps scrolling after the last event.
+   base::RepeatingTimer drag_edge_timer_;
+   std::optional<gfx::Point> drag_edge_screen_point_;
++  raw_ptr<views::View> cove_drag_ghost_ = nullptr;
++  raw_ptr<views::ImageView> cove_drag_ghost_icon_ = nullptr;
++  raw_ptr<views::Label> cove_drag_ghost_title_ = nullptr;
++  std::optional<int> cove_drag_start_x_;
+ 
+   base::CallbackListSubscription paint_as_active_subscription_;
+   base::WeakPtrFactory<VerticalTabStripRegionView> weak_factory_{this};
