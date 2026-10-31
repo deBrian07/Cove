@@ -1,0 +1,255 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -438,6 +438,8 @@
+     return operation;
+   }
+ 
++  void VerifyMovedPin(bool collision);
++
+   void SelectFolderMenu(const std::string& id) {
+     library()->context_folder_id_ = id;
+     library()->menu_space_id_ = "personal";
+@@ -1684,3 +1686,132 @@
+   Layout();
+   EXPECT_FALSE(library()->ActivePinIdForTesting().empty());
+ }
++
++void CoveSidebarDragBrowserTest::VerifyMovedPin(bool collision) {
++  Seed();
++  const GURL home("data:text/html,<title>Saved pin home</title>");
++  const GURL away("data:text/html,<title>Navigated pin</title>");
++  auto* prefs = browser()->GetProfile()->GetPrefs();
++  base::DictValue existing;
++  {
++    ScopedDictPrefUpdate update(prefs, kSidebarPref);
++    auto* source = FindSpace(*update, "personal");
++    auto& pin = source->FindList("pins")->front().GetDict();
++    pin.Set("url", home.spec());
++    pin.Set("title", "My custom pin name");
++    pin.Set("future_metadata", base::DictValue().Set("retained", 107));
++    ASSERT_TRUE(cove::SidebarOrder::Move(
++        *source, {cove::SidebarItemKind::kPin, "p"}, "a"));
++    if (collision) {
++      // The destination pin deliberately shares both the old ID and the
++      // moving page's current URL. Neither saved identity may be merged.
++      existing = Pin("p", "Destination pin", away.spec().c_str());
++      FindSpace(*update, "work")->EnsureList("pins")->Append(existing.Clone());
++    }
++  }
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  model->SetTabPinned(model->active_index(), true);
++  Layout();
++  ASSERT_EQ("p", library()->ActivePinIdForTesting());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), away));
++  ASSERT_TRUE(content::ExecJs(contents, "window.pinMoveDraft='still here'"));
++  const int history_count = contents->GetController().GetEntryCount();
++  const auto* original = FindSaved(SavedSpace(), "pins", "p");
++  ASSERT_TRUE(original);
++  auto expected = original->Clone();
++  const auto folders = SavedSpace().FindList("folders")->Clone();
++  ASSERT_TRUE(MoveTabWithMenu(browser(), model->GetIndexOfWebContents(contents),
++                            u"Work"));
++  Layout();
++  ASSERT_EQ("work", library()->ActiveSpaceIdForTesting());
++  ASSERT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(model->active_index()));
++  EXPECT_EQ(away, contents->GetVisibleURL());
++  EXPECT_EQ(history_count, contents->GetController().GetEntryCount());
++  EXPECT_EQ("still here", content::EvalJs(contents, "window.pinMoveDraft"));
++  const std::string moved_id = library()->ActivePinIdForTesting();
++  ASSERT_FALSE(moved_id.empty());
++  if (collision) EXPECT_NE("p", moved_id);
++  else EXPECT_EQ("p", moved_id);
++  const auto& root = prefs->GetDict(kSidebarPref);
++  // Resolve through a local snapshot: no borrowed pref value crosses a write.
++  auto saved = root.Clone();
++  const auto* destination = FindSpace(saved, "work");
++  ASSERT_TRUE(destination);
++  const auto* record = FindSaved(*destination, "pins", moved_id);
++  ASSERT_TRUE(record);
++  expected.Set("id", moved_id);
++  expected.Set("folder", "");
++  EXPECT_EQ(expected, *record);
++  EXPECT_EQ(collision ? 2u : 1u, destination->FindList("pins")->size());
++  if (collision) {
++    ASSERT_TRUE(FindSaved(*destination, "pins", "p"));
++    EXPECT_EQ(existing, *FindSaved(*destination, "pins", "p"));
++  }
++  const auto* source = FindSpace(saved, "personal");
++  ASSERT_TRUE(source);
++  EXPECT_FALSE(FindSaved(*source, "pins", "p"));
++  EXPECT_TRUE(FindSaved(*source, "pins", "q"));
++  EXPECT_EQ(folders, *source->FindList("folders"));
++  ASSERT_TRUE(library()->GetSessionSnapshot());
++  const auto* state = GetCoveTabSessionState(contents);
++  ASSERT_TRUE(state);
++  EXPECT_EQ("work", state->space);
++  EXPECT_EQ(moved_id, state->pin);
++  library()->FocusSpace("personal");
++  Layout();
++  library()->FocusSpace("work");
++  Layout();
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_EQ(moved_id, library()->ActivePinIdForTesting());
++  EXPECT_EQ("still here", content::EvalJs(contents, "window.pinMoveDraft"));
++  // Reset must use the original saved home, not the page that was displayed
++  // during the move, while keeping the same native WebContents.
++  library()->ExecuteArcCommand(IDC_COVE_RESET_PIN);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  EXPECT_EQ(home, contents->GetVisibleURL());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MoveNavigatedPinPreservesSavedHomeAndFields) {
++  ASSERT_NO_FATAL_FAILURE(VerifyMovedPin(false));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MoveNavigatedPinRenamesCollidingIdentityWithoutMerging) {
++  ASSERT_NO_FATAL_FAILURE(VerifyMovedPin(true));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MoveRejectsAmbiguousPinBeforeChangingPagesOrSavedData) {
++  Seed();
++  const GURL home("data:text/html,<title>Ambiguous pin</title>");
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* source = FindSpace(*update, "personal");
++    source->FindList("pins")->front().GetDict().Set("url", home.spec());
++  }
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), home));
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  model->SetTabPinned(model->active_index(), true);
++  Layout();
++  ASSERT_EQ("p", library()->ActivePinIdForTesting());
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* pins = FindSpace(*update, "personal")->FindList("pins");
++    auto duplicate = pins->front().Clone();
++    pins->Append(std::move(duplicate));
++  }
++  Layout();
++  const auto before = browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref).Clone();
++  EXPECT_FALSE(library()->MoveTabsToSpace(
++      {model->GetActiveTab()->GetHandle()}, "work"));
++  EXPECT_EQ("personal", library()->ActiveSpaceIdForTesting());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(model->active_index()));
++  EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -1687,6 +1687,32 @@
+   if (moving.empty()) {
+     return false;
+   }
++  // Keep saved records for bound pins instead of unpinning and recreating
++  // them from their current navigation. A pin's home/title can differ from
++  // the page it currently shows. Reject ambiguous bindings before any move.
++  const std::string source_space_id = active_space_id_;
++  const auto* source = FindSpace(prefs->GetDict(kCoveSidebarPref), source_space_id);
++  const auto* source_pins = source ? source->FindList("pins") : nullptr;
++  std::map<int, base::DictValue> saved_pins;
++  std::set<std::string> transferring_ids;
++  for (const auto& handle : moving) {
++    auto* tab = handle.Get();
++    const auto binding = tab_pin_ids_.find(handle.raw_value());
++    if (!tab || !tab->IsPinned() || binding == tab_pin_ids_.end() ||
++        binding->second.first != source_space_id || !source_pins) continue;
++    const base::DictValue* record = nullptr;
++    for (const auto& value : *source_pins) {
++      const auto* pin = value.GetIfDict();
++      const auto* id = pin ? pin->FindString("id") : nullptr;
++      if (!id || *id != binding->second.second) continue;
++      if (record) return false;
++      record = pin;
++    }
++    if (!record) continue;
++    const auto* id = record->FindString("id");
++    if (!id || id->empty() || !transferring_ids.insert(*id).second) return false;
++    saved_pins.emplace(handle.raw_value(), record->Clone());
++  }
+   CloseRecentTabSwitcher();
+   // Groups stay with the Space they were made in.
+   std::vector<int> grouped;
+@@ -1699,12 +1725,12 @@
+     std::ranges::sort(grouped);
+     model->RemoveFromGroup(grouped);
+   }
+-  // Unpinning drops the source Space's pin record; the tab is pinned again in
+-  // the target so it becomes that Space's pin.
++  // Bound pins stay pinned throughout. Native pins without a saved binding
++  // retain the existing unpin/repin path so eligible pages get a target row.
+   std::vector<tabs::TabHandle> repin;
+   for (const auto& handle : moving) {
+     auto* tab = handle.Get();
+-    if (tab && tab->IsPinned()) {
++    if (tab && tab->IsPinned() && !saved_pins.contains(handle.raw_value())) {
+       repin.push_back(handle);
+       model->SetTabPinned(model->GetIndexOfTab(tab), false);
+     }
+@@ -1730,6 +1756,46 @@
+   if (active_space_id_ != space_id) {
+     return false;
+   }
++  // Commit both libraries together after the native move succeeds. Retain
++  // unknown saved fields and use a fresh identity only for an ID collision.
++  // Folder membership is local to a Space, so moved pins enter the root.
++  {
++    ScopedDictPrefUpdate update(prefs, kCoveSidebarPref);
++    auto* from = FindSpace(*update, source_space_id);
++    auto* to = FindSpace(*update, space_id);
++    if (from && to) {
++      auto* from_pins = from->EnsureList("pins");
++      auto* to_pins = to->EnsureList("pins");
++      std::set<std::string> occupied;
++      for (const auto& value : *to_pins) {
++        const auto* pin = value.GetIfDict();
++        if (const auto* id = pin ? pin->FindString("id") : nullptr)
++          occupied.insert(*id);
++      }
++      for (auto& [handle, record] : saved_pins) {
++        const std::string old_id = *record.FindString("id");
++        std::string id = old_id;
++        while (!occupied.insert(id).second)
++          id = base::Uuid::GenerateRandomV4().AsLowercaseString();
++        record.Set("id", id);
++        record.Set("folder", "");
++        to_pins->Append(std::move(record));
++        cove::SidebarOrder::Move(*to, {cove::SidebarItemKind::kPin, id}, "");
++        from_pins->EraseIf([&](const base::Value& value) {
++          const auto* pin = value.GetIfDict();
++          const auto* existing = pin ? pin->FindString("id") : nullptr;
++          return existing && *existing == old_id;
++        });
++        if (auto* order = from->FindList("sidebar_order")) {
++          order->EraseIf([&](const base::Value& value) {
++            const auto* token = value.GetIfString();
++            return token && *token == "pin:" + old_id;
++          });
++        }
++        tab_pin_ids_[handle] = {space_id, id};
++      }
++    }
++  }
+   for (const auto& handle : moving) {
+     auto* tab = handle.Get();
+     if (!tab || !HasRestoredCoveTabSessionState(tab->GetContents())) {
+@@ -1737,7 +1803,9 @@
+     }
+     CoveTabSessionState state = *GetCoveTabSessionState(tab->GetContents());
+     state.space = space_id;
+-    state.pin.clear();
++    const auto binding = tab_pin_ids_.find(handle.raw_value());
++    state.pin = binding != tab_pin_ids_.end() && binding->second.first == space_id
++                    ? binding->second.second : std::string();
+     SetCoveTabSessionState(tab->GetContents(), std::move(state));
+   }
+   for (const auto& handle : repin) {
