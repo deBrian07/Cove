@@ -2,26 +2,26 @@
 
 Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
 
-The current 95-patch native app builds and passes renderer smoke, 36 tooling tests and one clean 54-execution browser run with retries disabled (including the PRE_ restart phase). The 75 focused model/animation tests last passed on 0089; those implementations are unchanged. Patches 0084–0088 address sidebar collapse, the reference command bar and native Settings, including the actual macOS application-menu route. Patches 0089–0091 implement mixed folder/pin order, saved-row dragging, individual live-tab drops and Favorites reordering. Patch 0092 fixes tear-off gaps on the pointer route to pins and adds background right-click New Folder; new tests traverse every pixel and create named folders through native menu/dialog routing.
+The latest reviewed product series is 0106. Handoff evidence reports a full 75-case browser run, tooling and renderer smoke at 0105, then 18 focused drag/Favorites cases and isolated real OS pin/Favorite drags at 0106. Features added since 0095 include hover locks, drag-edge autoscroll, per-Space themes/icons/deletion/export, Control-Tab MRU switching, Move to Space, the mini player and floating drag rows. The 75 model/animation tests last passed on 0089; those implementations are unchanged. These reported checks predate the repository-local checkout relocation. Its interrupted rebuild left no accepted build receipt; the active 0107 continuation is rebuilding before claiming current runtime acceptance.
 
-Patch 0095 adds consistent saved-row spacing/indentation, blue folder icons and local cached icons for closed pins, with stale-callback and live-icon precedence regressions. Its final static sidebar compositor render was inspected; the default-motion snapshot occurs mid-expansion. Desktop checks passed Cmd+T typing, palette dismissal with Cmd+S, persistent collapse and typing while collapsed. No latency or physical drag/trackpad acceptance is claimed. Native sidebar, palette and six-section settings compositor renders were inspected. Tests exercise real commands, NSWindow controls and TabDragController. Physical mouse/hover, trackpad transitions, broader keyboard flows and fullscreen still need a manual pass. Single-window PRE_/fresh-process restoration now passes; multi-window/group/split and actual process-kill recovery and broader migration acceptance remain. See [VALIDATION.md](VALIDATION.md) and [HANDOFF.md](HANDOFF.md). This is not 100% Arc parity.
+Patch 0107 addresses a code-audited data-loss risk in Move to Space: a navigated pin must retain its saved home, title and unknown fields rather than be recreated from its current page. New normal/collision/rejection regressions are pending native compilation. See [HANDOFF.md](HANDOFF.md) and [VALIDATION.md](VALIDATION.md) for current evidence and logs. This remains an incomplete Arc implementation.
 
 ## Spaces and organization
 
 | Function | Cove status | Remaining acceptance or implementation |
 | --- | --- | --- |
-| Create and rename Spaces | Native footer/menu exists; 0076 adds command-bar creation and naming | Exercise new command and name dialog; deletion and ordering still missing |
+| Create, rename and delete Spaces | Native footer/menu; 0099 adds confirmation, neighbor selection and normal close handling for deleted Space pages | Broader beforeunload/multi-window acceptance and Space ordering remain |
 | Switch Spaces through footer | Live native switching preserves pages | Repeat after new features; preserve drafts, history, groups and splits |
 | Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition implemented | Physical trackpad acceptance remains. Automation delivered dx=0/dy=0, so its horizontal scroll is not evidence |
 | Control+1–9 Space selection | Added in 0076 | Verify native shortcuts, missing slots and use while the palette is open |
 | Type a Space name in Cmd+T | Stable Space IDs added in 0076 | Verify switching to both populated and empty Spaces |
 | Next/previous Space actions | Added in 0076 | Verify boundaries and slide direction |
-| Independent Space themes and icons | Missing | Persist and apply each Space's appearance |
+| Independent Space themes and icons | 0098 stores sidebar/accent/highlight colors separately; 0099 persists emoji/symbol footer icons | Broader light/dark/high-contrast and restart acceptance remain |
 | Profiles assigned to Spaces | Missing | Separate cookies, storage, credentials and profile-specific Favorites |
-| Tab moves and Space ordering | Missing | Move live tab/group/split ownership without reloading pages |
+| Tab moves and Space ordering | 0102 adds tab-menu Move to Space, including split partners and source blank canvas | 0107 saved-pin record preservation is in progress; group ownership and Space ordering remain |
 | Restore Spaces after restart | 0082–0083 add ownership, parked journals and pending canvases; 0093 passes real PRE_/fresh-process restoration for one window/two Spaces, exact history, navigated pin home/ID and saved organization | Multi-window/group/split fresh-process and actual process-kill recovery, saved-group sync and migration acceptance remain |
 | Air Traffic Control | Missing | URL rules, default destination and external-link routing |
-| Share/import Spaces | Missing | Export/import sidebar structure; shareable hosted views need a separate service |
+| Share/import Spaces | 0100 exports a Space into a folder in another Space, retaining live pages and renaming colliding IDs | File/share import and hosted shared views remain |
 
 The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/en-us/articles/19228064149143-Spaces-Distinct-Browsing-Areas), including Control+number and name-based selection. Cove does not use Arc accounts or services.
 
@@ -34,14 +34,14 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Replace a pin's home with its current page | Added in 0076 | Verify home persists and a later reset uses the replacement |
 | Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
-| Favorites | Profile-wide saved URLs/grid; 0091 adds reorder, URL drops and live-tab creation, including first-Favorite target | Physical drag acceptance and Arc-style shared live Favorite ownership remain |
+| Favorites | Saved URLs/grid, reordering and URL/live-tab drops; 0096 source hover locks and 0106 floating live-drag row | Isolated real mouse drags passed at 0106; broader drag/trackpad and shared live Favorite ownership remain |
 | Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action; 0095 adds aligned blue folder rows | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
-| Move and reorder whole folders | 0089–0090 add mixed saved order, native dragging, insertion feedback and common menu ordering; cycle/stale-target tests pass | 0094 passes unified long-list scrolling/reveal and scrolled live-folder-drop regressions. Physical drag, edge autoscroll and cross-Space moves remain |
+| Move and reorder whole folders | Mixed saved order, native dragging and common menu ordering; 0094 scrolling/reveal, 0096 hover locks and 0097 edge autoscroll | Broader hardware drag and cross-Space folder moves remain |
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
 | Closed saved-pin site icons | 0095 reads local cached icons for rendered rows; live icons take priority, stale callbacks are rejected | Missing cache data retains a globe; exact Arc folder artwork/font tuning remain |
 | Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
-| Recently used tab switcher | Missing | MRU overlay and modifier-release selection, beyond sequential Chromium tab cycling |
+| Recently used tab switcher | 0101 adds Control-Tab MRU overlay, reverse traversal and modifier-release activation | Broader multi-window/Space keyboard acceptance remains |
 | Sidebar undo/restore | Missing | Recover sidebar organization changes without replacing browser profiles |
 
 ## Command bar and keyboard
@@ -70,7 +70,7 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 | More than two split panes | Missing | Extend native model and persistence |
 | Peek previews | Missing | Shift-click and pinned-link rules, overlay navigation, promote/dismiss and focus return |
 | Little Arc | Missing | Lightweight external-link window, routing, promotion and global shortcut |
-| Picture-in-picture and media | Chromium capability exists | Arc mini audio/video surfaces and cross-tab controls need implementation |
+| Picture-in-picture and media | 0105 adds automatic video mini player on tab/Space/app departure and return-to-tab routing; six focused cases and full suite reported passing | Broader site/media/desktop acceptance and mini audio surfaces remain |
 
 ## Native settings
 
@@ -82,7 +82,7 @@ The user explicitly requested no separate Cove account. Existing profiles and a 
 
 These need their own native work and acceptance; they are not covered by the current sidebar patches:
 
-- Per-Space appearance editing and advanced themes. Patch 0081 adds default system appearance for web pages while browser chrome stays dark, preserving explicit appearance choices; the build and renderer smoke passed; live appearance checks are pending.
+- Per-Space appearance editing exists in 0098–0099; advanced themes and broader rendered appearance acceptance remain. Patch 0081 separates system-following web appearance from browser chrome.
 - Boosts, site-specific styling and element hiding.
 - Capture tools, saved captures and Easel workflows where supported by the target Arc version.
 - Live folders and calendar/service integrations.
@@ -119,7 +119,7 @@ The command bar targets approximately 760px width, a 64px query field and five 4
 1. Complete the current Space, pin and command functions and validate their effects.
 2. Manually validate the corrected drag/folder paths, finish saved-row/Favorites hover lifetime and drag-edge autoscroll, then complete multi-window/crash restoration and grouped/split/cross-Space moves.
 3. Split rows, pane headers, split-by-drag and additional layouts.
-4. Peek, Little Arc, MRU switching and editable shortcuts.
+4. Peek, Little Arc and editable shortcuts; broaden MRU keyboard acceptance.
 5. Appearance/Boosts, capture/library/media and integration features.
 6. Optional sync using existing identity, import/recovery and release packaging.
 
