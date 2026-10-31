@@ -1,0 +1,631 @@
+diff --git a/chrome/browser/chrome_browser_field_trials.cc b/chrome/browser/chrome_browser_field_trials.cc
+--- a/chrome/browser/chrome_browser_field_trials.cc
++++ b/chrome/browser/chrome_browser_field_trials.cc
+@@ -60,6 +60,10 @@
+ #include "chromeos/ash/services/multidevice_setup/public/cpp/first_run_field_trial.h"
+ #endif
+ 
++#if BUILDFLAG(IS_MAC)
++#include "media/base/media_switches.h"
++#endif
++
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+ #include "base/check_deref.h"
+ #include "chrome/browser/first_run/first_run.h"
+@@ -126,6 +130,14 @@
+ void ChromeBrowserFieldTrials::RegisterFeatureOverrides(
+     base::FeatureList* feature_list) {
+   variations::FeatureOverrides feature_overrides(*feature_list);
++
++#if BUILDFLAG(IS_MAC)
++  // Cove's mini player: a playing video floats when its tab is left or the
++  // user switches to another app, without the site opting in.
++  feature_overrides.EnableFeature(
++      blink::features::kBrowserInitiatedAutomaticPictureInPicture);
++  feature_overrides.EnableFeature(media::kAutoPictureInPictureOnWindowOccluded);
++#endif
+ 
+ #if BUILDFLAG(IS_ANDROID)
+ #if BUILDFLAG(IS_DESKTOP_ANDROID)
+diff --git a/chrome/browser/picture_in_picture/auto_picture_in_picture_tab_strip_observer_helper.cc b/chrome/browser/picture_in_picture/auto_picture_in_picture_tab_strip_observer_helper.cc
+--- a/chrome/browser/picture_in_picture/auto_picture_in_picture_tab_strip_observer_helper.cc
++++ b/chrome/browser/picture_in_picture/auto_picture_in_picture_tab_strip_observer_helper.cc
+@@ -11,6 +11,10 @@
+ #include "components/tabs/public/split_tab_data.h"
+ #include "components/tabs/public/tab_interface.h"
+ 
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#endif
++
+ // static
+ std::unique_ptr<AutoPictureInPictureTabObserverHelperBase>
+ AutoPictureInPictureTabObserverHelperBase::Create(
+@@ -90,7 +94,15 @@
+   }
+ 
+   const bool old_is_tab_activated = is_tab_activated_;
++#if BUILDFLAG(IS_MAC)
++  if (!current_tab_strip_model && IsCoveParkedTab(GetObservedWebContents())) {
++    is_tab_activated_ = false;
++  } else {
++    UpdateIsTabActivated(current_tab_strip_model);
++  }
++#else
+   UpdateIsTabActivated(current_tab_strip_model);
++#endif
+   if (is_tab_activated_ == old_is_tab_activated) {
+     return;
+   }
+diff --git a/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.cc b/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.cc
+--- a/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.cc
++++ b/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.cc
+@@ -15,6 +15,40 @@
+ 
+ constexpr base::TimeDelta kUpdateDelay = base::Milliseconds(100);
+ 
++// True while a normal browser window, or a bubble or menu it owns, has focus.
++// The picture-in-picture window is not owned by a browser window, so focusing
++// it does not count.
++bool IsBrowserWindowFocused() {
++  bool focused = false;
++  GlobalBrowserCollection::GetInstance()->ForEach(
++      [&focused](BrowserWindowInterface* browser) {
++        if (browser->GetType() ==
++            BrowserWindowInterface::TYPE_PICTURE_IN_PICTURE) {
++          return true;
++        }
++        BrowserView* browser_view =
++            BrowserView::GetBrowserViewForBrowser(browser);
++        views::Widget* widget =
++            browser_view ? browser_view->GetWidget() : nullptr;
++        if (!widget) {
++          return true;
++        }
++        views::Widget::Widgets widgets =
++            views::Widget::GetAllChildWidgets(widget->GetNativeView());
++        widgets.merge(
++            views::Widget::GetAllOwnedWidgets(widget->GetNativeView()));
++        widgets.insert(widget);
++        for (views::Widget* candidate : widgets) {
++          if (candidate->IsActive()) {
++            focused = true;
++            return false;
++          }
++        }
++        return true;
++      });
++  return focused;
++}
++
+ }  // namespace
+ 
+ // static
+@@ -83,6 +117,11 @@
+     return OcclusionState::kHidden;
+   }
+ 
++  // Switching to another app covers the page, as it does in Arc.
++  if (!IsBrowserWindowFocused()) {
++    return OcclusionState::kOccluded;
++  }
++
+   const gfx::Rect current_bounds =
+       current_widget->GetNonDecoratedClientAreaBoundsInScreen();
+   bool is_occluded = false;
+@@ -151,6 +190,12 @@
+   MaybeScheduleOcclusionStateUpdate();
+ }
+ 
++void AutoPictureInPictureWindowOcclusionHelperWidget::OnWidgetActivationChanged(
++    views::Widget* widget,
++    bool active) {
++  MaybeScheduleOcclusionStateUpdate();
++}
++
+ void AutoPictureInPictureWindowOcclusionHelperWidget::OnBrowserCreated(
+     BrowserWindowInterface* browser) {
+   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+diff --git a/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.h b/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.h
+--- a/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.h
++++ b/chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.h
+@@ -53,6 +53,7 @@
+   void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
+   void OnWidgetBoundsChanged(views::Widget* widget,
+                              const gfx::Rect& new_bounds) override;
++  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+ 
+   // BrowserCollectionObserver:
+   void OnBrowserCreated(BrowserWindowInterface* browser) override;
+diff --git a/chrome/browser/picture_in_picture/BUILD.gn b/chrome/browser/picture_in_picture/BUILD.gn
+--- a/chrome/browser/picture_in_picture/BUILD.gn
++++ b/chrome/browser/picture_in_picture/BUILD.gn
+@@ -10,8 +10,10 @@
+ # WebContentsObserver-based implementation does not work on Linux
+ # since it depends on aura::WindowOcclusionTracker which is not
+ # supported on Linux.
+-use_web_contents_occlusion_helper = is_win || is_chromeos || is_mac
+-use_widget_occlusion_helper = is_linux
++# Cove uses the widget helper on Mac so leaving for another app counts as
++# occlusion, not only another window covering the page.
++use_web_contents_occlusion_helper = is_win || is_chromeos
++use_widget_occlusion_helper = is_linux || is_mac
+ use_stub_occlusion_helper = is_android
+ 
+ source_set("picture_in_picture") {
+@@ -173,7 +175,10 @@
+         [ "auto_picture_in_picture_window_occlusion_helper_web_contents.cc" ]
+   }
+   if (use_widget_occlusion_helper) {
+-    deps += [ "//chrome/browser/ui:browser_window_header" ]
++    deps += [
++      "//chrome/browser/ui:browser_window_header",
++      "//chrome/browser/ui:cove_space_close_handler",
++    ]
+     sources += [ "auto_picture_in_picture_window_occlusion_helper_widget.cc" ]
+   }
+   if (use_stub_occlusion_helper) {
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -27,6 +27,13 @@
+   return &key;
+ }
+ 
++class CoveParkedTabMarker : public base::SupportsUserData::Data {};
++
++const void* CoveParkedTabUserDataKey() {
++  static int key;
++  return &key;
++}
++
+ bool IsBareAboutBlank(content::WebContents* contents) {
+   return contents && contents->GetVisibleURL() == GURL("about:blank") &&
+          contents->GetController().GetEntryCount() <= 1;
+@@ -54,6 +61,22 @@
+   return false;
+ }
+ 
++void SetCoveParkedTab(content::WebContents* contents, bool parked) {
++  if (!contents) {
++    return;
++  }
++  if (parked) {
++    contents->SetUserData(CoveParkedTabUserDataKey(),
++                          std::make_unique<CoveParkedTabMarker>());
++  } else {
++    contents->RemoveUserData(CoveParkedTabUserDataKey());
++  }
++}
++
++bool IsCoveParkedTab(content::WebContents* contents) {
++  return contents && contents->GetUserData(CoveParkedTabUserDataKey());
++}
++
+ void MarkCoveEmptyCanvas(content::WebContents* contents) {
+   if (!IsBareAboutBlank(contents)) {
+     return;
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -31,6 +31,11 @@
+ void MarkCoveEmptyCanvas(content::WebContents* contents);
+ bool IsCoveEmptyCanvas(content::WebContents* contents);
+ 
++// Pages of an inactive Space stay alive outside the tab strip. Unlike a tab
++// mid-drag, a parked page counts as left by the user.
++void SetCoveParkedTab(content::WebContents* contents, bool parked);
++bool IsCoveParkedTab(content::WebContents* contents);
++
+ // Synchronous, copied metadata; tab pointers are borrowed for this call only.
+ struct CoveSessionTab {
+   raw_ptr<tabs::TabInterface> tab;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -48,6 +48,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
++#include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+ #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+@@ -78,6 +79,7 @@
+ #include "components/tabs/public/tab_interface.h"
+ #include "components/vector_icons/vector_icons.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_contents_delegate.h"
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/base/models/image_model.h"
+@@ -510,9 +512,35 @@
+   std::optional<tab_groups::TabGroupId> focused_group;
+ };
+ 
++// Parked pages have no browser delegate. This one lets a parked page keep
++// playing in the mini player, and brings its Space back when it is focused,
++// as the mini player's back-to-tab button does.
++class CoveSidebarLibraryView::ParkedTabDelegate
++    : public content::WebContentsDelegate {
++ public:
++  explicit ParkedTabDelegate(CoveSidebarLibraryView* library)
++      : library_(library) {}
++
++  void ActivateContents(content::WebContents* contents) override {
++    library_->RevealParkedContents(contents);
++  }
++  content::PictureInPictureResult EnterPictureInPicture(
++      content::WebContents* web_contents) override {
++    return PictureInPictureWindowManager::GetInstance()
++        ->EnterVideoPictureInPicture(web_contents);
++  }
++  void ExitPictureInPicture() override {
++    PictureInPictureWindowManager::GetInstance()->ExitPictureInPicture();
++  }
++
++ private:
++  raw_ptr<CoveSidebarLibraryView> library_;
++};
++
+ CoveSidebarLibraryView::CoveSidebarLibraryView(BrowserWindowInterface* browser)
+     : browser_(browser),
+-      close_handler_registration_(browser->GetUnownedUserDataHost(), *this) {
++      close_handler_registration_(browser->GetUnownedUserDataHost(), *this),
++      parked_tab_delegate_(std::make_unique<ParkedTabDelegate>(this)) {
+   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+       views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 8), 1));
+   layout->set_cross_axis_alignment(
+@@ -1490,6 +1518,7 @@
+       const int index = model->GetIndexOfTab(tab);
+       if (index != TabStripModel::kNoTab) {
+         indices.push_back(index);
++        SetCoveParkedTab(tab->GetContents(), true);
+       }
+     }
+   }
+@@ -1497,10 +1526,21 @@
+   if (!indices.empty()) {
+     space.items = model->DetachTabsAndCollectionsForInsertion(indices);
+   }
++  for (const auto& handle : space.handles) {
++    if (auto* tab = handle.Get();
++        tab && model->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
++      tab->GetContents()->SetDelegate(parked_tab_delegate_.get());
++    }
++  }
+ }
+ 
+ void CoveSidebarLibraryView::InsertSpaceTabs(SpaceTabs& space) {
+   TabStripModel* model = browser_->GetTabStripModel();
++  for (const auto& handle : space.handles) {
++    if (auto* tab = handle.Get()) {
++      SetCoveParkedTab(tab->GetContents(), false);
++    }
++  }
+   for (auto& entry : space.items) {
+     if (auto* tab = std::get_if<std::unique_ptr<DetachedTab>>(&entry)) {
+       const int add_types =
+@@ -1717,6 +1757,43 @@
+   return true;
+ }
+ 
++bool CoveSidebarLibraryView::RevealParkedContents(
++    content::WebContents* contents) {
++  if (!contents || restoring_session_ || switching_space_ ||
++      closing_active_space_) {
++    return false;
++  }
++  std::string space_id;
++  tabs::TabHandle parked;
++  for (const auto& [id, space] : inactive_spaces_) {
++    for (const auto& handle : space->handles) {
++      if (auto* tab = handle.Get(); tab && tab->GetContents() == contents) {
++        space_id = id;
++        parked = handle;
++        break;
++      }
++    }
++    if (!space_id.empty()) {
++      break;
++    }
++  }
++  if (space_id.empty()) {
++    return false;
++  }
++  SwitchSpace(space_id);
++  TabStripModel* model = browser_->GetTabStripModel();
++  auto* tab = parked.Get();
++  const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
++  if (active_space_id_ != space_id || index == TabStripModel::kNoTab) {
++    return false;
++  }
++  model->ActivateTabAt(index);
++  if (auto* widget = GetWidget()) {
++    widget->Activate();
++  }
++  return true;
++}
++
+ std::string CoveSidebarLibraryView::ActivePinId() const {
+   const auto* tab = browser_->GetTabStripModel()->GetActiveTab();
+   if (!tab || !RetainsPinForTab(tab)) return {};
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -252,6 +252,8 @@
+   void DetachSpaceTabs(SpaceTabs& space);
+   void InsertSpaceTabs(SpaceTabs& space);
+   void RestoreSelection(const SpaceTabs& space);
++  // Shows the Space that parks `contents` and activates its tab and window.
++  bool RevealParkedContents(content::WebContents* contents);
+   void SaveActiveSnapshot();
+   void EnsureDefaultLibrary();
+   void Rebuild();
+@@ -332,6 +334,9 @@
+   // Active space and live tab ownership are per window, never profile-global.
+   std::string active_space_id_;
+   PrefChangeRegistrar pref_change_registrar_;
++  // Declared before the parked pages so it outlives them.
++  class ParkedTabDelegate;
++  std::unique_ptr<ParkedTabDelegate> parked_tab_delegate_;
+   std::map<std::string, std::unique_ptr<SpaceTabs>> inactive_spaces_;
+   std::unique_ptr<SpaceTabs> closing_active_space_;
+   bool switching_space_ = false;
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1625,6 +1625,7 @@
+       "../browser/ui/views/cove/cove_live_tab_drag_browsertest.cc",
+       "../browser/ui/views/cove/cove_sidebar_drag_browsertest.cc",
+       "../browser/ui/views/cove/cove_favorites_view_browsertest.cc",
++      "../browser/ui/views/cove/cove_mini_player_browsertest.cc",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+     deps = [
+diff --git a/components/content_settings/core/browser/content_settings_registry.cc b/components/content_settings/core/browser/content_settings_registry.cc
+--- a/components/content_settings/core/browser/content_settings_registry.cc
++++ b/components/content_settings/core/browser/content_settings_registry.cc
+@@ -640,7 +640,7 @@
+            PermissionSettingsInfo::EXCEPTIONS_ON_SECURE_ORIGINS_ONLY);
+ 
+   Register(ContentSettingsType::AUTO_PICTURE_IN_PICTURE,
+-           "auto-picture-in-picture", CONTENT_SETTING_ASK,
++           "auto-picture-in-picture", CONTENT_SETTING_ALLOW,
+            WebsiteSettingsInfo::UNSYNCABLE, /*allowlisted_primary_schemes=*/{},
+            /*valid_settings=*/
+            {CONTENT_SETTING_ALLOW, CONTENT_SETTING_BLOCK, CONTENT_SETTING_ASK},
+diff --git a/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc b/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc
+@@ -0,0 +1,229 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include <memory>
++#include <string>
++
++#include "base/feature_list.h"
++#include "base/files/file_path.h"
++#include "base/run_loop.h"
++#include "base/task/single_thread_task_runner.h"
++#include "base/test/run_until.h"
++#include "base/test/simple_test_tick_clock.h"
++#include "base/time/time.h"
++#include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
++#include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/recently_audible_helper.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/test/base/chrome_test_path_utils.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/media_session.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "content/public/test/media_start_stop_observer.h"
++#include "media/base/media_switches.h"
++#include "third_party/blink/public/common/features.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++
++using StartStop = content::MediaStartStopObserver::Type;
++
++class CoveMiniPlayerBrowserTest : public InProcessBrowserTest {
++ protected:
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    clock_.SetNowTicks(base::TimeTicks::Now());
++  }
++
++  // Plays a video on a page that never registers for picture-in-picture, as
++  // most video sites do, and waits until leaving it would float the video.
++  content::WebContents* PlayUnregisteredVideo() {
++    const GURL url = chrome_test_utils::GetTestUrl(
++        base::FilePath(base::FilePath::kCurrentDirectory),
++        base::FilePath(
++            FILE_PATH_LITERAL("media/picture-in-picture/"
++                              "autopip-no-register.html")));
++    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++    auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++    auto* helper = AutoPictureInPictureTabHelper::FromWebContents(contents);
++    EXPECT_TRUE(helper);
++    // Frozen time keeps the playback's user activation from expiring on slow
++    // machines between play and the tab switch.
++    helper->set_clock_for_testing(&clock_);
++    contents->GetPrimaryMainFrame()->ExecuteJavaScriptWithUserGestureForTests(
++        u"playVideo()", base::NullCallback(),
++        content::ISOLATED_WORLD_ID_GLOBAL);
++    auto* audible = RecentlyAudibleHelper::FromWebContents(contents);
++    EXPECT_TRUE(base::test::RunUntil([&] {
++      return audible->WasRecentlyAudible() &&
++             content::EvalJs(contents, "!video.paused && video.currentTime > 0")
++                 .ExtractBool();
++    }));
++    // Let audio focus and media session updates reach the tab helper.
++    content::MediaSession::FlushObserversForTesting(contents);
++    base::RunLoop().RunUntilIdle();
++    EXPECT_FALSE(helper->IsInAutoPictureInPicture());
++    return contents;
++  }
++
++  views::Widget* BrowserWidget() {
++    return BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
++  }
++
++  // A focused window that the browser does not own, standing in for another
++  // app taking focus.
++  std::unique_ptr<views::Widget> ShowOtherAppWindow() {
++    auto widget = std::make_unique<views::Widget>();
++    views::Widget::InitParams params(
++        views::Widget::InitParams::CLIENT_OWNS_WIDGET,
++        views::Widget::InitParams::TYPE_WINDOW);
++    params.bounds = gfx::Rect(0, 0, 120, 80);
++    widget->Init(std::move(params));
++    widget->Show();
++    widget->Activate();
++    return widget;
++  }
++
++  CoveSpaceCloseHandler* Spaces() {
++    return CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost());
++  }
++
++  std::string OtherSpaceId() {
++    for (const auto& space : Spaces()->GetSpaces()) {
++      if (space.id != Spaces()->GetActiveSpaceId()) {
++        return space.id;
++      }
++    }
++    return {};
++  }
++
++  base::SimpleTestTickClock clock_;
++};
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest, FeaturesAreOnByDefault) {
++  EXPECT_TRUE(base::FeatureList::IsEnabled(
++      blink::features::kBrowserInitiatedAutomaticPictureInPicture));
++  EXPECT_TRUE(base::FeatureList::IsEnabled(
++      media::kAutoPictureInPictureOnWindowOccluded));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       LeavingPlayingTabFloatsVideoAndReturningClosesIt) {
++  auto* contents = PlayUnregisteredVideo();
++  auto* helper = AutoPictureInPictureTabHelper::FromWebContents(contents);
++
++  content::MediaStartStopObserver entered(contents, StartStop::kEnterPictureInPicture);
++  chrome::AddTabAt(browser(), GURL("about:blank"), -1, true);
++  entered.Wait();
++  EXPECT_TRUE(contents->HasPictureInPictureVideo());
++  EXPECT_TRUE(helper->IsInAutoPictureInPicture());
++  EXPECT_EQ(contents,
++            PictureInPictureWindowManager::GetInstance()->GetWebContents());
++
++  content::MediaStartStopObserver exited(contents, StartStop::kExitPictureInPicture);
++  auto* model = browser()->GetTabStripModel();
++  model->ActivateTabAt(model->GetIndexOfWebContents(contents));
++  exited.Wait();
++  EXPECT_FALSE(contents->HasPictureInPictureVideo());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       SwitchingAppsFloatsVideoAndComingBackClosesIt) {
++  ASSERT_TRUE(base::test::RunUntil([&] { return BrowserWidget()->IsActive(); }));
++  auto* contents = PlayUnregisteredVideo();
++
++  content::MediaStartStopObserver entered(contents, StartStop::kEnterPictureInPicture);
++  auto other_app = ShowOtherAppWindow();
++  ASSERT_TRUE(base::test::RunUntil([&] { return other_app->IsActive(); }));
++  ASSERT_FALSE(BrowserWidget()->IsActive());
++  entered.Wait();
++  EXPECT_TRUE(contents->HasPictureInPictureVideo());
++
++  content::MediaStartStopObserver exited(contents, StartStop::kExitPictureInPicture);
++  BrowserWidget()->Activate();
++  exited.Wait();
++  EXPECT_FALSE(contents->HasPictureInPictureVideo());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       SwitchingSpacesFloatsVideoAndBackToTabReturnsToIt) {
++  ASSERT_TRUE(Spaces());
++  const std::string home = Spaces()->GetActiveSpaceId();
++  const std::string other = OtherSpaceId();
++  ASSERT_FALSE(other.empty());
++  auto* contents = PlayUnregisteredVideo();
++  auto* model = browser()->GetTabStripModel();
++
++  content::MediaStartStopObserver entered(contents, StartStop::kEnterPictureInPicture);
++  Spaces()->FocusSpace(other);
++  entered.Wait();
++  EXPECT_EQ(other, Spaces()->GetActiveSpaceId());
++  EXPECT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(contents));
++  EXPECT_TRUE(contents->HasPictureInPictureVideo());
++
++  content::MediaStartStopObserver exited(contents, StartStop::kExitPictureInPicture);
++  EXPECT_TRUE(
++      PictureInPictureWindowManager::GetInstance()
++          ->ExitPictureInPictureViaWindowUi(
++              PictureInPictureWindowManager::UiBehavior::
++                  kCloseWindowAndFocusOpener));
++  exited.Wait();
++  EXPECT_EQ(home, Spaces()->GetActiveSpaceId());
++  EXPECT_EQ(contents, model->GetActiveWebContents());
++  EXPECT_FALSE(contents->HasPictureInPictureVideo());
++  EXPECT_TRUE(content::EvalJs(contents, "!video.paused").ExtractBool());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       ReturningToVideoSpaceClosesMiniPlayer) {
++  ASSERT_TRUE(Spaces());
++  const std::string home = Spaces()->GetActiveSpaceId();
++  const std::string other = OtherSpaceId();
++  ASSERT_FALSE(other.empty());
++  auto* contents = PlayUnregisteredVideo();
++
++  content::MediaStartStopObserver entered(contents, StartStop::kEnterPictureInPicture);
++  Spaces()->FocusSpace(other);
++  entered.Wait();
++
++  content::MediaStartStopObserver exited(contents, StartStop::kExitPictureInPicture);
++  Spaces()->FocusSpace(home);
++  exited.Wait();
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_FALSE(contents->HasPictureInPictureVideo());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       BrowserOwnedPopupDoesNotFloatVideo) {
++  ASSERT_TRUE(base::test::RunUntil([&] { return BrowserWidget()->IsActive(); }));
++  auto* contents = PlayUnregisteredVideo();
++
++  views::Widget popup;
++  views::Widget::InitParams params(
++      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
++      views::Widget::InitParams::TYPE_WINDOW);
++  params.parent = BrowserWidget()->GetNativeView();
++  params.bounds = gfx::Rect(0, 0, 120, 80);
++  popup.Init(std::move(params));
++  popup.Show();
++  popup.Activate();
++  ASSERT_TRUE(base::test::RunUntil([&] { return popup.IsActive(); }));
++  // Outlast the occlusion helper's 100 ms update delay.
++  base::RunLoop run_loop;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE, run_loop.QuitClosure(), base::Milliseconds(500));
++  run_loop.Run();
++  EXPECT_FALSE(contents->HasPictureInPictureVideo());
++  popup.CloseNow();
++}
++
++}  // namespace
