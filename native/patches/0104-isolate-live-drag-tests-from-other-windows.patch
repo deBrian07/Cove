@@ -1,0 +1,74 @@
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
++#include "chrome/browser/ui/views/tabs/dragging/window_finder.h"
+ #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
+ #include "chrome/browser/ui/views/tabs/tab_slot_view.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+@@ -40,6 +41,25 @@
+ #include "ui/views/widget/widget.h"
+ 
+ namespace {
++
++class BrowserOnlyWindowFinder : public WindowFinder {
++ public:
++  explicit BrowserOnlyWindowFinder(views::Widget* widget) : widget_(widget) {}
++
++  gfx::NativeWindow GetLocalProcessWindowAtPoint(
++      const gfx::Point& screen_point,
++      const std::set<gfx::NativeWindow>& ignore) override {
++    const gfx::NativeWindow window = widget_->GetNativeWindow();
++    return !ignore.contains(window) &&
++                   widget_->GetWindowBoundsInScreen().Contains(screen_point)
++               ? window
++               : gfx::NativeWindow();
++  }
++
++ private:
++  raw_ptr<views::Widget> widget_;
++};
++
+ constexpr char kFolderId[] = "live-tab-drop-folder";
+ constexpr char16_t kFolderName[] = u"Live drag destination";
+ 
+@@ -178,6 +198,10 @@
+     ASSERT_FALSE(context->GetDragController());
+     auto controller = std::make_unique<TabDragController>();
+     auto* raw = controller.get();
++    // Hit-test only this browser so other apps' windows (for example a
++    // floating video) cannot tear the tab off mid-test.
++    raw->SetWindowFinderForTesting(std::make_unique<BrowserOnlyWindowFinder>(
++        browser_view()->GetWidget()));
+     context->OwnDragController(std::move(controller));
+     ASSERT_EQ(TabDragController::Liveness::kAlive,
+               raw->Init(context, source, {source}, gfx::Point(4, 4),
+diff --git a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+--- a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
++++ b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+@@ -923,6 +923,11 @@
+                   : EndDragType::kNormal);
+ }
+ 
++void TabDragController::SetWindowFinderForTesting(
++    std::unique_ptr<WindowFinder> finder) {
++  window_finder_ = std::move(finder);
++}
++
+ void TabDragController::SetDragLoopDoneCallbackForTesting(
+     base::OnceClosure callback) {
+   drag_loop_done_callback_ = std::move(callback);
+diff --git a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h
+--- a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h
++++ b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h
+@@ -228,6 +228,7 @@
+   //   this means that this method has no effect after entering the
+   //   kDraggingUsingSystemDnD state for the first time.
+   void SetDragLoopDoneCallbackForTesting(base::OnceClosure callback);
++  void SetWindowFinderForTesting(std::unique_ptr<WindowFinder> finder);
+ 
+   // TabDragTarget::DragController
+   std::unique_ptr<tabs::TabModel> DetachTabAtForInsertion(
