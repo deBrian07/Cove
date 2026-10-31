@@ -1,2 +1,6 @@
 # Blank context lines in unified diffs contain a literal space.
 native/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+
+# GitHub language stats: patches are Chromium C++; the Electron prototype is archived.
+native/patches/*.patch linguist-language=C++
+legacy/** linguist-vendored
