@@ -14,7 +14,7 @@ Visual review: `/tmp/cove-native95-sidebar-static.png` shows the final native fo
 
 Desktop keyboard checks through CUA now work. In the preserved isolated QA91 profile, Cmd+T focused the native palette and accepted typed test text; Cmd+S dismissed the palette without closing Cove. A second Cmd+S hid the sidebar and it stayed hidden across a later screenshot. Cmd+T accepted text while hidden; Escape dismissed it while retaining collapse; Cmd+S restored the sidebar and the original page stayed selected. These are observed input/AX/screenshot checks, not latency measurements or physical trackpad/drag/fullscreen acceptance. No test query was submitted and no page was replaced.
 
-Cove is now OPEN on `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native91` (the original QA profile name, reused intentionally), launched without a URL and with `--restore-last-session`. UI log: `/tmp/cove-native95-ui.log`; launch exec session 16982. Normal, Arc and archived prototype profiles are preserved. Before any new native linking, identify this QA process and quit it normally, then verify exit. Do not force quit or replace running binaries. Keep the SSD connected; no mount layout or disk format was changed.
+Cove is now OPEN on `.chromium/checkout/profiles/CoveUIValidation-Native91` (the original QA profile name, reused intentionally), launched without a URL and with `--restore-last-session`. UI log: `/tmp/cove-native95-ui.log`; launch exec session 16982. Normal, Arc and archived prototype profiles are preserved. Before any new native linking, identify this QA process and quit it normally, then verify exit. Do not force quit or replace running binaries. Keep the SSD connected; no mount layout or disk format was changed.
 
 `/tmp/cove95-before/` stores pre-95 sources; `/tmp/cove95-export.py` is the idempotent exporter. `/tmp/cove95-install.py` and `/tmp/cove95-optimize-current.py` already ran and must not be repeated. Versioned patches are authoritative. Continue through the next-work notes below, not old install scripts.
 
@@ -60,7 +60,7 @@ All **47 browser cases passed in one clean final run, with retries disabled**. T
 
 All 93 patches pass original-file SHA256/sequential-application verification; all 36 tooling tests pass. The last 75 focused native model/animation cases passed on 0089, and those implementations remain unchanged. Final app/test build, accepted build receipt and isolated renderer smoke pass. Generated/built identities match `0e0ad2341ae96cac6cca6beda735ce9fa58d3d85dcd02e9a649d8e87597433e0`. Final evidence: `/tmp/cove-native93-browser-tests.log`, `/tmp/cove-native93-browser-results.json` (46 SUCCESS entries with the PRE_ phase folded into its dependent result; all 47 executions pass, no retries), `/tmp/cove-native93-final-build.log`, `/tmp/cove-native93-build-accepted.log`, `/tmp/cove-native93-smoke.log`, `/tmp/cove-native93-tooling.log`, `/tmp/cove-native93-verify.json`. The passing focused restart pair is `/tmp/cove-native93-restart-fixed-tests.log` and `/tmp/cove-native93-restart-fixed-results.json`.
 
-Cove remains closed because the user asked to continue source work. For the next interactive pass, reuse the preserved isolated QA profile `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native91`; the suffix records its creation build and reuse preserves the user's QA session. Launch without a URL argument and with `--restore-last-session` to avoid adding another blank tab. No QA93 window has been launched. Existing normal/Arc/prototype profiles and other QA profiles remain intact. Before future linking, identify the live profile and request normal Quit, then verify exit; never force quit, replace running app files or remove profiles. No CUA input tools were available. The earlier normal application Quit was a lifecycle request for the sole owned QA process, not a workaround for an automation input guard.
+Cove remains closed because the user asked to continue source work. For the next interactive pass, reuse the preserved isolated QA profile `.chromium/checkout/profiles/CoveUIValidation-Native91`; the suffix records its creation build and reuse preserves the user's QA session. Launch without a URL argument and with `--restore-last-session` to avoid adding another blank tab. No QA93 window has been launched. Existing normal/Arc/prototype profiles and other QA profiles remain intact. Before future linking, identify the live profile and request normal Quit, then verify exit; never force quit, replace running app files or remove profiles. No CUA input tools were available. The earlier normal application Quit was a lifecycle request for the sole owned QA process, not a workaround for an automation input guard.
 
 ### Continue here
 
@@ -70,7 +70,7 @@ Long-list scrolling and active-tab reveal are now accepted in 0094 (see above). 
 
 Grouped/split/multi-tab and cross-Space live organization, multi-window/group/split fresh-process restoration and actual process-kill recovery, saved-group sync, pane headers/joined rows, Peek, Little Arc and editable shortcuts remain. Keep the no-separate-Cove-account preference. See ARC_PARITY.md for the full list.
 
-Reuse `/Volumes/CoveBuild/checkout/chromium/src` and out/Cove, jobs=2; keep the SSD connected. Never edit source/patch/config inputs while GN/Ninja runs, and never run two Ninja instances against that output. Versioned patches are authoritative. `/tmp/cove92-export.py` exports 92 against `/tmp/cove92-before/`; `/tmp/cove93-export.py` exports 93 against `/tmp/cove93-before/`. Do not rerun non-idempotent install/edit scripts. Session tests are in `chrome/browser/ui/cove/cove_session_browsertest.cc`, not under views/cove. Main sidebar/drag source is under views/cove, views/frame and views/tabs/dragging.
+Reuse `.chromium/checkout/chromium/src` and out/Cove, jobs=2; keep the SSD connected. Never edit source/patch/config inputs while GN/Ninja runs, and never run two Ninja instances against that output. Versioned patches are authoritative. `/tmp/cove92-export.py` exports 92 against `/tmp/cove92-before/`; `/tmp/cove93-export.py` exports 93 against `/tmp/cove93-before/`. Do not rerun non-idempotent install/edit scripts. Session tests are in `chrome/browser/ui/cove/cove_session_browsertest.cc`, not under views/cove. Main sidebar/drag source is under views/cove, views/frame and views/tabs/dragging.
 
 For future relevant changes, the full bounded browser filter includes the restart fixture:
 
@@ -106,7 +106,7 @@ Evidence: `/tmp/cove-native91-browser-tests.log`, `/tmp/cove-native91-browser-re
 
 Scope: saved folder/pin moves operate in the active Space and the same Profile; Favorites belong to the Profile. Live drops accept one loose tab in the same browser, including its only tab. Grouped/split/multi-tab and cross-Space live moves are not implemented. Physical mouse drag/hover, fullscreen and keyboard feel still need manual acceptance; native fixture/compositor tests are not hardware input evidence. No CUA input tools were available. Do not claim 100% Arc parity. PRE_/process-kill recovery, saved-group sync, pane headers, Peek, Little Arc and editable shortcuts remain unfinished.
 
-The user quit Cove normally before builds. Existing QA87 and all normal/Arc/prototype profiles were preserved. QA91 was opened after final acceptance and uses only `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Native91` and `/tmp/cove-native91-ui.log`. Refresh live state before the next build; quit any running QA window normally before replacing its app. No separate Cove account or sync service was added; existing profiles and the Google account page link remain.
+The user quit Cove normally before builds. Existing QA87 and all normal/Arc/prototype profiles were preserved. QA91 was opened after final acceptance and uses only `.chromium/checkout/profiles/CoveUIValidation-Native91` and `/tmp/cove-native91-ui.log`. Refresh live state before the next build; quit any running QA window normally before replacing its app. No separate Cove account or sync service was added; existing profiles and the Google account page link remain.
 
 ## Previous 88-patch build: actual macOS Settings menu corrected
 
@@ -162,7 +162,7 @@ Cove is native Chromium 156.0.8078.48 at pinned revision `d0c02bfad08ec92a6ffcf9
 a64d8332da85feb3a5c0599ffa31e054e68dfc94c4e6fdd51c1064a903a4a878
 ```
 
-The dedicated sparsebundle remains on the ExFAT SanDisk volume, mounted as the existing APFS build image at `/Volumes/CoveBuild`. Source, output and saved profiles were preserved. No format, checkout reset or output deletion was used.
+The dedicated sparsebundle remains on the ExFAT SanDisk volume, mounted as the existing APFS build image at `.chromium`. Source, output and saved profiles were preserved. No format, checkout reset or output deletion was used.
 
 ## Executed checks
 
@@ -202,7 +202,7 @@ Both `generated_config` and `built_config` equal:
 d623603353096572a62dd1ea4be06bb221d3a7b0e412855bdce177e3fac77ab3
 ```
 
-The user reconnected the external disk. Doctor mounted the existing `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle` at `/Volumes/CoveBuild` and passed. The SSD is still mounted as ExFAT; its last checked free space was 871531282432 bytes. Source/output remain inside the APFS image. Existing SSD files, the internal backup and browser profiles were preserved. No checkout reset, disk formatting or build-output deletion was used.
+The user reconnected the external disk. Doctor mounted the existing `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle` at `.chromium` and passed. The SSD is still mounted as ExFAT; its last checked free space was 871531282432 bytes. Source/output remain inside the APFS image. Existing SSD files, the internal backup and browser profiles were preserved. No checkout reset, disk formatting or build-output deletion was used.
 
 ### Automated checks
 
@@ -216,7 +216,7 @@ The lifetime executable uses a custom event fixture around the real View::Handle
 
 ### Actual native UI observations
 
-CUA used isolated CoveUIValidation-* profiles. The final production-bundle profile is `/Volumes/CoveBuild/checkout/profiles/CoveUIValidation-Final-d6236033`. CoveDevelopment, Arc and the retired Electron profile were not used for test data. Mock Keychain is limited to these QA/smoke profiles; ordinary npm start does not use it.
+CUA used isolated CoveUIValidation-* profiles. The final production-bundle profile is `.chromium/checkout/profiles/CoveUIValidation-Final-d6236033`. CoveDevelopment, Arc and the retired Electron profile were not used for test data. Mock Keychain is limited to these QA/smoke profiles; ordinary npm start does not use it.
 
 Observed in the running native app:
 

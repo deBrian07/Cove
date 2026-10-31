@@ -1,6 +1,6 @@
 # Cove project rules
 
-- Cove's active application is the native Chromium fork. Use the copied build image in `CoveChromium/`; root `npm start` mounts it and launches the native app.
+- Cove's active application is the native Chromium fork. Chromium lives in the ignored `.chromium/` directory of this repository (`npm run setup` fetches, patches and builds it; `npm start` launches it). Never depend on a path outside the repository; an optional APFS image in `CoveChromium/` is mounted at `.chromium/`.
 - Read `native/HANDOFF.md` for the latest build, validation and unfinished-work status before extending the native app.
 - Implement browser UI and behavior in Chromium's native UI/services through the versioned patch series in `native/patches/`. Electron renderer edits do not change the native application.
 - `legacy/electron/` is a retired reference archive. Do not add features there, restore Electron dependencies or add an Electron fallback to active commands.

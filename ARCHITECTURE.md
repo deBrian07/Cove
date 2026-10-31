@@ -2,7 +2,7 @@
 
 Cove's active application is a native Chromium fork. The completed `Cove.app` uses Chromium `156.0.8078.48`, bundle ID `dev.cove.browser`, and the isolated `CoveDevelopment` profile.
 
-The user copied the completed build image into `CoveChromium/`. Default commands mount that local image at `/Volumes/CoveBuild` and use its existing checkout and `out/Cove` directory. The external SSD is no longer required. See [the local build setup](native/LOCAL_BUILD.md).
+Chromium is fetched, patched and built inside the repository's ignored `.chromium/` directory (`npm run setup`). An optional APFS image in `CoveChromium/` is mounted at that same path, so commands never depend on a location outside the repository. See [the local build setup](native/LOCAL_BUILD.md).
 
 ## Retired prototype
 

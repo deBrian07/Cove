@@ -5,6 +5,7 @@
   "private": true,
   "description": "A native Chromium browser with an Arc-style sidebar.",
   "scripts": {
+    "setup": "python3 scripts/chromium/cove_chromium.py setup",
     "start": "python3 scripts/chromium/cove_chromium.py run",
     "build": "python3 scripts/chromium/cove_chromium.py build",
     "doctor": "python3 scripts/chromium/cove_chromium.py doctor --stage run",

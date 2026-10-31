@@ -1,18 +1,18 @@
-# Copied Chromium workspace
+# Local Chromium workspace
 
-Current selection (2026-10-25): the user reconnected SanDisk and selected its existing CoveChromium directory. The project image path is a symbolic link to `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle`. The original internal copy is preserved as `CoveBuild.local-backup.sparsebundle`. See [EXTERNAL_BUILD.md](EXTERNAL_BUILD.md). Do not mount both copies at once or merge their profiles.
-
-The project path `CoveChromium/CoveBuild.sparsebundle` links to the user's existing native build image on SanDisk. It reuses the completed checkout and output. The folder is ignored by Git because it contains build artifacts, caches and private browser profiles.
-
-The native launcher mounts this exact image at `/Volumes/CoveBuild`. Keeping that mount path preserves the source paths recorded in the existing Ninja build files.
+Everything Chromium needs lives in this repository's ignored `.chromium/` directory. A fresh clone builds with `npm run setup`; no path outside the repository is used.
 
 | Item | Path |
 | --- | --- |
-| Copied image | `CoveChromium/CoveBuild.sparsebundle` |
-| Managed checkout | `/Volumes/CoveBuild/checkout` |
-| Chromium source | `/Volumes/CoveBuild/checkout/chromium/src` |
-| Native application | `/Volumes/CoveBuild/checkout/chromium/src/out/Cove/Cove.app` |
-| Development profile | `/Volumes/CoveBuild/checkout/profiles/CoveDevelopment` |
+| Workspace | `.chromium/` |
+| Managed checkout | `.chromium/checkout` |
+| depot_tools | `.chromium/checkout/depot_tools` |
+| Chromium source | `.chromium/checkout/chromium/src` |
+| Native application | `.chromium/checkout/chromium/src/out/Cove/Cove.app` |
+| Development profile | `.chromium/checkout/profiles/CoveDevelopment` |
+| Download caches and temporary files | `.chromium/cache`, `.chromium/tmp` |
+
+Chromium's macOS build requires APFS. If the repository is on a drive that is not APFS (for example an ExFAT external SSD), create an APFS sparse image at `CoveChromium/CoveBuild.sparsebundle`; the tooling mounts it at `.chromium/` so every path above stays the same. On the maintainer's machine that image path links to `/Volumes/SanDisk 1TB/CoveChromium/CoveBuild.sparsebundle`, and the original internal copy is kept as `CoveBuild.local-backup.sparsebundle`. Do not mount both copies at once or merge their profiles.
 
 ## Run and verify
 
@@ -25,7 +25,7 @@ npm run test:ui
 
 No source fetch, compilation or Electron installation is performed by `npm start`. The launcher verifies the recorded build and native application identity, then uses the isolated development profile. The smoke test uses a different temporary profile and does not modify normal browsing data.
 
-The copied image is preferred over an older `COVE_CHROMIUM_ROOT` environment value. An explicit `--checkout PATH` takes precedence for deliberate alternate-checkout work. If `/Volumes/CoveBuild` is occupied by another image, the default launcher stops; it does not detach that volume or select another image automatically.
+Checkout selection order: an explicit `--checkout PATH`, then the disk image when `CoveChromium/CoveBuild.sparsebundle` exists, then `COVE_CHROMIUM_ROOT`, then `.chromium/checkout`. If `.chromium/` already holds other files when the image needs mounting, the launcher stops; it does not detach a volume or select another image automatically.
 
 ## Native changes
 
@@ -44,7 +44,7 @@ The APFS image has a growable virtual capacity. Its backing drive must also have
 Quit native Cove and finish all build commands before detaching the image:
 
 ```sh
-hdiutil detach /Volumes/CoveBuild
+hdiutil detach .chromium
 ```
 
 The active image is on the external SanDisk SSD. See [EXTERNAL_BUILD.md](EXTERNAL_BUILD.md) for its location and safe reattach procedure.

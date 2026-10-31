@@ -2,19 +2,18 @@
 
 This Python 3.9+ command-line driver builds the native Cove patch series in a dedicated Chromium checkout. It never falls back to Electron. It reads pinned source/depot_tools revisions and file paths from `native/chromium.json`.
 
-Default commands use the completed build image copied into `CoveChromium/`, mounting it at `/Volumes/CoveBuild` when necessary. See [the local setup](../../native/LOCAL_BUILD.md). An explicit `--checkout` selects another managed checkout; the environment variable is used only when no local image exists.
-
-For a fresh source checkout, choose a directory outside the application repository, on a volume with enough storage. The directory path cannot contain whitespace. The copied local image takes precedence over a previous `COVE_CHROMIUM_ROOT` setting.
+By default the checkout is `.chromium/checkout` inside this repository (ignored by Git), with download caches and temporary files beside it in `.chromium/cache` and `.chromium/tmp`. If `CoveChromium/CoveBuild.sparsebundle` exists, that APFS image is mounted at `.chromium/` first. `--checkout PATH` or `COVE_CHROMIUM_ROOT` selects a different dedicated checkout; inside the repository only paths under `.chromium/` are accepted. Paths cannot contain whitespace. See [the local setup](../../native/LOCAL_BUILD.md).
 
 ```sh
-python3 scripts/chromium/cove_chromium.py doctor --checkout /Volumes/Build/CoveChromium
-python3 scripts/chromium/cove_chromium.py bootstrap --checkout /Volumes/Build/CoveChromium
-python3 scripts/chromium/cove_chromium.py sync --checkout /Volumes/Build/CoveChromium
-python3 scripts/chromium/cove_chromium.py patch --checkout /Volumes/Build/CoveChromium --check
-python3 scripts/chromium/cove_chromium.py patch --checkout /Volumes/Build/CoveChromium
-python3 scripts/chromium/cove_chromium.py gen --checkout /Volumes/Build/CoveChromium
-python3 scripts/chromium/cove_chromium.py build --checkout /Volumes/Build/CoveChromium --jobs 8
-python3 scripts/chromium/cove_chromium.py run --checkout /Volumes/Build/CoveChromium -- --disable-background-networking about:blank
+npm run setup -- --jobs 4   # every remaining stage below, in order
+python3 scripts/chromium/cove_chromium.py doctor
+python3 scripts/chromium/cove_chromium.py bootstrap
+python3 scripts/chromium/cove_chromium.py sync
+python3 scripts/chromium/cove_chromium.py patch --check
+python3 scripts/chromium/cove_chromium.py patch
+python3 scripts/chromium/cove_chromium.py gen
+python3 scripts/chromium/cove_chromium.py build --jobs 4
+python3 scripts/chromium/cove_chromium.py run -- --disable-background-networking about:blank
 ```
 
 `bootstrap` creates a pinned depot_tools checkout, initializes its Python/CIPD wrappers with `ensure_bootstrap` without moving the Git pin, and creates a `.gclient` configuration targeting macOS, then syncs source/dependencies directly to the pinned Chromium SHA without running hooks. It uses `gclient sync --no-history --nohooks --revision src@SHA` so it does not first download dependencies for an unrelated upstream main revision. `sync` checks the pinned revisions and clean source tree before syncing and running Chromium hooks. The actual checkout lives under `CHECKOUT/chromium/src`.

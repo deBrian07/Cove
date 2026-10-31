@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build Cove's native Chromium patch series in a separate, pinned checkout."""
+"""Build Cove's native Chromium patch series in a pinned checkout.
+
+By default everything Chromium needs (depot_tools, source, caches, build output
+and development profiles) lives in this repository's ignored .chromium/
+directory, so a fresh clone builds with `npm run setup` and no other paths.
+"""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +29,12 @@ GIB = 1024 ** 3
 SPACE_GIB = {"mount": 2, "smoke": 2, "bootstrap": 100, "sync": 50, "patch": 2, "gen": 20, "build": 50, "run": 2}
 MARKER = ".cove-chromium-checkout.json"
 SHA = re.compile(r"[0-9a-f]{40}")
-LOCAL_VOLUME = Path("/Volumes/CoveBuild")
+HOME = REPO / ".chromium"
+DEFAULT_CHECKOUT = HOME / "checkout"
+# An optional APFS disk image (for example on a non-APFS external drive). When
+# present it is mounted at .chromium/, so the checkout path stays the same.
+IMAGE = REPO / "CoveChromium" / "CoveBuild.sparsebundle"
+LOCAL_VOLUME = HOME
 BACKING_IMAGES: dict[Path, Path] = {}
 
 
@@ -78,13 +88,13 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return manifest
 
 
-def checkout_path(value: str | None) -> Path:
-    if not value:
-        raise BuildError("Choose an external checkout directory with --checkout PATH or COVE_CHROMIUM_ROOT. "
-                         "No large checkout is created inside the application repository.")
+def checkout_path(value: str) -> Path:
     path = Path(value).expanduser().resolve()
-    if path == REPO or path.is_relative_to(REPO) or REPO.is_relative_to(path):
-        raise BuildError("The Chromium checkout must be outside this repository and cannot be its parent")
+    home = HOME.resolve()
+    inside_home = path.is_relative_to(home) and path != home
+    if path == REPO or REPO.is_relative_to(path) or (path.is_relative_to(REPO) and not inside_home):
+        raise BuildError("The Chromium checkout must be inside this repository's ignored .chromium/ "
+                         "directory or outside the repository, and cannot be its parent")
     if path == Path(path.anchor):
         raise BuildError("The checkout cannot be a filesystem root; use a dedicated directory")
     if any(char.isspace() for char in str(path)):
@@ -113,15 +123,16 @@ def resolve_checkout(value: str | None) -> Path:
     # An explicit override is intentional; defaults always prefer the user's copy.
     if value:
         return checkout_path(value)
-    image = REPO / "CoveChromium" / "CoveBuild.sparsebundle"
+    image = IMAGE
     if image.is_dir():
         attached = local_mount(image)
         if attached and attached != LOCAL_VOLUME:
-            raise BuildError(f"The local image is mounted at {attached}; expected {LOCAL_VOLUME} to reuse out/Cove. "
-                             "No volumes were detached or moved.")
+            raise BuildError(f"The build image is mounted at {attached}; expected {LOCAL_VOLUME}. Quit Cove and any "
+                             f"build, then run: hdiutil detach {attached}. No volumes were detached or moved.")
         if not attached:
-            if LOCAL_VOLUME.exists():
+            if LOCAL_VOLUME.exists() and (not LOCAL_VOLUME.is_dir() or any(LOCAL_VOLUME.iterdir())):
                 raise BuildError(f"{LOCAL_VOLUME} is already occupied. Refusing to replace it or use another build image.")
+            LOCAL_VOLUME.mkdir(exist_ok=True)
             run(["hdiutil", "attach", "-nobrowse", "-mountpoint", str(LOCAL_VOLUME), str(image)], capture=True)
             if local_mount(image) != LOCAL_VOLUME:
                 raise BuildError("The copied Chromium image did not mount at the expected build path")
@@ -129,9 +140,11 @@ def resolve_checkout(value: str | None) -> Path:
             raise BuildError(f"The local Chromium image is not mounted: {LOCAL_VOLUME}")
         root = checkout_path(str(LOCAL_VOLUME / "checkout"))
         BACKING_IMAGES[root] = image.resolve()
-        print(f"Using copied native build: {image}")
+        print(f"Using native build image: {image}")
         return root
-    return checkout_path(os.environ.get("COVE_CHROMIUM_ROOT"))
+    if os.environ.get("COVE_CHROMIUM_ROOT"):
+        return checkout_path(os.environ["COVE_CHROMIUM_ROOT"])
+    return checkout_path(str(DEFAULT_CHECKOUT))
 
 
 def nearest_existing(path: Path) -> Path:
@@ -232,13 +245,27 @@ def require_owned(root: Path, manifest: dict[str, Any]) -> None:
                          "this tool will not reset or rewrite an existing source tree.")
 
 
-def environment(root: Path) -> dict[str, str]:
+def workspace(root: Path) -> Path:
+    """Directory holding caches and temporary files beside the checkout."""
+    return root.parent if root == checkout_path(str(DEFAULT_CHECKOUT)) else root / ".cache"
+
+
+def environment(root: Path, *, tools: bool = True) -> dict[str, str]:
     env = os.environ.copy()
     env["PATH"] = str(root / "depot_tools") + os.pathsep + env.get("PATH", "")
     # Keep the pinned depot_tools checkout reproducible rather than self-updating.
     env["DEPOT_TOOLS_UPDATE"] = "0"
     env["DEPOT_TOOLS_METRICS"] = "0"
     env["PYTHONUNBUFFERED"] = "1"
+    if tools:
+        # Downloads and scratch files stay with the checkout instead of the
+        # user's home directory or system volume.
+        base = workspace(root)
+        env["CIPD_CACHE_DIR"] = str(base / "cache" / "cipd")
+        env["VPYTHON_VIRTUALENV_ROOT"] = str(base / "cache" / "vpython")
+        env["TMPDIR"] = str(base / "tmp")
+        for key in ("CIPD_CACHE_DIR", "VPYTHON_VIRTUALENV_ROOT", "TMPDIR"):
+            Path(env[key]).mkdir(parents=True, exist_ok=True)
     return env
 
 
@@ -545,7 +572,7 @@ def smoke(root: Path, manifest: dict[str, Any]) -> None:
                    "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
                    "--use-mock-keychain", 'data:text/html,<title>Cove Native Smoke</title><main id="cove-native-ready">ready</main>']
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, start_new_session=True, env=environment(root))
+                                   text=True, start_new_session=True, env=environment(root, tools=False))
         try:
             output, errors = process.communicate(timeout=60)
         except subprocess.TimeoutExpired:
@@ -579,13 +606,29 @@ def launch(root: Path, manifest: dict[str, Any], extra: list[str]) -> None:
     if any(arg.startswith("--user-data-dir") for arg in extra):
         raise BuildError("run always uses an isolated CoveDevelopment profile; --user-data-dir overrides are refused")
     profile_dir = root / "profiles" / "CoveDevelopment"
-    run([str(executable), f"--user-data-dir={profile_dir}", "--no-first-run", *extra], env=environment(root))
+    run([str(executable), f"--user-data-dir={profile_dir}", "--no-first-run", *extra],
+        env=environment(root, tools=False))
+
+
+def setup(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
+    """Run each remaining stage once: fetch, hooks, patches, GN and Ninja."""
+    state = read_state(root) if (root / MARKER).exists() else {}
+    if not state.get("source_synced"):
+        bootstrap(root, manifest)
+    if not read_state(root).get("hooks_complete"):
+        sync(root, manifest)
+    require_space(root, "patch")
+    apply_patches(root, manifest)
+    if read_state(root).get("generated_config") != config_digest(manifest):
+        generate(root, manifest)
+    build(root, manifest, jobs)
+    print("Cove is built. Start it with: npm start")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "mount", "smoke", "bootstrap", "sync", "patch", "gen", "build", "run"))
-    parser.add_argument("--checkout", help="Explicit checkout override; defaults to the copied CoveChromium build image")
+    parser.add_argument("command", choices=("doctor", "mount", "smoke", "setup", "bootstrap", "sync", "patch", "gen", "build", "run"))
+    parser.add_argument("--checkout", help="Explicit checkout override; defaults to .chromium/checkout")
     parser.add_argument("--manifest", type=Path, default=REPO / "native" / "chromium.json")
     parser.add_argument("--stage", choices=SPACE_GIB, default="bootstrap", help="Storage phase checked by doctor")
     parser.add_argument("--check", action="store_true", help="Verify patches without applying")
@@ -619,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Native checkout ready: {root}")
         elif args.command == "smoke":
             smoke(root, manifest)
+        elif args.command == "setup":
+            setup(root, manifest, args.jobs)
         elif args.command == "bootstrap":
             bootstrap(root, manifest)
         elif args.command == "sync":

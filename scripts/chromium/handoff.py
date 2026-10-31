@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from cove_chromium import BuildError, config_digest, load_manifest
+from cove_chromium import DEFAULT_CHECKOUT, BuildError, config_digest, load_manifest
 
 
 def main():
@@ -36,7 +36,7 @@ def main():
         expected = None
         print(f"Cannot calculate current configuration: {error}")
     print(f"Expected current configuration: {expected}")
-    checkout = Path("/Volumes/CoveBuild/checkout")
+    checkout = DEFAULT_CHECKOUT
     state_file = checkout / ".cove-chromium-state.json"
     if state_file.exists():
         state = json.loads(state_file.read_text())

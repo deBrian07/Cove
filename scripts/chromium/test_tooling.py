@@ -74,12 +74,29 @@ class ToolingTests(unittest.TestCase):
             cove.load_manifest(path)
 
     def test_paths_cannot_escape_repo_or_overlap_checkout(self):
-        for path in (self.repo, self.repo / "output", self.repo.parent, Path("/")):
-            with self.subTest(path=path), self.assertRaises(cove.BuildError):
-                cove.checkout_path(str(path))
+        home = self.repo / ".chromium"
+        with mock.patch.object(cove, "HOME", home):
+            for path in (self.repo, self.repo / "output", self.repo.parent, Path("/"), home):
+                with self.subTest(path=path), self.assertRaises(cove.BuildError):
+                    cove.checkout_path(str(path))
+            self.assertEqual(cove.checkout_path(str(home / "checkout")),
+                             (home / "checkout").resolve())
         with self.assertRaises(cove.BuildError):
             cove.repository_file("../outside")
         self.assertEqual(cove.checkout_path(str(self.root)), self.root.resolve())
+
+    def test_default_checkout_lives_in_ignored_repository_directory(self):
+        home = self.repo / ".chromium"
+        with mock.patch.object(cove, "HOME", home), \
+             mock.patch.object(cove, "DEFAULT_CHECKOUT", home / "checkout"), \
+             mock.patch.object(cove, "IMAGE", self.repo / "missing.sparsebundle"), \
+             mock.patch.dict(cove.os.environ, {}, clear=True):
+            root = cove.resolve_checkout(None)
+            self.assertEqual(root, (home / "checkout").resolve())
+            env = cove.environment(root)
+        self.assertEqual(env["TMPDIR"], str(home.resolve() / "tmp"))
+        self.assertEqual(env["CIPD_CACHE_DIR"], str(home.resolve() / "cache" / "cipd"))
+        self.assertEqual(cove.environment(root, tools=False).get("TMPDIR"), cove.os.environ.get("TMPDIR"))
 
     def test_low_space_bootstrap_has_no_side_effects(self):
         untouched = self.folder / "not-created"
@@ -341,6 +358,9 @@ class ToolingTests(unittest.TestCase):
     def copied_image(self):
         image = self.repo / "CoveChromium/CoveBuild.sparsebundle"
         image.mkdir(parents=True)
+        patcher = mock.patch.object(cove, "IMAGE", image)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return image
 
     def test_copied_image_is_preferred_over_previous_environment(self):

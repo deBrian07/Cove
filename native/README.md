@@ -28,10 +28,9 @@ These checks establish patch applicability and build-tool behavior. They do not 
 
 ## Build on macOS arm64
 
-Use full Xcode with a compatible macOS SDK and Python 3.9 or newer. The mounted checkout directory must be dedicated to Cove and contain no spaces. The default copied image is mounted outside the repository at `/Volumes/CoveBuild`, while its backing files remain ignored under `CoveChromium/`.
+Use full Xcode with a compatible macOS SDK and Python 3.9 or newer. The mounted checkout directory must be dedicated to Cove and contain no spaces. Chromium is fetched into the repository's ignored `.chromium/` directory; `npm run setup` performs every stage below once.
 
 ```sh
-export COVE_CHROMIUM_ROOT=/path/to/CoveChromium
 npm run chromium:doctor
 npm run chromium:bootstrap
 npm run chromium:sync
@@ -43,7 +42,7 @@ npm run chromium:run
 
 `bootstrap`, `sync`, `patch`, and `gen` prepare the checkout. They are not part of changing a feature. `build` runs an incremental compile of the existing `out/Cove` directory: Ninja rebuilds only the objects invalidated by the edit, then relinks the affected component. `args.gn` sets `is_component_build = true` and `symbol_level = 0` for that reason. A one-line change in a Cove UI source file is minutes, not another from-scratch compile. `run` launches that same app with a separate `CoveDevelopment` profile and refuses an override that could open an existing Chrome or Arc profile.
 
-All new shell and interaction work targets the native application. The former Electron source is archived in `legacy/electron/` for reference only. `npm start` mounts the copied build image and launches the existing native `Cove.app`; it does not compile Chromium.
+All new shell and interaction work targets the native application. The former Electron source is archived in `legacy/electron/` for reference only. `npm start` launches the existing native `Cove.app` in `.chromium/`; it does not compile Chromium.
 
 The hours-long compile happens when `out/Cove` does not exist yet, when `args.gn` or the patch series changes enough that GN must regenerate the build, or when the pinned Chromium revision changes. Do not delete `out/Cove` to pick up a feature change.
 
