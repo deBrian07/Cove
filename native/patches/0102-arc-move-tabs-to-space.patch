@@ -1,0 +1,527 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -584,6 +584,7 @@
+       "//chrome/browser/ui/cove:session_metadata",
+       "//components/split_tabs",
+       "//components/tab_groups",
++      "//components/tabs:public",
+       "//ui/base/unowned_user_data",
+     ]
+     deps = [ "//content/public/browser" ]
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -44,6 +44,16 @@
+   return {};
+ }
+ 
++std::string CoveSpaceCloseHandler::GetActiveSpaceId() const {
++  return {};
++}
++
++bool CoveSpaceCloseHandler::MoveTabsToSpace(
++    const std::vector<tabs::TabHandle>& tabs,
++    const std::string& space_id) {
++  return false;
++}
++
+ void MarkCoveEmptyCanvas(content::WebContents* contents) {
+   if (!IsBareAboutBlank(contents)) {
+     return;
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -15,6 +15,7 @@
+ #include "components/split_tabs/split_tab_visual_data.h"
+ #include "components/tab_groups/tab_group_id.h"
+ #include "components/tab_groups/tab_group_visual_data.h"
++#include "components/tabs/public/tab_interface.h"
+ #include <vector>
+ 
+ #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+@@ -79,6 +80,11 @@
+   virtual void ExecuteArcCommand(int command_id) {}
+   virtual std::vector<CoveSpaceInfo> GetSpaces() const;
+   virtual void FocusSpace(std::string space_id) {}
++  virtual std::string GetActiveSpaceId() const;
++  // Moves live tabs (with their split partners) into another Space and shows
++  // that Space. Returns false when nothing moved.
++  virtual bool MoveTabsToSpace(const std::vector<tabs::TabHandle>& tabs,
++                               const std::string& space_id);
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_COVE_SPACE_CLOSE_HANDLER_H_
+diff --git a/chrome/browser/ui/tabs/BUILD.gn b/chrome/browser/ui/tabs/BUILD.gn
+--- a/chrome/browser/ui/tabs/BUILD.gn
++++ b/chrome/browser/ui/tabs/BUILD.gn
+@@ -178,6 +178,7 @@
+       "//chrome/browser/glic/browser_ui",
+       "//chrome/browser/profiles:profile",
+       "//chrome/browser/send_tab_to_self",
++      "//chrome/browser/ui:cove_space_close_handler",
+       "//chrome/browser/ui:ui_features",
+       "//chrome/browser/ui/immersive:immersive_mode_controller",
+       "//chrome/browser/ui/send_tab_to_self",
+diff --git a/chrome/browser/ui/tabs/tab_menu_model.cc b/chrome/browser/ui/tabs/tab_menu_model.cc
+--- a/chrome/browser/ui/tabs/tab_menu_model.cc
++++ b/chrome/browser/ui/tabs/tab_menu_model.cc
+@@ -28,6 +28,7 @@
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+ #include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_context_menu_delegate.h"
+ #include "chrome/browser/ui/tabs/existing_tab_group_sub_menu_model.h"
+@@ -77,8 +78,41 @@
+ 
+ namespace {
+ constexpr int kTabMenuIconSize = 16;
+-}
+ 
++// Lists this window's other Spaces; choosing one moves the tabs there.
++class CoveMoveToSpaceMenuModel : public ui::SimpleMenuModel,
++                                 public ui::SimpleMenuModel::Delegate {
++ public:
++  CoveMoveToSpaceMenuModel(BrowserWindowInterface* browser,
++                           std::vector<tabs::TabHandle> tabs,
++                           std::vector<CoveSpaceInfo> spaces)
++      : ui::SimpleMenuModel(this),
++        browser_(browser),
++        tabs_(std::move(tabs)),
++        spaces_(std::move(spaces)) {
++    for (size_t i = 0; i < spaces_.size(); ++i) {
++      AddItem(static_cast<int>(i), spaces_[i].name);
++    }
++  }
++
++  void ExecuteCommand(int command_id, int event_flags) override {
++    if (command_id < 0 || static_cast<size_t>(command_id) >= spaces_.size()) {
++      return;
++    }
++    if (auto* handler =
++            CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost())) {
++      handler->MoveTabsToSpace(tabs_, spaces_.at(command_id).id);
++    }
++  }
++
++ private:
++  raw_ptr<BrowserWindowInterface> browser_;
++  std::vector<tabs::TabHandle> tabs_;
++  std::vector<CoveSpaceInfo> spaces_;
++};
++
++}  // namespace
++
+ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kAddANoteTabMenuItem);
+ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kSplitTabsMenuItem);
+ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kArrangeSplitTabsMenuItem);
+@@ -472,6 +506,29 @@
+     }
+   }
+ 
++  if (auto* browser = tab_strip_->delegate()->GetBrowserWindowInterface()) {
++    if (auto* library =
++            CoveSpaceCloseHandler::Get(browser->GetUnownedUserDataHost())) {
++      const std::string active = library->GetActiveSpaceId();
++      std::vector<CoveSpaceInfo> targets;
++      for (auto& space : library->GetSpaces()) {
++        if (space.id != active) {
++          targets.push_back(std::move(space));
++        }
++      }
++      if (!targets.empty() && !active.empty()) {
++        std::vector<tabs::TabHandle> handles;
++        for (int selected : indices) {
++          handles.push_back(tab_strip_->GetTabAtIndex(selected)->GetHandle());
++        }
++        cove_move_to_space_submenu_ = std::make_unique<CoveMoveToSpaceMenuModel>(
++            browser, std::move(handles), std::move(targets));
++        AddSubMenu(TabStripModel::CommandCoveMoveToSpace, u"Move to Space",
++                   cove_move_to_space_submenu_.get());
++      }
++    }
++  }
++
+   if (ExistingWindowSubMenuModel::ShouldShowSubmenu(tab_strip_->profile())) {
+     // Create submenu with existing windows
+     add_to_existing_window_submenu_ = ExistingWindowSubMenuModel::Create(
+diff --git a/chrome/browser/ui/tabs/tab_menu_model.h b/chrome/browser/ui/tabs/tab_menu_model.h
+--- a/chrome/browser/ui/tabs/tab_menu_model.h
++++ b/chrome/browser/ui/tabs/tab_menu_model.h
+@@ -98,6 +98,7 @@
+ 
+   std::unique_ptr<ui::SimpleMenuModel> add_to_existing_group_submenu_;
+   std::unique_ptr<ui::SimpleMenuModel> add_to_existing_window_submenu_;
++  std::unique_ptr<ui::SimpleMenuModel> cove_move_to_space_submenu_;
+   std::unique_ptr<ui::SimpleMenuModel>
+       add_to_existing_comparison_table_submenu_;
+   std::unique_ptr<ui::SimpleMenuModel> swap_with_split_submenu_;
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -2748,6 +2748,7 @@
+     }
+ 
+     case CommandMoveToExistingWindow:
++    case CommandCoveMoveToSpace:
+       return true;
+ 
+     case CommandMoveTabsToNewWindow: {
+@@ -3132,6 +3133,9 @@
+     case CommandGlicCreateNewChat:
+     case CommandGlicSwitchToRecentConversation:
+       // These are handled by GlicTabSubMenuModel.
++      break;
++    case CommandCoveMoveToSpace:
++      // The Space submenu's own delegate performs the move.
+       break;
+     case CommandGlicUnshare: {
+       std::vector<int> indices = GetIndicesForCommand(context_index);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -36,6 +36,8 @@
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_menu_model.h"
++#include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+@@ -99,6 +101,54 @@
+   return nullptr;
+ }
+ 
++class NoopMenuDelegate : public ui::SimpleMenuModel::Delegate {
++ public:
++  void ExecuteCommand(int command_id, int event_flags) override {}
++};
++
++// Chooses `space` from the tab context menu's Move to Space submenu.
++bool MoveTabWithMenu(BrowserWindowInterface* browser,
++                     int index,
++                     const std::u16string& space) {
++  NoopMenuDelegate delegate;
++  TabMenuModel menu(&delegate, TabMenuModelDelegate::From(browser),
++                    browser->GetTabStripModel(), index);
++  for (size_t i = 0; i < menu.GetItemCount(); ++i) {
++    if (menu.GetLabelAt(i) != u"Move to Space") {
++      continue;
++    }
++    ui::MenuModel* spaces = menu.GetSubmenuModelAt(i);
++    for (size_t j = 0; spaces && j < spaces->GetItemCount(); ++j) {
++      if (spaces->GetLabelAt(j) == space) {
++        spaces->ActivatedAt(j);
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
++bool SpaceHasPinUrl(BrowserWindowInterface* browser,
++                    const std::string& space_id,
++                    const GURL& url) {
++  const auto* spaces = browser->GetProfile()
++                           ->GetPrefs()
++                           ->GetDict(kSidebarPref)
++                           .FindList("spaces");
++  for (const auto& value : *spaces) {
++    const auto& space = value.GetDict();
++    if (*space.FindString("id") != space_id || !space.FindList("pins")) {
++      continue;
++    }
++    for (const auto& pin : *space.FindList("pins")) {
++      if (*pin.GetDict().FindString("url") == url.spec()) {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
+ views::LabelButton* ReturnControl(views::View* row) {
+   if (!row) {
+     return nullptr;
+@@ -1527,4 +1577,80 @@
+   model->ActivateTabAt(model->GetIndexOfWebContents(two));
+   EXPECT_FALSE(library()->IsRecentTabSwitcherOpenForTesting());
+   EXPECT_EQ(two, model->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MoveToSpaceCarriesLiveTabIntoUnvisitedSpace) {
++  Seed();
++  auto* model = browser()->GetTabStripModel();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Stay</title>")));
++  auto* stay = model->GetActiveWebContents();
++  auto* mover = chrome::AddAndReturnTabAt(
++      browser(), GURL("data:text/html,<title>Mover</title>"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(mover));
++  ASSERT_TRUE(content::ExecJs(mover, "window.draft='mover'"));
++  model->ActivateTabAt(model->GetIndexOfWebContents(stay));
++
++  // The shown Space is not offered as a destination.
++  EXPECT_FALSE(MoveTabWithMenu(browser(), model->GetIndexOfWebContents(mover),
++                               u"Personal"));
++  ASSERT_TRUE(MoveTabWithMenu(browser(), model->GetIndexOfWebContents(mover),
++                              u"Work"));
++  Layout();
++  EXPECT_EQ("work", library()->ActiveSpaceIdForTesting());
++  EXPECT_EQ(mover, model->GetActiveWebContents());
++  EXPECT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(stay));
++  EXPECT_EQ("mover", content::EvalJs(mover, "window.draft"));
++  ASSERT_TRUE(library()->HasParkedSpaceForTesting("personal"));
++
++  library()->FocusSpace("personal");
++  Layout();
++  EXPECT_EQ(stay, model->GetActiveWebContents());
++  EXPECT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(mover));
++  library()->FocusSpace("work");
++  Layout();
++  EXPECT_EQ(mover, model->GetActiveWebContents());
++  EXPECT_EQ("mover", content::EvalJs(mover, "window.draft"));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       MoveToSpaceCarriesPinAndLeavesBlankCanvas) {
++  Seed();
++  auto* model = browser()->GetTabStripModel();
++  library()->FocusSpace("work");
++  Layout();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Work page</title>")));
++  auto* work_page = model->GetActiveWebContents();
++  library()->FocusSpace("personal");
++  Layout();
++  ASSERT_TRUE(library()->HasParkedSpaceForTesting("work"));
++
++  const GURL url("data:text/html,<title>Pinned</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++  auto* pinned = model->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(pinned, "window.draft='pinned'"));
++  model->SetTabPinned(model->active_index(), true);
++  ASSERT_EQ(1, model->count());
++  ASSERT_TRUE(SpaceHasPinUrl(browser(), "personal", url));
++
++  ASSERT_TRUE(MoveTabWithMenu(browser(), model->GetIndexOfWebContents(pinned),
++                              u"Work"));
++  Layout();
++  EXPECT_EQ("work", library()->ActiveSpaceIdForTesting());
++  EXPECT_EQ(pinned, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(model->active_index()));
++  EXPECT_NE(TabStripModel::kNoTab, model->GetIndexOfWebContents(work_page));
++  EXPECT_EQ("pinned", content::EvalJs(pinned, "window.draft"));
++  EXPECT_FALSE(SpaceHasPinUrl(browser(), "personal", url));
++  EXPECT_TRUE(SpaceHasPinUrl(browser(), "work", url));
++  EXPECT_FALSE(library()->ActivePinIdForTesting().empty());
++
++  // The source Space keeps a blank canvas instead of an empty strip.
++  library()->FocusSpace("personal");
++  Layout();
++  EXPECT_EQ(1, model->count());
++  EXPECT_EQ(GURL("about:blank"), model->GetActiveWebContents()->GetVisibleURL());
++  EXPECT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(pinned));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -1582,6 +1582,10 @@
+   base::ListValue tabs;
+   TabStripModel* model = browser_->GetTabStripModel();
+   for (int i = 0; i < model->count(); ++i) {
++    if (std::ranges::contains(moving_tabs_,
++                              model->GetTabAtIndex(i)->GetHandle())) {
++      continue;
++    }
+     content::WebContents* contents = model->GetWebContentsAt(i);
+     base::DictValue tab;
+     tab.Set("url", contents->GetVisibleURL().spec());
+@@ -1619,6 +1623,114 @@
+ 
+ void CoveSidebarLibraryView::FocusSpace(std::string space_id) {
+   SwitchSpace(std::move(space_id));
++}
++
++std::string CoveSidebarLibraryView::GetActiveSpaceId() const {
++  return browser_->GetProfile()->IsOffTheRecord() ? std::string()
++                                                  : active_space_id_;
++}
++
++bool CoveSidebarLibraryView::MoveTabsToSpace(
++    const std::vector<tabs::TabHandle>& tabs, const std::string& space_id) {
++  PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  if (restoring_session_ || switching_space_ || closing_active_space_ ||
++      browser_->GetProfile()->IsOffTheRecord() ||
++      space_id == active_space_id_ ||
++      !FindSpace(prefs->GetDict(kCoveSidebarPref), space_id)) {
++    return false;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  std::vector<tabs::TabHandle> moving;
++  const auto add = [&](tabs::TabInterface* tab) {
++    if (tab && model->GetIndexOfTab(tab) != TabStripModel::kNoTab &&
++        !IsCoveEmptyCanvas(tab->GetContents()) &&
++        !std::ranges::contains(moving, tab->GetHandle())) {
++      moving.push_back(tab->GetHandle());
++    }
++  };
++  for (const auto& handle : tabs) {
++    auto* tab = handle.Get();
++    add(tab);
++    // A split moves as a unit; a half-parked split cannot be restored.
++    if (tab && tab->GetSplit()) {
++      for (auto* other : *model) {
++        if (other->GetSplit() == tab->GetSplit()) {
++          add(other);
++        }
++      }
++    }
++  }
++  if (moving.empty()) {
++    return false;
++  }
++  CloseRecentTabSwitcher();
++  // Groups stay with the Space they were made in.
++  std::vector<int> grouped;
++  for (const auto& handle : moving) {
++    if (handle.Get()->GetGroup()) {
++      grouped.push_back(model->GetIndexOfTab(handle.Get()));
++    }
++  }
++  if (!grouped.empty()) {
++    std::ranges::sort(grouped);
++    model->RemoveFromGroup(grouped);
++  }
++  // Unpinning drops the source Space's pin record; the tab is pinned again in
++  // the target so it becomes that Space's pin.
++  std::vector<tabs::TabHandle> repin;
++  for (const auto& handle : moving) {
++    auto* tab = handle.Get();
++    if (tab && tab->IsPinned()) {
++      repin.push_back(handle);
++      model->SetTabPinned(model->GetIndexOfTab(tab), false);
++    }
++  }
++  bool leaves_space_empty = true;
++  for (auto* tab : *model) {
++    if (!std::ranges::contains(moving, tab->GetHandle())) {
++      leaves_space_empty = false;
++      break;
++    }
++  }
++  if (leaves_space_empty) {
++    NavigateParams params(browser_, GURL("about:blank"),
++                          ui::PAGE_TRANSITION_TYPED);
++    params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
++    Navigate(&params);
++    MarkCoveEmptyCanvas(params.navigated_or_inserted_contents.get());
++    OnEmptyCanvasMarked();
++  }
++  moving_tabs_ = moving;
++  SwitchSpace(space_id);
++  moving_tabs_.clear();
++  if (active_space_id_ != space_id) {
++    return false;
++  }
++  for (const auto& handle : moving) {
++    auto* tab = handle.Get();
++    if (!tab || !HasRestoredCoveTabSessionState(tab->GetContents())) {
++      continue;
++    }
++    CoveTabSessionState state = *GetCoveTabSessionState(tab->GetContents());
++    state.space = space_id;
++    state.pin.clear();
++    SetCoveTabSessionState(tab->GetContents(), std::move(state));
++  }
++  for (const auto& handle : repin) {
++    auto* tab = handle.Get();
++    const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
++    if (index != TabStripModel::kNoTab && !tab->IsPinned()) {
++      model->SetTabPinned(index, true);
++    }
++  }
++  if (auto* first = moving.front().Get()) {
++    const int index = model->GetIndexOfTab(first);
++    if (index != TabStripModel::kNoTab) {
++      model->ActivateTabAt(index);
++    }
++  }
++  QueueSessionSync();
++  return true;
+ }
+ 
+ std::string CoveSidebarLibraryView::ActivePinId() const {
+@@ -1803,6 +1915,23 @@
+       [](base::RepeatingClosure finish) { if (finish) finish.Run(); },
+       finish_space_transition_));
+   auto outgoing = CaptureCurrentTabs();
++  if (!moving_tabs_.empty()) {
++    std::optional<tabs::TabHandle> active;
++    if (const auto index = outgoing->selection.active();
++        index && *index < outgoing->handles.size()) {
++      active = outgoing->handles[*index];
++    }
++    std::erase_if(outgoing->handles, [&](const tabs::TabHandle& handle) {
++      return std::ranges::contains(moving_tabs_, handle);
++    });
++    const auto kept = active ? std::ranges::find(outgoing->handles, *active)
++                             : outgoing->handles.end();
++    outgoing->selection.Clear();
++    outgoing->selection.SetSelectedIndex(
++        kept != outgoing->handles.end()
++            ? static_cast<size_t>(kept - outgoing->handles.begin())
++            : 0);
++  }
+   auto incoming = std::make_unique<SpaceTabs>();
+   const auto found = inactive_spaces_.find(space_id);
+   if (found != inactive_spaces_.end()) {
+@@ -1875,6 +2004,11 @@
+       }
+     }
+   }
++  for (const auto& handle : moving_tabs_) {
++    if (!std::ranges::contains(incoming->handles, handle)) {
++      incoming->handles.push_back(handle);
++    }
++  }
+   // There is always an incoming tab before detaching outgoing tabs. The native
+   // browser therefore never sees an empty tab strip and cannot close itself.
+   if (incoming->handles.empty()) {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -84,6 +84,9 @@
+   void ExecuteArcCommand(int command_id) override;
+   std::vector<CoveSpaceInfo> GetSpaces() const override;
+   void FocusSpace(std::string space_id) override;
++  std::string GetActiveSpaceId() const override;
++  bool MoveTabsToSpace(const std::vector<tabs::TabHandle>& tabs,
++                       const std::string& space_id) override;
+   bool RetainsPinForTab(const tabs::TabInterface* tab) const override;
+   bool HasPendingTabs() const override;
+   void PrepareForClose() override;
+@@ -367,6 +370,8 @@
+   std::map<const views::View*, std::string> row_folder_ids_;
+   std::map<const views::View*, std::string> row_space_ids_;
+   bool reconcile_posted_ = false;
++  // Tabs that SwitchSpace() keeps in the strip so they join the new Space.
++  std::vector<tabs::TabHandle> moving_tabs_;
+   // Most recently active first. Includes parked tabs of other Spaces.
+   std::vector<tabs::TabHandle> recent_tabs_;
+   std::vector<tabs::TabHandle> switcher_tabs_;
+diff --git a/components/tabs/public/tab_context_menu_command.h b/components/tabs/public/tab_context_menu_command.h
+--- a/components/tabs/public/tab_context_menu_command.h
++++ b/components/tabs/public/tab_context_menu_command.h
+@@ -39,6 +39,7 @@
+   CommandGlicSwitchToRecentConversation,
+   CommandGlicUnshare,
+   CommandToggleFocusGroup,
++  CommandCoveMoveToSpace,
+ };
+ // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/histograms.xml:TabContextMenuCommand)
+ 
