@@ -1,0 +1,103 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -32,6 +32,7 @@
+ #include "ui/gfx/image/image_skia_rep.h"
+ #include "ui/views/controls/label.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+@@ -128,6 +129,19 @@
+   return false;
+ }
+ 
++bool HasButtonLabeled(views::View* root, std::u16string_view text) {
++  if (auto* button = views::AsViewClass<views::LabelButton>(root);
++      button && button->GetText() == text) {
++    return true;
++  }
++  for (const auto& child : root->children()) {
++    if (HasButtonLabeled(child.get(), text)) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ bool SpaceHasPinUrl(BrowserWindowInterface* browser,
+                     const std::string& space_id,
+                     const GURL& url) {
+@@ -1653,4 +1667,20 @@
+   EXPECT_EQ(1, model->count());
+   EXPECT_EQ(GURL("about:blank"), model->GetActiveWebContents()->GetVisibleURL());
+   EXPECT_EQ(TabStripModel::kNoTab, model->GetIndexOfWebContents(pinned));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SpaceHeaderHasNoPinButtonAndCommandDPins) {
++  Seed();
++  // Arc pins by dragging, the tab menu or Command-D; the header has no button.
++  EXPECT_FALSE(HasButtonLabeled(library(), u"Pin"));
++  EXPECT_TRUE(HasButtonLabeled(library(), u"+"));
++  auto* model = browser()->GetTabStripModel();
++  const GURL url("data:text/html,<title>Command D</title>");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++  EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_WINDOW_PIN_TAB));
++  EXPECT_TRUE(model->IsTabPinned(model->active_index()));
++  EXPECT_TRUE(SpaceHasPinUrl(browser(), "personal", url));
++  Layout();
++  EXPECT_FALSE(library()->ActivePinIdForTesting().empty());
+ }
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -804,7 +804,6 @@
+   pin_favicon_tasks_.TryCancelAll();
+   cached_pin_icons_.clear();
+   drop_indicator_ = nullptr;
+-  pin_current_button_.SetView(nullptr);
+   row_items_.clear();
+   QueueSessionSync();
+   row_pin_ids_.clear();
+@@ -826,13 +825,6 @@
+         views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
+     layout->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
+     layout->SetFlexForView(MakeHeader(header, base::UTF8ToUTF16(*name)), 1);
+-    auto* pin = MakeRow(header, u"Pin", base::BindRepeating(
+-        &CoveSidebarLibraryView::PinActivePage, weak_factory_.GetWeakPtr()));
+-    pin->SetPreferredSize(gfx::Size(40, 28));
+-    pin->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+-    pin->SetTooltipText(u"Pin current tab");
+-    pin->GetViewAccessibility().SetName(u"Pin current tab");
+-    pin_current_button_.SetView(pin);
+     auto* add_folder = MakeRow(header, u"+", base::BindRepeating(
+         &CoveSidebarLibraryView::ExecuteArcCommand, weak_factory_.GetWeakPtr(),
+         IDC_COVE_NEW_FOLDER));
+@@ -910,14 +902,6 @@
+ 
+ void CoveSidebarLibraryView::UpdatePinRowAppearance() {
+   TabStripModel* model = browser_->GetTabStripModel();
+-  if (auto* pin = pin_current_button_.view()) {
+-    auto* active = model->GetActiveTab();
+-    auto* contents = active ? active->GetContents() : nullptr;
+-    pin->SetEnabled(active && !active->IsPinned() && !active->GetGroup() &&
+-        !active->GetSplit() && contents &&
+-        (contents->GetVisibleURL().SchemeIsHTTPOrHTTPS() ||
+-         contents->GetVisibleURL().SchemeIsFile()));
+-  }
+   bound_pin_handles_.clear();
+   std::string active_pin_id;
+   for (int index = 0; index < model->count(); ++index) {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -364,7 +364,6 @@
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
+   views::ViewTracker menu_button_;
+-  views::ViewTracker pin_current_button_;
+   base::RepeatingClosure toggle_favorite_;
+   base::RepeatingCallback<bool()> is_current_favorite_;
+   std::map<const views::View*, std::string> row_folder_ids_;
