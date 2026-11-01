@@ -1,0 +1,15 @@
+:root {
+  --cove-ocean: #2563EB;
+  --cove-slate: #0F172A;
+  --cove-mist: #F1F5F9;
+  --cove-cloud: #E2E8F0;
+  --cove-sand: #F8FAFC;
+  --cove-white: #FFFFFF;
+  --cove-logo-gradient-upper: linear-gradient(135deg, #397EE8, #97C4FA);
+  --cove-logo-gradient-lower: linear-gradient(135deg, #345E99, #79A7CD);
+  --cove-font-display: "Inter Display", Inter, -apple-system, sans-serif;
+  --cove-font-ui: Inter, -apple-system, sans-serif;
+  --cove-radius-sm: 8px;
+  --cove-radius-md: 12px;
+  --cove-radius-lg: 20px;
+}

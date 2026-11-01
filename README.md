@@ -1,3 +1,12 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/01_Logos/Cove-Horizontal-OnDark.png">
+    <img alt="Cove" src="brand/01_Logos/Cove-Horizontal-OnLight.png" width="320">
+  </picture>
+</p>
+
+<p align="center"><em>A calmer way to browse.</em></p>
+
 # Cove
 
 Cove is a native Chromium browser. This repository holds everything needed to build it: the pinned Chromium revision (`native/chromium.json`), the GN configuration (`native/args.gn`) and Cove's ordered patch series (`native/patches/`). Chromium itself is fetched into the ignored `.chromium/` directory inside this repository, so no other location is involved.
@@ -43,6 +52,8 @@ npm run build -- --jobs 2
 The existing `out/Cove` directory is reused. If the repository sits on a non-APFS drive, an APFS disk image at `CoveChromium/CoveBuild.sparsebundle` is mounted at `.chromium/` automatically; see [the local build setup](native/LOCAL_BUILD.md). No Electron dependency, entrypoint or fallback is part of the active project. The previous implementation and unfinished visual work are preserved under [`legacy/electron/`](legacy/electron/README.md) as reference material.
 
 The native patches add a centered dark command palette, URL/default-engine search, tab switching and compact vertical tabs. ⌘T opens the palette; Return opens a selected tab or submits a URL/search, and ⌘Return opens the query in a new tab. The sidebar also has live Spaces, global Favorites, folders and native address/navigation controls. Native Space ownership, parked-page journals and clean-close restoration have browser regression coverage; full process-restart/crash recovery and other Arc workflows remain unfinished; see the [parity notes](native/ARC_PARITY.md) and [validation record](native/VALIDATION.md). All product work belongs in the native Chromium patch series.
+
+Logos, app icons, colors and usage rules are in [`brand/`](brand/README.md).
 
 See [the current handoff](native/HANDOFF.md), [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).
 
