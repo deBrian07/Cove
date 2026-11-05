@@ -1,0 +1,442 @@
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3571,6 +3571,8 @@
+       "cove/cove_temporary_window.h",
+       "views/cove/cove_settings_view.cc",
+       "views/cove/cove_settings_view.h",
++      "views/cove/cove_mini_media_view.cc",
++      "views/cove/cove_mini_media_view.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/browser/ui/cove_space_close_handler.cc b/chrome/browser/ui/cove_space_close_handler.cc
+--- a/chrome/browser/ui/cove_space_close_handler.cc
++++ b/chrome/browser/ui/cove_space_close_handler.cc
+@@ -123,3 +123,9 @@
+ bool CoveSpaceCloseHandler::IsSessionMutationInProgress() const {
+   return false;
+ }
++
++std::vector<tabs::TabHandle> CoveSpaceCloseHandler::GetMediaTabs() const {
++  return {};
++}
++
++void CoveSpaceCloseHandler::ActivateMediaTab(tabs::TabHandle handle) {}
+diff --git a/chrome/browser/ui/cove_space_close_handler.h b/chrome/browser/ui/cove_space_close_handler.h
+--- a/chrome/browser/ui/cove_space_close_handler.h
++++ b/chrome/browser/ui/cove_space_close_handler.h
+@@ -85,6 +85,9 @@
+   virtual void ExecuteArcCommand(int command_id) {}
+   virtual std::vector<CoveSpaceInfo> GetSpaces() const;
+   virtual void FocusSpace(std::string space_id) {}
++  // Borrowed stable handles for this window's live and parked pages only.
++  virtual std::vector<tabs::TabHandle> GetMediaTabs() const;
++  virtual void ActivateMediaTab(tabs::TabHandle handle);
+   virtual std::string GetActiveSpaceId() const;
+   // Moves live tabs (with their split partners) into another Space and shows
+   // that Space. Returns false when nothing moved.
+diff --git a/chrome/browser/ui/views/cove/cove_mini_media_view.cc b/chrome/browser/ui/views/cove/cove_mini_media_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_mini_media_view.cc
+@@ -0,0 +1,152 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#include "chrome/browser/ui/views/cove/cove_mini_media_view.h"
++#include <algorithm>
++#include "base/functional/bind.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "content/public/browser/media_session.h"
++#include "content/public/browser/web_contents.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/button/image_button.h"
++#include "components/vector_icons/vector_icons.h"
++#include "ui/color/color_id.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/layout/box_layout.h"
++namespace {
++using State = media_session::mojom::MediaPlaybackState;
++using Action = media_session::mojom::MediaSessionAction;
++using Suspend = media_session::mojom::MediaSession::SuspendType;
++}
++CoveMiniMediaView::CoveMiniMediaView(BrowserWindowInterface* browser) : browser_(browser) {
++  SetBackground(views::CreateRoundedRectBackground(ui::kColorButtonBackground, 10));
++  SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++  SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
++  title_ = AddChildView(std::make_unique<views::LabelButton>(
++      base::BindRepeating(&CoveMiniMediaView::ReturnToTab, base::Unretained(this)),
++      u"Return to media tab"));
++  title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  title_->SetPreferredSize(gfx::Size(100, 28));
++  title_->SetTooltipText(u"Return to media tab");
++  auto* controls = AddChildView(std::make_unique<views::View>());
++  auto* layout = controls->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
++  layout->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kCenter);
++  previous_ = controls->AddChildView(views::ImageButton::CreateIconButton(
++      base::BindRepeating(&CoveMiniMediaView::SkipTrack, base::Unretained(this), false),
++      vector_icons::kSkipPreviousIcon, u"Previous track"));
++  play_ = controls->AddChildView(views::ImageButton::CreateIconButton(
++      base::BindRepeating(&CoveMiniMediaView::TogglePlayback, base::Unretained(this)),
++      vector_icons::kPauseIcon, u"Pause"));
++  next_ = controls->AddChildView(views::ImageButton::CreateIconButton(
++      base::BindRepeating(&CoveMiniMediaView::SkipTrack, base::Unretained(this), true),
++      vector_icons::kSkipNextIcon, u"Next track"));
++  stop_ = controls->AddChildView(views::ImageButton::CreateIconButton(
++      base::BindRepeating(&CoveMiniMediaView::StopPlayback, base::Unretained(this)),
++      vector_icons::kCloseIcon, u"Stop playback"));
++  for (auto* button : {previous_.get(), play_.get(), next_.get(), stop_.get()})
++    button->SetPreferredSize(gfx::Size(28, 28));
++}
++CoveMiniMediaView::~CoveMiniMediaView() = default;
++void CoveMiniMediaView::AddedToWidget() {
++  views::View::AddedToWidget();
++  Refresh();
++  refresh_timer_.Start(FROM_HERE, base::Milliseconds(250),
++      base::BindRepeating(&CoveMiniMediaView::Refresh, base::Unretained(this)));
++}
++void CoveMiniMediaView::RemovedFromWidget() {
++  refresh_timer_.Stop();
++  views::View::RemovedFromWidget();
++}
++std::vector<tabs::TabHandle> CoveMiniMediaView::OwnedTabs() const {
++  if (auto* bridge = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
++    return bridge->GetMediaTabs();
++  std::vector<tabs::TabHandle> result;
++  for (auto* tab : *browser_->GetTabStripModel()) result.push_back(tab->GetHandle());
++  return result;
++}
++content::MediaSession* CoveMiniMediaView::SelectedSession() const {
++  if (!selected_ || !std::ranges::contains(OwnedTabs(), *selected_)) return nullptr;
++  auto* tab = selected_->Get();
++  return tab ? content::MediaSession::GetIfExists(tab->GetContents()) : nullptr;
++}
++void CoveMiniMediaView::Refresh() {
++  std::optional<tabs::TabHandle> playing;
++  std::optional<tabs::TabHandle> paused;
++  for (const auto& handle : OwnedTabs()) {
++    auto* tab = handle.Get();
++    auto* session = tab ? content::MediaSession::GetIfExists(tab->GetContents()) : nullptr;
++    const auto info = session ? session->GetMediaSessionInfoSync() : nullptr;
++    if (!info || !info->is_controllable) continue;
++    if (info->playback_state == State::kPlaying) {
++      if (!playing || selected_ == handle) playing = handle;
++    } else if (!paused || selected_ == handle) paused = handle;
++  }
++  const auto selected = playing ? playing : paused;
++  selected_ = selected;
++  const auto* active = browser_->GetTabStripModel()->GetActiveTab();
++  const bool show = selected_ && (!active || active->GetHandle() != *selected_);
++  const bool changed = show != show_media_;
++  show_media_ = show;
++  if (auto* session = SelectedSession()) {
++    const auto info = session->GetMediaSessionInfoSync();
++    auto title = session->GetMediaSessionMetadata().title;
++    if (title.empty()) title = selected_->Get()->GetContents()->GetTitle();
++    if (title.empty()) title = u"Playing media";
++    if (title_->GetText() != title) title_->SetText(title);
++    title_->SetTooltipText(title + u" — Return to tab");
++    const bool is_playing = info && info->playback_state == State::kPlaying;
++    if (displayed_playing_ != is_playing) {
++      displayed_playing_ = is_playing;
++      play_->SetImageModel(views::Button::STATE_NORMAL,
++          ui::ImageModel::FromVectorIcon(is_playing ? vector_icons::kPauseIcon
++                                                : vector_icons::kPlayArrowIcon,
++                                        ui::kColorIcon, 20));
++      play_->SetTooltipText(is_playing ? u"Pause" : u"Play");
++      play_->GetViewAccessibility().SetName(is_playing ? u"Pause" : u"Play");
++    }
++    const auto actions = session->GetMediaSessionActionsSync();
++    previous_->SetVisible(std::ranges::contains(actions, Action::kPreviousTrack));
++    next_->SetVisible(std::ranges::contains(actions, Action::kNextTrack));
++  }
++  if (changed) PreferredSizeChanged();
++}
++void CoveMiniMediaView::TogglePlayback() {
++  if (auto* session = SelectedSession()) {
++    const auto info = session->GetMediaSessionInfoSync();
++    if (!info || !info->is_controllable) { Refresh(); return; }
++    if (info->playback_state == State::kPlaying)
++      session->Suspend(Suspend::kUI);
++    else session->Resume(Suspend::kUI);
++  }
++  Refresh();
++}
++void CoveMiniMediaView::SkipTrack(bool forward) {
++  if (auto* session = SelectedSession()) {
++    const auto action = forward ? Action::kNextTrack : Action::kPreviousTrack;
++    if (std::ranges::contains(session->GetMediaSessionActionsSync(), action)) {
++      if (forward) session->NextTrack(); else session->PreviousTrack();
++    }
++  }
++}
++void CoveMiniMediaView::StopPlayback() {
++  if (auto* session = SelectedSession()) session->Stop(Suspend::kUI);
++  Refresh();
++}
++void CoveMiniMediaView::ReturnToTab() {
++  if (!SelectedSession()) return;
++  if (auto* bridge = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
++    bridge->ActivateMediaTab(*selected_);
++  else if (auto* tab = selected_->Get()) {
++    const int index = browser_->GetTabStripModel()->GetIndexOfTab(tab);
++    if (index != TabStripModel::kNoTab) browser_->GetTabStripModel()->ActivateTabAt(index);
++  }
++}
++BEGIN_METADATA(CoveMiniMediaView)
++END_METADATA
+diff --git a/chrome/browser/ui/views/cove/cove_mini_media_view.h b/chrome/browser/ui/views/cove/cove_mini_media_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_mini_media_view.h
+@@ -0,0 +1,43 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_MINI_MEDIA_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_MINI_MEDIA_VIEW_H_
++#include <optional>
++#include "base/memory/raw_ptr.h"
++#include "base/timer/timer.h"
++#include "components/tabs/public/tab_interface.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++class BrowserWindowInterface;
++namespace views { class LabelButton; class ImageButton; }
++namespace content { class MediaSession; }
++class CoveMiniMediaView : public views::View {
++  METADATA_HEADER(CoveMiniMediaView, views::View)
++ public:
++  explicit CoveMiniMediaView(BrowserWindowInterface* browser);
++  ~CoveMiniMediaView() override;
++  void AddedToWidget() override;
++  void RemovedFromWidget() override;
++  void Refresh();
++  bool has_media() const { return show_media_; }
++  void TogglePlayback();
++  void ReturnToTab();
++  void SkipTrack(bool forward);
++  void StopPlayback();
++  std::optional<tabs::TabHandle> selected_for_testing() const { return selected_; }
++ private:
++  std::vector<tabs::TabHandle> OwnedTabs() const;
++  content::MediaSession* SelectedSession() const;
++  raw_ptr<BrowserWindowInterface> browser_;
++  std::optional<tabs::TabHandle> selected_;
++  raw_ptr<views::LabelButton> title_ = nullptr;
++  raw_ptr<views::ImageButton> previous_ = nullptr;
++  raw_ptr<views::ImageButton> play_ = nullptr;
++  raw_ptr<views::ImageButton> next_ = nullptr;
++  raw_ptr<views::ImageButton> stop_ = nullptr;
++  bool show_media_ = false;
++  std::optional<bool> displayed_playing_;
++  base::RepeatingTimer refresh_timer_;
++};
++#endif
+diff --git a/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc b/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_mini_player_browsertest.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include <memory>
++#include "chrome/browser/ui/views/cove/cove_mini_media_view.h"
+ #include <string>
+ 
+ #include "base/feature_list.h"
+@@ -227,3 +228,75 @@
+ }
+ 
+ }  // namespace
++
++IN_PROC_BROWSER_TEST_F(CoveMiniPlayerBrowserTest,
++                       SidebarAudioControlsOperateAcrossSpacesWithoutReload) {
++  ASSERT_TRUE(Spaces());
++  const auto home = Spaces()->GetActiveSpaceId();
++  const auto other = OtherSpaceId();
++  ASSERT_FALSE(other.empty());
++  const GURL url = chrome_test_utils::GetTestUrl(
++      base::FilePath(base::FilePath::kCurrentDirectory),
++      base::FilePath(FILE_PATH_LITERAL("media/picture-in-picture/autopip-no-register.html")));
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
++  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::ExecJs(contents, R"(
++    window.audio = new Audio('../bigbuck.webm'); audio.loop = true;
++    window.keepDraft = 'unsent'; window.nextCount = 0;
++    navigator.mediaSession.metadata = new MediaMetadata({title: 'Cove audio test'});
++    navigator.mediaSession.setActionHandler('nexttrack', () => ++nextCount);
++    audio.play();
++  )"));
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    auto* session = content::MediaSession::GetIfExists(contents);
++    const auto info = session ? session->GetMediaSessionInfoSync() : nullptr;
++    return info && info->is_controllable &&
++           content::EvalJs(contents, "!audio.paused && audio.currentTime > 0").ExtractBool();
++  }));
++  const int entries = contents->GetController().GetEntryCount();
++  CoveMiniMediaView controls(browser());
++  controls.Refresh();
++  EXPECT_FALSE(controls.has_media());  // Current page already exposes its controls.
++  chrome::AddTabAt(browser(), GURL("about:blank"), -1, true);
++  controls.Refresh();
++  ASSERT_TRUE(controls.has_media());
++  const auto handle = controls.selected_for_testing();
++  controls.TogglePlayback();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return content::EvalJs(contents, "audio.paused").ExtractBool();
++  }));
++  controls.TogglePlayback();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return content::EvalJs(contents, "!audio.paused").ExtractBool();
++  }));
++  controls.SkipTrack(true);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return content::EvalJs(contents, "nextCount").ExtractInt() == 1;
++  }));
++  Spaces()->FocusSpace(other);
++  EXPECT_EQ(TabStripModel::kNoTab, browser()->GetTabStripModel()->GetIndexOfWebContents(contents));
++  controls.Refresh();
++  EXPECT_EQ(handle, controls.selected_for_testing());
++  EXPECT_TRUE(controls.has_media());
++  controls.TogglePlayback();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return content::EvalJs(contents, "audio.paused").ExtractBool();
++  }));
++  controls.Refresh();
++  EXPECT_TRUE(controls.has_media());  // Paused audio remains resumable while parked.
++  controls.ReturnToTab();
++  controls.Refresh();
++  EXPECT_FALSE(controls.has_media());
++  EXPECT_EQ(home, Spaces()->GetActiveSpaceId());
++  EXPECT_EQ(contents, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(entries, contents->GetController().GetEntryCount());
++  EXPECT_EQ("unsent", content::EvalJs(contents, "keepDraft"));
++  controls.StopPlayback();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    controls.Refresh();
++    auto* session = content::MediaSession::GetIfExists(contents);
++    const auto info = session ? session->GetMediaSessionInfoSync() : nullptr;
++    return (!info || !info->is_controllable) &&
++           content::EvalJs(contents, "audio.paused").ExtractBool();
++  }));
++}
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -1688,6 +1688,41 @@
+   return result;
+ }
+ 
++std::vector<tabs::TabHandle> CoveSidebarLibraryView::GetMediaTabs() const {
++  std::vector<tabs::TabHandle> result;
++  for (auto* tab : *browser_->GetTabStripModel()) result.push_back(tab->GetHandle());
++  for (const auto& [id, space] : inactive_spaces_) {
++    for (const auto& item : space->items) {
++      if (const auto* tab = std::get_if<std::unique_ptr<DetachedTab>>(&item)) {
++        if (*tab) result.push_back((*tab)->tab->GetHandle());
++      } else {
++        const auto& owned = std::get<std::unique_ptr<DetachedTabCollection>>(item);
++        if (owned) std::visit([&](const auto& root) {
++          for (auto* tab : *root) result.push_back(tab->GetHandle());
++        }, owned->collection_);
++      }
++    }
++  }
++  return result;
++}
++
++void CoveSidebarLibraryView::ActivateMediaTab(tabs::TabHandle handle) {
++  if (switching_space_ || restoring_session_ || closing_active_space_ ||
++      !std::ranges::contains(GetMediaTabs(), handle)) return;
++  auto* tab = handle.Get();
++  if (!tab) return;
++  auto* model = browser_->GetTabStripModel();
++  if (model->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
++    const auto* state = GetCoveTabSessionState(tab->GetContents());
++    if (!state) return;
++    const auto space = state->space;
++    SwitchSpace(space);
++  }
++  tab = handle.Get();
++  if (tab && model->GetIndexOfTab(tab) != TabStripModel::kNoTab)
++    model->ActivateTab(tab);
++}
++
+ void CoveSidebarLibraryView::FocusSpace(std::string space_id) {
+   SwitchSpace(std::move(space_id));
+ }
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -84,6 +84,8 @@
+   void ExecuteArcCommand(int command_id) override;
+   std::vector<CoveSpaceInfo> GetSpaces() const override;
+   void FocusSpace(std::string space_id) override;
++  std::vector<tabs::TabHandle> GetMediaTabs() const override;
++  void ActivateMediaTab(tabs::TabHandle handle) override;
+   std::string GetActiveSpaceId() const override;
+   bool MoveTabsToSpace(const std::vector<tabs::TabHandle>& tabs,
+                        const std::string& space_id) override;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -106,6 +106,7 @@
+ #include "ui/views/layout/layout_types.h"
+ #include "ui/views/layout/proposed_layout.h"
+ #include "ui/views/view.h"
++#include "chrome/browser/ui/views/cove/cove_mini_media_view.h"
+ #include "ui/compositor/compositor.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "ui/views/view_class_properties.h"
+@@ -244,6 +245,7 @@
+       &VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility,
+       weak_factory_.GetWeakPtr()));
+   space_footer_ = AddChildView(library_view_->CreateSpaceFooter());
++  mini_media_view_ = AddChildView(std::make_unique<CoveMiniMediaView>(browser_view->browser()));
+   library_view_->SetSpaceTransitionCallbacks(
+       base::BindRepeating(&VerticalTabStripRegionView::BeginSpaceTransition,
+                           weak_factory_.GetWeakPtr()),
+@@ -598,6 +600,16 @@
+   if (show_footer) {
+     available.Inset(gfx::Insets::TLBR(0, 0, kFooterHeight + 4, 0));
+   }
++
++  const bool show_media = show_cove_controls && mini_media_view_->has_media();
++  constexpr int kMediaHeight = 72;
++  layout.child_layouts.push_back({.child_view = mini_media_view_.get(),
++      .visible = show_media,
++      .bounds = gfx::Rect(horizontal_padding,
++          std::max(0, available.bottom() - kMediaHeight),
++          std::max(0, available.width() - 2 * horizontal_padding),
++          show_media ? kMediaHeight : 0)});
++  if (show_media) available.Inset(gfx::Insets::TLBR(0, 0, kMediaHeight + 4, 0));
+ 
+   // Lay out the top button container.
+   layout.child_layouts.push_back(
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -39,6 +39,7 @@
+ class BrowserView;
+ class CoveSidebarLibraryView;
+ class CoveLocationView;
++class CoveMiniMediaView;
+ class CoveFavoritesView;
+ class VerticalTabStripTopContainer;
+ class VerticalTabStripBottomContainer;
+@@ -388,6 +389,7 @@
+   base::TimeTicks drag_edge_last_frame_;
+   float drag_edge_fraction_ = 0;
+   std::optional<gfx::Point> drag_edge_screen_point_;
++  raw_ptr<CoveMiniMediaView> mini_media_view_ = nullptr;
+   raw_ptr<views::View> cove_drag_ghost_ = nullptr;
+   raw_ptr<views::ImageView> cove_drag_ghost_icon_ = nullptr;
+   raw_ptr<views::Label> cove_drag_ghost_title_ = nullptr;
