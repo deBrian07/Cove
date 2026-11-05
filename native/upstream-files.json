@@ -118,5 +118,7 @@
   "components/tabs/public/tab_context_menu_command.h": "8666688cc9b1fd766bb8ab0f25c590940a523b6e7dd0f3f857514023dd6dd45d",
   "ui/views/BUILD.gn": "fb0c603ac10a7c42492453ad4953351add8925bd5b135849bee689475f302397",
   "ui/views/controls/scroll_view.cc": "3a2b71a6a950420c2aa43411cd6d72968491ab07897113e6e5b1ea765b2e6efa",
-  "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433"
+  "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433",
+  "chrome/browser/ui/views/frame/browser_native_widget_mac.mm": "bd1f9d71d28ff2135567a701c234f4e09f9d9196f81babf38cfe98680ca1fc59",
+  "chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc": "543c22a66dfbd87d026ea74109c1d1f103977320ab828c8a5cec4b898fcb5b65"
 }
