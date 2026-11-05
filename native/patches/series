@@ -110,3 +110,4 @@
 0110-retain-saved-pin-icons-during-row-rebuilds.patch
 0111-frame-paced-drag-edge-scrolling.patch
 0112-resolve-empty-saved-drop-targets-before-layout.patch
+0113-little-cove-external-link-windows.patch

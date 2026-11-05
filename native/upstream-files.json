@@ -105,6 +105,7 @@
   "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.cc": "b483a6d888f1db1fca5ea62fd19bedbd4b2183f39716398f86fc93e7823aba8f",
   "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h": "b8ffd4cafbd6b43210166b2bf5ccb77b4832bef308863680142909cf27078c61",
   "chrome/browser/ui/views/toolbar/split_tabs_button_interactive_ui_test.cc": "31ff392192ab8945d1e4c6366393b8c2d19f17d5cf3d86b3ae491791eedda7fe",
+  "chrome/browser/ui/views/toolbar/toolbar_view.cc": "1610a79a01ebae10a1d5c9b2ae2a697bfaa74ecf36758fcb41d5736d1faf4265",
   "chrome/browser/ui/webui/tab_search/BUILD.gn": "91f627a6761a9d86d30883195a81b527220366ce11df844bf7420dcbe921d405",
   "chrome/browser/ui/webui/tab_search/tab_search.mojom": "d33896158d866edfd379c414e198e03fa4b83dadc06a9aaf140f83539c8c54c5",
   "chrome/browser/ui/webui/tab_search/tab_search_page_handler.cc": "a80839354d5d520abf500879e3c63f9291924646a463c28298f2f765bc535f65",
