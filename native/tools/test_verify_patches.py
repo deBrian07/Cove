@@ -23,6 +23,38 @@ class PatchVerificationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unsafe relative path'):
             MODULE.patch_changes(unsafe_new_file)
 
+    def test_binary_replacement_is_an_upstream_input_and_applies(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work = root / 'work'
+            work.mkdir()
+            git = lambda *args: subprocess.run(['git', '-C', str(work), *args], check=True,
+                                               capture_output=True, text=True).stdout
+            git('init', '--quiet')
+            (work / 'logo.png').write_bytes(bytes(range(256)) * 4)
+            git('add', '.')
+            git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--quiet', '-m', 'upstream')
+            (work / 'logo.png').write_bytes(bytes(reversed(range(256))) * 4)
+            (work / 'added.png').write_bytes(b'\x89PNG\x00new')
+            git('add', '.')
+            patch = git('diff', '--cached', '--binary')
+            self.assertIn('GIT binary patch', patch)
+            self.assertEqual(MODULE.patch_changes(patch),
+                             ({Path('logo.png')}, {Path('logo.png'), Path('added.png')}))
+
+            source = root / 'source'
+            source.mkdir()
+            (source / 'logo.png').write_bytes(bytes(range(256)) * 4)
+            (root / 'native/patches').mkdir(parents=True)
+            (root / 'native/chromium.json').write_text(json.dumps({
+                'revision': 'a' * 40, 'patches_dir': 'native/patches',
+                'patch_series': 'native/patches/series'}))
+            (root / 'native/patches/series').write_text('brand.patch\n')
+            (root / 'native/patches/brand.patch').write_text(patch)
+            result = MODULE.verify(root, source=source)
+            self.assertEqual(result['upstream_sha256'].keys(), {'logo.png'})
+
     def test_created_file_later_modified_is_not_an_upstream_input(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

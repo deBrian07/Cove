@@ -1,0 +1,144 @@
+diff --git a/chrome/browser/themes/theme_service.cc b/chrome/browser/themes/theme_service.cc
+--- a/chrome/browser/themes/theme_service.cc
++++ b/chrome/browser/themes/theme_service.cc
+@@ -330,7 +330,7 @@ void ThemeService::RegisterProfilePrefs(
+       prefs::kDeprecatedUserColorDoNotUse, SK_ColorTRANSPARENT,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+   registry->RegisterIntegerPref(prefs::kUserColor,
+-                                SkColorSetRGB(0x7E, 0x6C, 0xA8));
++                                SkColorSetRGB(0x25, 0x63, 0xEB));
+   registry->RegisterIntegerPref(
+       prefs::kDeprecatedBrowserColorVariantDoNotUse,
+       static_cast<int>(ui::mojom::BrowserColorVariant::kSystem),
+diff --git a/chrome/browser/ui/color/chrome_color_mixers.cc b/chrome/browser/ui/color/chrome_color_mixers.cc
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -100,24 +100,24 @@ void AddChromeColorMixers(ui::ColorProvider* provider,
+     key.app_controller->AddColorMixers(provider, key);
+   }
+ 
+-  // Cove's default violet palette uses the softer frame and address surfaces
++  // Cove's default Ocean palette uses the softer frame and address surfaces
+   // of its sidebar. User-selected themes and accessibility palettes retain
+   // their own colors.
+   if (key.color_mode == ui::ColorProviderKey::ColorMode::kDark &&
+       key.contrast_mode == ui::ColorProviderKey::ContrastMode::kNormal &&
+       key.forced_colors == ui::ColorProviderKey::ForcedColors::kNone &&
+-      key.user_color == SkColorSetRGB(0x7e, 0x6c, 0xa8) &&
++      key.user_color == SkColorSetRGB(0x25, 0x63, 0xeb) &&
+       !key.app_controller &&
+       (!key.custom_theme || key.custom_theme->get_theme_type() !=
+                                 ui::ColorProviderKey::ThemeInitializerSupplier::
+                                     ThemeType::kExtension)) {
+     auto& cove = provider->AddMixer();
+-    cove[ui::kColorFrameActive] = {SkColorSetRGB(0x17, 0x14, 0x28)};
+-    cove[ui::kColorFrameInactive] = {SkColorSetRGB(0x14, 0x12, 0x22)};
+-    cove[kColorLocationBarBackground] = {SkColorSetRGB(0x2b, 0x28, 0x3b)};
++    cove[ui::kColorFrameActive] = {SkColorSetRGB(0x12, 0x1b, 0x30)};
++    cove[ui::kColorFrameInactive] = {SkColorSetRGB(0x0f, 0x16, 0x27)};
++    cove[kColorLocationBarBackground] = {SkColorSetRGB(0x22, 0x2d, 0x47)};
+     cove[kColorLocationBarBackgroundHovered] = {
+-        SkColorSetRGB(0x36, 0x32, 0x48)};
+-    cove[kColorOmniboxText] = {SkColorSetRGB(0xe7, 0xe4, 0xf4)};
+-    cove[kColorOmniboxTextDimmed] = {SkColorSetRGB(0xb9, 0xb5, 0xcc)};
++        SkColorSetRGB(0x2b, 0x38, 0x55)};
++    cove[kColorOmniboxText] = {SkColorSetRGB(0xe6, 0xec, 0xf7)};
++    cove[kColorOmniboxTextDimmed] = {SkColorSetRGB(0xa9, 0xb4, 0xc8)};
+   }
+ }
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -4063,7 +4063,7 @@ bool ShouldDefaultCovePagesFollowSystemAppearance(Profile* profile) {
+          !theme_service->UsingPolicyTheme() &&
+          theme_service->GetBrowserColorScheme() ==
+              ThemeService::BrowserColorScheme::kDark &&
+-         theme_service->GetUserColor() == SkColorSetRGB(0x7E, 0x6C, 0xA8);
++         theme_service->GetUserColor() == SkColorSetRGB(0x25, 0x63, 0xEB);
+ }
+ 
+ blink::mojom::PreferredColorScheme ToBlinkPreferredColorScheme(
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -156,7 +156,9 @@ struct SpacePalette {
+ 
+ // Each palette is three roles, not a single tint: the sidebar surface, the
+ // Space marker, and the selected-row wash.
+-constexpr std::array<SpacePalette, 5> kSpacePalettes = {{
++// "Cove" is the brand palette (Ocean on Slate) and the default for new Spaces.
++constexpr std::array<SpacePalette, 6> kSpacePalettes = {{
++    {"Cove", "#121b30", "#2563eb", "#1f3260"},
+     {"Dusk", "#241f33", "#8b7ec8", "#3c3458"},
+     {"Harbor", "#17262e", "#5ea0c0", "#2c4654"},
+     {"Grove", "#1a2820", "#6eaa78", "#2c4634"},
+@@ -164,6 +166,15 @@ constexpr std::array<SpacePalette, 5> kSpacePalettes = {{
+     {"Slate", "#1e1f24", "#a8b0bc", "#34363e"},
+ }};
+ 
++base::DictValue DefaultSpaceTheme() {
++  const SpacePalette& cove = kSpacePalettes.front();
++  base::DictValue theme;
++  theme.Set("sidebar", cove.sidebar);
++  theme.Set("accent", cove.accent);
++  theme.Set("highlight", cove.highlight);
++  return theme;
++}
++
+ std::u16string FormatHexColor(SkColor color) {
+   constexpr std::array<char, 16> kDigits = {'0', '1', '2', '3', '4', '5',
+                                             '6', '7', '8', '9', 'a', 'b',
+@@ -200,9 +211,9 @@ SkColor MixColors(SkColor from, SkColor to, float amount) {
+ }
+ 
+ struct ResolvedPalette {
+-  SkColor sidebar = SkColorSetRGB(0x24, 0x1f, 0x33);
+-  SkColor accent = SkColorSetRGB(0x8b, 0x7e, 0xc8);
+-  SkColor highlight = SkColorSetRGB(0x3c, 0x34, 0x58);
++  SkColor sidebar = SkColorSetRGB(0x12, 0x1b, 0x30);
++  SkColor accent = SkColorSetRGB(0x25, 0x63, 0xeb);
++  SkColor highlight = SkColorSetRGB(0x1f, 0x32, 0x60);
+ };
+ 
+ ResolvedPalette PaletteForSpace(const base::DictValue& space) {
+@@ -785,7 +796,8 @@ void CoveSidebarLibraryView::EnsureDefaultLibrary() {
+   base::DictValue personal;
+   personal.Set("id", "personal");
+   personal.Set("name", "Personal");
+-  personal.Set("color", "#6d6784");
++  personal.Set("color", kSpacePalettes.front().accent);
++  personal.Set("theme", DefaultSpaceTheme());
+   personal.Set("tabs", base::ListValue());
+   personal.Set("pins", base::ListValue());
+   personal.Set("folders", base::ListValue());
+@@ -1488,7 +1500,8 @@ void CoveSidebarLibraryView::AddSpace() {
+   std::string id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+   space.Set("id", id);
+   space.Set("name", "Space " + base::NumberToString(spaces->size() + 1));
+-  space.Set("color", "#6d6784");
++  space.Set("color", kSpacePalettes.front().accent);
++  space.Set("theme", DefaultSpaceTheme());
+   space.Set("tabs", base::ListValue());
+   space.Set("pins", base::ListValue());
+   space.Set("folders", base::ListValue());
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -1284,7 +1284,7 @@ IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
+                        SpaceThemesKeepSeparateSidebarAccentAndHighlight) {
+   Seed();
+   const SkColor before = library()->ActiveSidebarColorForTesting();
+-  library()->SetSpacePaletteForTesting("personal", 2);
++  library()->SetSpacePaletteForTesting("personal", 3);
+   Layout();
+   const SkColor grove = library()->ActiveSidebarColorForTesting();
+   EXPECT_NE(before, grove);
+@@ -1299,7 +1299,7 @@ IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
+   EXPECT_NE(*sidebar, *accent);
+   EXPECT_NE(*accent, *highlight);
+   EXPECT_NE(*sidebar, *highlight);
+-  library()->SetSpacePaletteForTesting("personal", 3);
++  library()->SetSpacePaletteForTesting("personal", 4);
+   Layout();
+   EXPECT_NE(grove, library()->ActiveSidebarColorForTesting());
+   const auto* next = SavedSpace().FindDict("theme")->FindString("sidebar");

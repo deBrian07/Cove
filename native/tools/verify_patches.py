@@ -35,10 +35,27 @@ def patch_changes(text):
     outputs = set()
     in_file_header = False
     allow_implicit_header = True
+    git_paths = None
+    new_file = False
     for line in text.splitlines():
         if line.startswith('diff --git '):
             in_file_header = True
             allow_implicit_header = False
+            match = re.fullmatch(r'diff --git a/(\S+) b/(\S+)', line)
+            if not match:
+                raise ValueError('Unsupported diff header: ' + line)
+            git_paths = (safe_relative(match.group(1)), safe_relative(match.group(2)))
+            new_file = False
+            continue
+        if in_file_header and line.startswith('new file mode'):
+            new_file = True
+        # Binary diffs carry no ---/+++ lines; their paths come from the git header.
+        if in_file_header and git_paths and (
+                line == 'GIT binary patch' or line.startswith('Binary files ')):
+            if not new_file:
+                inputs.add(git_paths[0])
+            outputs.add(git_paths[1])
+            in_file_header = False
             continue
         if not in_file_header and allow_implicit_header and (
                 line.startswith('--- a/') or line == '--- /dev/null'):
