@@ -1,0 +1,733 @@
+diff --git a/chrome/browser/ui/cove/cove_temporary_window.cc b/chrome/browser/ui/cove/cove_temporary_window.cc
+--- a/chrome/browser/ui/cove/cove_temporary_window.cc
++++ b/chrome/browser/ui/cove/cove_temporary_window.cc
+@@ -4,6 +4,26 @@
+ #include "chrome/browser/ui/cove/cove_temporary_window.h"
+ 
+ #include <algorithm>
++#include "base/i18n/case_conversion.h"
++#include "base/strings/string_number_conversions.h"
++#include "chrome/common/pref_names.h"
++#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
++#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
++#include "components/vector_icons/vector_icons.h"
++#include "ui/color/color_id.h"
++#include "ui/events/keycodes/keyboard_codes.h"
++#include "ui/gfx/color_utils.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/bubble/bubble_dialog_delegate_view.h"
++#include "ui/views/controls/focus_ring.h"
++#include "ui/views/controls/image_view.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/controls/scroll_view.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/controls/textfield/textfield_controller.h"
++
+ #include <memory>
+ #include <set>
+ #include <vector>
+@@ -14,13 +34,9 @@
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+ #include "components/prefs/pref_service.h"
+-#include "ui/menus/simple_menu_model.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+-#include "ui/base/mojom/menu_source_type.mojom.h"
+ #include "content/public/browser/web_contents.h"
+ #include "ui/views/controls/button/menu_button.h"
+-#include "ui/views/controls/button/menu_button_controller.h"
+-#include "ui/views/controls/menu/menu_runner.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "ui/views/layout/flex_layout_types.h"
+ #include "ui/views/widget/widget.h"
+@@ -42,10 +58,19 @@
+ 
+ DEFINE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporaryPromoteElementId);
+ DEFINE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceMenuElementId);
++DEFINE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceSearchElementId);
++DEFINE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceRowElementId);
++DEFINE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporaryProfileElementId);
+ 
+ namespace {
+-std::vector<CoveSpaceInfo> ProfileSpaces(Profile* profile) {
+-  std::vector<CoveSpaceInfo> spaces;
++struct TemporarySpaceChoice {
++  std::string id;
++  std::u16string name;
++  std::u16string icon = u"●";
++  SkColor color = SkColorSetRGB(0x25, 0x63, 0xeb);
++};
++std::vector<TemporarySpaceChoice> ProfileSpaces(Profile* profile) {
++  std::vector<TemporarySpaceChoice> spaces;
+   if (!profile || profile->IsOffTheRecord()) return spaces;
+   const auto* saved = profile->GetPrefs()->GetDict("cove.sidebar").FindList("spaces");
+   // A profile first opened by an external link has no normal-window library
+@@ -64,7 +89,17 @@
+     const auto* name = record ? record->FindString("name") : nullptr;
+     if (!id || id->empty()) continue;
+     if (!seen.insert(*id).second) duplicates.insert(*id);
+-    spaces.push_back({*id, name ? base::UTF8ToUTF16(*name) : u"Untitled Space"});
++    TemporarySpaceChoice choice{*id, name ? base::UTF8ToUTF16(*name) : u"Untitled Space"};
++    if (const auto* icon = record->FindString("icon"); icon && !icon->empty())
++      choice.icon = base::UTF8ToUTF16(*icon);
++    const auto* theme = record->FindDict("theme");
++    const auto* color = theme ? theme->FindString("accent") : nullptr;
++    if (!color) color = record->FindString("color");
++    uint32_t rgb = 0;
++    if (color && color->size() == 7 && color->front() == '#' &&
++        base::HexStringToUInt(color->substr(1), &rgb))
++      choice.color = SK_ColorBLACK | rgb;
++    spaces.push_back(std::move(choice));
+   }
+   std::erase_if(spaces, [&](const auto& space) { return duplicates.contains(space.id); });
+   return spaces;
+@@ -82,99 +117,347 @@
+           }, popup, destination, std::move(space_id), create_if_missing));
+ }
+ 
+-class TemporarySpaceControls : public views::View,
+-                               public ui::SimpleMenuModel::Delegate {
++class TemporarySpaceRow : public views::Button {
++  METADATA_HEADER(TemporarySpaceRow, views::Button)
++ public:
++  TemporarySpaceRow(const TemporarySpaceChoice& space, PressedCallback callback,
++                    base::RepeatingClosure hover);
++  ~TemporarySpaceRow() override;
++  void SetSelected(bool selected);
++  void OnMouseEntered(const ui::MouseEvent& event) override;
++ protected:
++  void StateChanged(ButtonState old_state) override;
++ private:
++  void UpdateBackground();
++  bool selected_ = false;
++  base::RepeatingClosure hover_;
++};
++
++TemporarySpaceRow::TemporarySpaceRow(
++    const TemporarySpaceChoice& space, PressedCallback callback,
++    base::RepeatingClosure hover)
++    : Button(std::move(callback)), hover_(std::move(hover)) {
++  SetPreferredSize(gfx::Size(260, 44));
++  SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 10)));
++  auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 12));
++  layout->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
++  auto* icon = AddChildView(std::make_unique<views::Label>(space.icon));
++  icon->SetPreferredSize(gfx::Size(28, 28));
++  icon->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  icon->SetBackground(views::CreateRoundedRectBackground(space.color, 6));
++  icon->SetEnabledColor(color_utils::GetColorWithMaxContrast(space.color));
++  icon->SetFontList(icon->font_list().DeriveWithSizeDelta(3));
++  icon->SetSubpixelRenderingEnabled(false);
++  icon->GetViewAccessibility().SetIsIgnored(true);
++  auto* name = AddChildView(std::make_unique<views::Label>(space.name));
++  name->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  name->SetElideBehavior(gfx::ELIDE_TAIL);
++  name->SetFontList(name->font_list().DeriveWithSizeDelta(2)
++      .DeriveWithWeight(gfx::Font::Weight::SEMIBOLD));
++  name->SetSubpixelRenderingEnabled(false);
++  name->GetViewAccessibility().SetIsIgnored(true);
++  layout->SetFlexForView(name, 1);
++  SetTooltipText(space.name);
++  GetViewAccessibility().SetName(space.name);
++  views::FocusRing::Install(this);
++}
++TemporarySpaceRow::~TemporarySpaceRow() = default;
++void TemporarySpaceRow::SetSelected(bool selected) {
++  selected_ = selected;
++  GetViewAccessibility().SetIsSelected(selected);
++  UpdateBackground();
++}
++void TemporarySpaceRow::OnMouseEntered(const ui::MouseEvent& event) {
++  Button::OnMouseEntered(event);
++  if (hover_) hover_.Run();
++}
++void TemporarySpaceRow::StateChanged(ButtonState old_state) {
++  Button::StateChanged(old_state);
++  UpdateBackground();
++}
++void TemporarySpaceRow::UpdateBackground() {
++  SetBackground(selected_ || GetState() == STATE_HOVERED || GetState() == STATE_PRESSED
++      ? views::CreateRoundedRectBackground(ui::kColorSysPrimaryContainer, 6)
++      : nullptr);
++}
++BEGIN_METADATA(TemporarySpaceRow)
++END_METADATA
++
++class TemporarySpacePickerView : public views::View,
++                                 public views::TextfieldController {
++  METADATA_HEADER(TemporarySpacePickerView, views::View)
++ public:
++  TemporarySpacePickerView(std::vector<TemporarySpaceChoice> spaces,
++      std::string initial, base::RepeatingCallback<void(std::string)> choose,
++      base::RepeatingClosure close);
++  ~TemporarySpacePickerView() override;
++  views::View* initial_focus() const { return search_; }
++  void RevealSelection();
++  void ContentsChanged(views::Textfield*, const std::u16string& contents) override;
++  bool HandleKeyEvent(views::Textfield*, const ui::KeyEvent& event) override;
++ private:
++  void Filter(const std::u16string& query);
++  void Select(size_t position);
++  void Choose(size_t position);
++  std::vector<TemporarySpaceChoice> spaces_;
++  std::string initial_;
++  base::RepeatingCallback<void(std::string)> choose_;
++  raw_ptr<views::Textfield> search_ = nullptr;
++  raw_ptr<views::View> rows_view_ = nullptr;
++  std::vector<raw_ptr<TemporarySpaceRow>> rows_;
++  std::vector<size_t> visible_;
++  size_t selected_ = 0;
++  base::WeakPtrFactory<TemporarySpacePickerView> weak_factory_{this};
++};
++TemporarySpacePickerView::TemporarySpacePickerView(
++    std::vector<TemporarySpaceChoice> spaces, std::string initial,
++    base::RepeatingCallback<void(std::string)> choose, base::RepeatingClosure close)
++    : spaces_(std::move(spaces)), initial_(std::move(initial)), choose_(std::move(choose)) {
++  SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical));
++  auto* header = AddChildView(std::make_unique<views::View>());
++  header->SetPreferredSize(gfx::Size(280, 48));
++  auto* layout = header->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(6, 10), 8));
++  layout->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
++  auto* icon = header->AddChildView(std::make_unique<views::ImageView>());
++  icon->SetImage(ui::ImageModel::FromVectorIcon(
++      vector_icons::kSearchIcon, ui::kColorIconSecondary, 18));
++  search_ = header->AddChildView(std::make_unique<views::Textfield>());
++  search_->SetPlaceholderText(u"Search Spaces…");
++  search_->GetViewAccessibility().SetName(u"Search Spaces");
++  search_->SetProperty(views::kElementIdentifierKey, kCoveTemporarySpaceSearchElementId);
++  search_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 0)));
++  search_->SetBackgroundColor(ui::kColorBubbleBackground);
++  search_->set_controller(this);
++  layout->SetFlexForView(search_, 1);
++  auto* collapse = header->AddChildView(std::make_unique<views::LabelButton>(
++      std::move(close), u"⌃"));
++  collapse->SetTooltipText(u"Close Space chooser");
++  collapse->GetViewAccessibility().SetName(u"Close Space chooser");
++  collapse->SetTextSubpixelRenderingEnabled(false);
++  collapse->SetPreferredSize(gfx::Size(24, 28));
++  auto* scroll = AddChildView(std::make_unique<views::ScrollView>(
++      views::ScrollView::ScrollWithLayers::kDisabled));
++  scroll->SetHorizontalScrollBarMode(views::ScrollView::ScrollBarMode::kDisabled);
++  scroll->SetBackgroundColor(std::nullopt);
++  scroll->ClipHeightTo(44, 352);
++  auto rows = std::make_unique<views::View>();
++  auto* rows_layout = rows->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical));
++  rows_layout->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
++  rows_view_ = scroll->SetContents(std::move(rows));
++  Filter({});
++}
++TemporarySpacePickerView::~TemporarySpacePickerView() {
++  search_->set_controller(nullptr);
++}
++void TemporarySpacePickerView::RevealSelection() { Select(selected_); }
++void TemporarySpacePickerView::ContentsChanged(
++    views::Textfield*, const std::u16string& contents) { Filter(contents); }
++bool TemporarySpacePickerView::HandleKeyEvent(
++    views::Textfield*, const ui::KeyEvent& event) {
++  if (event.type() != ui::EventType::kKeyPressed) return false;
++  if (event.key_code() == ui::VKEY_ESCAPE) {
++    if (GetWidget()) GetWidget()->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
++    return true;
++  }
++  if (event.key_code() == ui::VKEY_RETURN) {
++    if (!visible_.empty()) Choose(selected_);
++    return true;
++  }
++  if (event.key_code() != ui::VKEY_UP && event.key_code() != ui::VKEY_DOWN) return false;
++  if (!visible_.empty()) {
++    Select(event.key_code() == ui::VKEY_DOWN
++        ? (selected_ + 1) % visible_.size()
++        : (selected_ + visible_.size() - 1) % visible_.size());
++  }
++  return true;
++}
++void TemporarySpacePickerView::Filter(const std::u16string& query) {
++  rows_.clear();
++  visible_.clear();
++  rows_view_->RemoveAllChildViews();
++  const auto needle = base::i18n::ToLower(query);
++  for (size_t i = 0; i < spaces_.size(); ++i) {
++    if (base::i18n::ToLower(spaces_[i].name).find(needle) == std::u16string::npos) continue;
++    const size_t position = visible_.size();
++    visible_.push_back(i);
++    auto* row = rows_view_->AddChildView(std::make_unique<TemporarySpaceRow>(
++        spaces_[i], base::BindRepeating(&TemporarySpacePickerView::Choose,
++                                       weak_factory_.GetWeakPtr(), position),
++        base::BindRepeating(&TemporarySpacePickerView::Select,
++                            weak_factory_.GetWeakPtr(), position)));
++    row->SetProperty(views::kElementIdentifierKey, kCoveTemporarySpaceRowElementId);
++    rows_.push_back(row);
++  }
++  if (visible_.empty()) {
++    auto* empty = rows_view_->AddChildView(std::make_unique<views::Label>(u"No matching Spaces"));
++    empty->SetSubpixelRenderingEnabled(false);
++    empty->SetPreferredSize(gfx::Size(260, 44));
++  }
++  selected_ = 0;
++  if (query.empty()) {
++    for (size_t i = 0; i < visible_.size(); ++i)
++      if (spaces_[visible_[i]].id == initial_) selected_ = i;
++  }
++  Select(selected_);
++  SetPreferredSize(gfx::Size(280, 48 +
++      std::clamp(static_cast<int>(visible_.size()) * 44, 44, 352)));
++  PreferredSizeChanged();
++}
++void TemporarySpacePickerView::Select(size_t position) {
++  if (position >= rows_.size()) return;
++  selected_ = position;
++  for (size_t i = 0; i < rows_.size(); ++i) rows_[i]->SetSelected(i == selected_);
++  if (GetWidget()) rows_[selected_]->ScrollViewToVisible();
++}
++void TemporarySpacePickerView::Choose(size_t position) {
++  if (position < visible_.size()) choose_.Run(spaces_[visible_[position]].id);
++}
++BEGIN_METADATA(TemporarySpacePickerView)
++END_METADATA
++
++// The native widget must die before its delegate. Defer destruction after
++// close so a key/button handler is never deleted in its own input dispatch.
++struct TemporaryPickerSession {
++  TemporaryPickerSession();
++  ~TemporaryPickerSession();
++  std::unique_ptr<views::BubbleDialogDelegate> delegate;
++  std::unique_ptr<views::Widget> widget;
++};
++TemporaryPickerSession::TemporaryPickerSession() = default;
++TemporaryPickerSession::~TemporaryPickerSession() = default;
++
++class TemporarySpaceControls : public views::View {
+   METADATA_HEADER(TemporarySpaceControls, views::View)
+  public:
+   explicit TemporarySpaceControls(BrowserWindowInterface* popup);
+   ~TemporarySpaceControls() override;
+-
+-  void ExecuteCommand(int command_id, int) override {
+-    const size_t index = static_cast<size_t>(command_id - 1);
+-    if (!popup_ || index >= choices_.size()) return;
+-    PostSpaceTransfer(popup_, destination_, choices_[index].id, create_if_missing_);
+-  }
+-
+  private:
+-  void RefreshChoices() {
+-    if (!popup_) return;
+-    auto* target = ProfileBrowserCollection::GetForProfile(popup_->GetProfile())
+-                       ->FindTabbedBrowser(false);
+-    destination_ = target ? target->GetWeakPtr() : nullptr;
+-    create_if_missing_ = !target;
+-    choices_ = ProfileSpaces(popup_->GetProfile());
+-    std::string active;
+-    if (target) {
+-      if (auto* bridge = CoveSpaceCloseHandler::Get(target->GetUnownedUserDataHost()))
+-        active = bridge->GetActiveSpaceId();
+-    }
+-    default_index_ = 0;
+-    for (size_t i = 0; i < choices_.size(); ++i)
+-      if (choices_[i].id == active) default_index_ = i;
+-    primary_->SetText(choices_.empty() ? u"No destination Space"
+-        : u"Open in " + choices_[default_index_].name);
+-    primary_->SetEnabled(!choices_.empty());
+-    menu_->SetEnabled(!choices_.empty());
+-  }
+-  void OpenDefault() {
+-    if (popup_ && default_index_ < choices_.size())
+-      PostSpaceTransfer(popup_, destination_, choices_[default_index_].id,
+-                         create_if_missing_);
+-  }
+-  void ShowMenu() {
+-    RefreshChoices();
+-    if (!popup_ || choices_.empty()) return;
+-    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+-    for (size_t i = 0; i < choices_.size(); ++i)
+-      menu_model_->AddItem(static_cast<int>(i + 1), choices_[i].name);
+-    menu_runner_ = std::make_unique<views::MenuRunner>(
+-        menu_model_.get(), views::MenuRunner::CONTEXT_MENU |
+-                           views::MenuRunner::FIXED_ANCHOR);
+-    GetWidget()->LayoutRootViewIfNecessary();
+-    auto lock = menu_->button_controller()->TakeLock();
+-    menu_runner_->RunMenuAt(GetWidget(), menu_->button_controller(),
+-                            menu_->GetBoundsInScreen(),
+-                            views::MenuAnchorPosition::kBubbleTopRight,
+-                            ui::mojom::MenuSourceType::kNone);
+-  }
++  void RefreshChoices();
++  void OpenDefault();
++  void ShowMenu();
++  void ChooseSpace(std::string id);
++  void ClosePicker();
++  void ClearClosedPicker(uint64_t generation);
+   base::WeakPtr<BrowserWindowInterface> popup_;
+   base::WeakPtr<BrowserWindowInterface> destination_;
+   bool create_if_missing_ = false;
+   size_t default_index_ = 0;
+-  std::vector<CoveSpaceInfo> choices_;
++  std::vector<TemporarySpaceChoice> choices_;
+   raw_ptr<views::MdTextButton> primary_ = nullptr;
+   raw_ptr<views::MenuButton> menu_ = nullptr;
+-  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+-  std::unique_ptr<views::MenuRunner> menu_runner_;
++  std::unique_ptr<TemporaryPickerSession> picker_;
++  uint64_t picker_generation_ = 0;
+   base::WeakPtrFactory<TemporarySpaceControls> weak_factory_{this};
+ };
+-
+ TemporarySpaceControls::TemporarySpaceControls(BrowserWindowInterface* popup)
+-      : popup_(popup->GetWeakPtr()) {
+-    SetLayoutManager(std::make_unique<views::BoxLayout>(
+-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 0));
+-    primary_ = AddChildView(std::make_unique<views::MdTextButton>(
+-        base::BindRepeating(&TemporarySpaceControls::OpenDefault,
+-                            weak_factory_.GetWeakPtr())));
+-    primary_->SetProperty(views::kElementIdentifierKey,
+-                           kCoveTemporaryPromoteElementId);
+-    primary_->SetTooltipText(u"Move this page into the named Space");
+-    primary_->SetMaxSize(gfx::Size(180, 0));
+-    primary_->SetElideBehavior(gfx::ELIDE_TAIL);
+-    menu_ = AddChildView(std::make_unique<views::MenuButton>(
+-        base::BindRepeating(&TemporarySpaceControls::ShowMenu,
+-                            weak_factory_.GetWeakPtr()), u"▾"));
+-    menu_->SetProperty(views::kElementIdentifierKey,
+-                       kCoveTemporarySpaceMenuElementId);
+-    menu_->SetTooltipText(u"Choose destination Space");
+-    menu_->GetViewAccessibility().SetName(u"Choose destination Space");
+-    RefreshChoices();
+-  }
+-
++    : popup_(popup->GetWeakPtr()) {
++  SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 0));
++  SetBackground(views::CreateRoundedRectBackground(ui::kColorBubbleBackground, 6));
++  SetBorder(views::CreateRoundedRectBorder(1, 6, ui::kColorSeparator));
++  primary_ = AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&TemporarySpaceControls::OpenDefault, weak_factory_.GetWeakPtr())));
++  primary_->SetProperty(views::kElementIdentifierKey, kCoveTemporaryPromoteElementId);
++  primary_->SetTooltipText(u"Move this page into the named Space");
++  primary_->SetMaxSize(gfx::Size(160, 0));
++  primary_->SetMinSize(gfx::Size(64, 28));
++  primary_->SetCustomPadding(gfx::Insets::VH(3, 8));
++  primary_->SetStyle(ui::ButtonStyle::kText);
++  primary_->SetElideBehavior(gfx::ELIDE_TAIL);
++  menu_ = AddChildView(std::make_unique<views::MenuButton>(
++      base::BindRepeating(&TemporarySpaceControls::ShowMenu,
++                          weak_factory_.GetWeakPtr()), u"⌄"));
++  menu_->SetPreferredSize(gfx::Size(26, 28));
++  menu_->SetTextSubpixelRenderingEnabled(false);
++  menu_->SetProperty(views::kElementIdentifierKey, kCoveTemporarySpaceMenuElementId);
++  menu_->SetTooltipText(u"Choose destination Space");
++  menu_->GetViewAccessibility().SetName(u"Choose destination Space");
++  RefreshChoices();
++}
+ TemporarySpaceControls::~TemporarySpaceControls() = default;
+-
++void TemporarySpaceControls::RefreshChoices() {
++  if (!popup_) return;
++  auto* target = ProfileBrowserCollection::GetForProfile(popup_->GetProfile())
++                     ->FindTabbedBrowser(false);
++  destination_ = target ? target->GetWeakPtr() : nullptr;
++  create_if_missing_ = !target;
++  choices_ = ProfileSpaces(popup_->GetProfile());
++  std::string active;
++  if (target) {
++    if (auto* bridge = CoveSpaceCloseHandler::Get(target->GetUnownedUserDataHost()))
++      active = bridge->GetActiveSpaceId();
++  }
++  default_index_ = 0;
++  for (size_t i = 0; i < choices_.size(); ++i)
++    if (choices_[i].id == active) default_index_ = i;
++  primary_->SetText(choices_.empty() ? u"No destination Space"
++                                  : u"Open in " + choices_[default_index_].name);
++  primary_->SetEnabled(!choices_.empty());
++  menu_->SetEnabled(!choices_.empty());
++}
++void TemporarySpaceControls::OpenDefault() {
++  if (popup_ && default_index_ < choices_.size())
++    PostSpaceTransfer(popup_, destination_, choices_[default_index_].id, create_if_missing_);
++}
++void TemporarySpaceControls::ShowMenu() {
++  if (picker_ && picker_->widget && !picker_->widget->IsClosed()) {
++    ClosePicker();
++    return;
++  }
++  picker_.reset();
++  RefreshChoices();
++  if (!popup_ || choices_.empty()) return;
++  const auto generation = ++picker_generation_;
++  auto content = std::make_unique<TemporarySpacePickerView>(
++      choices_, choices_[default_index_].id,
++      base::BindRepeating(&TemporarySpaceControls::ChooseSpace, weak_factory_.GetWeakPtr()),
++      base::BindRepeating(&TemporarySpaceControls::ClosePicker, weak_factory_.GetWeakPtr()));
++  auto* picker_content = content.get();
++  auto* initial_focus = content->initial_focus();
++  picker_ = std::make_unique<TemporaryPickerSession>();
++  picker_->delegate = std::make_unique<views::BubbleDialogDelegate>(
++      menu_, views::BubbleBorder::TOP_RIGHT, views::BubbleBorder::DIALOG_SHADOW, true);
++  picker_->delegate->set_internal_name("CoveTemporarySpaceChooser");
++  picker_->delegate->SetAccessibleTitle(u"Choose Space");
++  picker_->delegate->SetShowTitle(false);
++  picker_->delegate->SetShowCloseButton(false);
++  picker_->delegate->SetButtons(0);
++  picker_->delegate->set_margins(gfx::Insets());
++  picker_->delegate->set_corner_radius(10);
++  picker_->delegate->SetContentsView(std::move(content));
++  picker_->delegate->SetInitiallyFocusedView(initial_focus);
++  picker_->widget = views::BubbleDialogDelegate::CreateBubble(
++      picker_->delegate.get(), base::BindOnce(
++          [](base::WeakPtr<TemporarySpaceControls> controls, uint64_t token,
++             views::Widget::ClosedReason) {
++            if (controls) base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++                FROM_HERE, base::BindOnce(&TemporarySpaceControls::ClearClosedPicker,
++                                          controls, token));
++          }, weak_factory_.GetWeakPtr(), generation));
++  menu_->SetText(u"⌃");
++  picker_->widget->Show();
++  picker_->widget->LayoutRootViewIfNecessary();
++  picker_content->RevealSelection();
++}
++void TemporarySpaceControls::ChooseSpace(std::string id) {
++  ClosePicker();
++  PostSpaceTransfer(popup_, destination_, std::move(id), create_if_missing_);
++}
++void TemporarySpaceControls::ClosePicker() {
++  if (picker_ && picker_->widget) picker_->widget->Close();
++}
++void TemporarySpaceControls::ClearClosedPicker(uint64_t generation) {
++  if (generation != picker_generation_) return;
++  menu_->SetText(u"⌄");
++  base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(FROM_HERE, std::move(picker_));
++}
+ BEGIN_METADATA(TemporarySpaceControls)
+ END_METADATA
++
+ }  // namespace
+ 
+ bool MoveCoveTemporaryWindowToSpace(
+@@ -241,6 +524,24 @@
+   auto* browser = CreateBrowserWindow(std::move(params));
+   chrome::AddTabAt(browser, url, -1, true);
+   auto* toolbar = BrowserView::GetBrowserViewForBrowser(browser)->toolbar();
++  std::u16string profile_name = profile->IsOffTheRecord() ? u"Incognito"
++      : base::UTF8ToUTF16(profile->GetPrefs()->GetString(prefs::kProfileName));
++  if (profile_name.empty()) profile_name = u"Profile";
++  auto* profile_label = toolbar->AddChildViewAt(
++      std::make_unique<views::Label>(profile_name), 0);
++  profile_label->SetMaximumWidthSingleLine(60);
++  profile_label->SetElideBehavior(gfx::ELIDE_TAIL);
++  profile_label->SetSubpixelRenderingEnabled(false);
++  profile_label->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 6)));
++  profile_label->SetBackground(views::CreateRoundedRectBackground(ui::kColorBubbleBackground, 10));
++  profile_label->SetTooltipText(u"Profile: " + profile_name);
++  profile_label->SetProperty(views::kElementIdentifierKey, kCoveTemporaryProfileElementId);
++  profile_label->SetProperty(views::kFlexBehaviorKey,
++      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
++                               views::MaximumFlexSizeRule::kPreferred));
++  profile_label->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
++  if (auto* address = toolbar->location_bar_view())
++    address->omnibox_view()->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+   auto* controls = toolbar->AddChildView(
+       std::make_unique<TemporarySpaceControls>(browser));
+   controls->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 8));
+diff --git a/chrome/browser/ui/cove/cove_temporary_window.h b/chrome/browser/ui/cove/cove_temporary_window.h
+--- a/chrome/browser/ui/cove/cove_temporary_window.h
++++ b/chrome/browser/ui/cove/cove_temporary_window.h
+@@ -10,6 +10,9 @@
+ 
+ DECLARE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporaryPromoteElementId);
+ DECLARE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceMenuElementId);
++DECLARE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceSearchElementId);
++DECLARE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporarySpaceRowElementId);
++DECLARE_ELEMENT_IDENTIFIER_VALUE(kCoveTemporaryProfileElementId);
+ 
+ class Profile;
+ class BrowserWindowInterface;
+diff --git a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+--- a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
++++ b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+@@ -20,6 +20,10 @@
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/image/image.h"
+ #include "ui/snapshot/snapshot.h"
++#include "components/viz/common/frame_sinks/copy_output_request.h"
++#include "components/viz/common/frame_sinks/copy_output_result.h"
++#include "ui/compositor/compositor.h"
++#include "ui/compositor/layer.h"
+ #include "base/test/run_until.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+@@ -31,6 +35,12 @@
+ #include "ui/views/controls/button/md_text_button.h"
+ #include "ui/views/test/button_test_api.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/widget/any_widget_observer.h"
++#include "ui/views/view_utils.h"
++#include "ui/views/controls/button/menu_button.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/events/event.h"
++#include "ui/events/keycodes/keyboard_codes.h"
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/web_contents.h"
+@@ -39,11 +49,33 @@
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ 
+ namespace {
+-void CaptureTemporaryWindowIfRequested(views::Widget* widget) {
++void CaptureTemporaryWindowIfRequested(
++    views::Widget* widget, const char* flag = "cove-temporary-snapshot") {
+   const auto path = base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+-      "cove-temporary-snapshot");
++      flag);
+   if (path.empty()) return;
+   widget->Activate();
++  if (std::string_view(flag) == "cove-space-picker-snapshot") {
++    // ScreenCaptureKit rejects some native child bubbles. Capture only this
++    // fixture's own compositor instead, with pixel output enabled by caller.
++    auto* compositor = widget->GetCompositor();
++    base::test::TestFuture<std::unique_ptr<viz::CopyOutputResult>> copied;
++    auto request = std::make_unique<viz::CopyOutputRequest>(
++        viz::CopyOutputRequest::ResultFormat::RGBA,
++        viz::CopyOutputRequest::ResultDestination::kSystemMemory,
++        copied.GetCallback());
++    compositor->root_layer()->RequestCopyOfOutput(std::move(request));
++    compositor->ScheduleFullRedraw();
++    ASSERT_TRUE(copied.Wait());
++    auto result = copied.Take();
++    ASSERT_TRUE(result);
++    auto access = result->ScopedAccessSkBitmap();
++    auto png = gfx::PNGCodec::EncodeBGRASkBitmap(access.GetOutScopedBitmap(), false);
++    ASSERT_TRUE(png);
++    base::ScopedAllowBlockingForTesting allow_capture;
++    ASSERT_TRUE(base::WriteFile(path, *png));
++    return;
++  }
+   widget->GetRootView()->SchedulePaint();
+   base::test::TestFuture<gfx::Image> captured;
+   // Snapshot this fixture's native view only. Root compositor copy requests
+@@ -403,3 +435,122 @@
+   EXPECT_NE(TabStripModel::kNoTab,
+       browser()->GetTabStripModel()->GetIndexOfWebContents(original));
+ }
++
++namespace {
++views::Widget* OpenSpacePicker(BrowserWindowInterface* popup) {
++  auto* view = BrowserView::GetBrowserViewForBrowser(popup);
++  auto* menu = views::AsViewClass<views::MenuButton>(
++      view->toolbar()->GetViewByElementId(kCoveTemporarySpaceMenuElementId));
++  if (!menu) return nullptr;
++  views::NamedWidgetShownWaiter shown(views::test::AnyWidgetTestPasskey{},
++                                     "CoveTemporarySpaceChooser");
++  // MenuButton::Activate intentionally returns false after showing a menu
++  // so RootView releases mouse capture. It is not an activation failure.
++  menu->Activate(nullptr);
++  return shown.WaitIfNeededAndGet();
++}
++}  // namespace
++
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
++                       SearchableChooserPromotesTheExactPageWithKeyboard) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  auto* profile = browser()->GetProfile();
++  {
++    ScopedDictPrefUpdate update(profile->GetPrefs(), "cove.sidebar");
++    auto* spaces = update->FindList("spaces");
++    ASSERT_TRUE(spaces);
++    for (const char* name : {"Study", "Projects", "Research", "Reading",
++                             "Travel", "Archive", "Tools", "Sandbox"}) {
++      spaces->Append(base::DictValue().Set("id", std::string("picker-") + name)
++          .Set("name", name).Set("color", "#2563eb")
++          .Set("icon", name == std::string("Study") ? "🪐" : "●")
++          .Set("pins", base::ListValue()).Set("folders", base::ListValue())
++          .Set("tabs", base::ListValue()));
++    }
++  }
++  auto* original = browser()->GetTabStripModel()->GetActiveWebContents();
++  auto* popup = OpenCoveTemporaryWindow(profile,
++      embedded_test_server()->GetURL("/title1.html"));
++  ASSERT_TRUE(popup);
++  auto* page = popup->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(popup,
++      embedded_test_server()->GetURL("/title2.html")));
++  ASSERT_TRUE(content::ExecJs(page, "window.pickerDraft='keep this page'"));
++  const int entries = page->GetController().GetEntryCount();
++  auto* popup_view = BrowserView::GetBrowserViewForBrowser(popup);
++  ASSERT_TRUE(popup_view->toolbar()->GetViewByElementId(kCoveTemporaryProfileElementId));
++  auto* picker = OpenSpacePicker(popup);
++  ASSERT_TRUE(picker);
++  auto* search = views::AsViewClass<views::Textfield>(
++      picker->GetContentsView()->GetViewByElementId(kCoveTemporarySpaceSearchElementId));
++  ASSERT_TRUE(search);
++  ASSERT_TRUE(base::test::RunUntil([&] { return search->HasFocus(); }));
++  CaptureTemporaryWindowIfRequested(picker, "cove-space-picker-snapshot");
++  // InsertOrReplaceText follows the native textfield's user-input controller
++  // path, so this exercises filtering rather than setting a test-only model.
++  search->InsertOrReplaceText(u"WOR");
++  picker->LayoutRootViewIfNecessary();
++  ui::KeyEvent enter(ui::EventType::kKeyPressed, ui::VKEY_RETURN, 0);
++  picker->OnKeyEvent(&enter);
++  EXPECT_TRUE(enter.handled());
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return browser()->GetTabStripModel()->GetActiveWebContents() == page;
++  }));
++  auto* bridge = CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost());
++  ASSERT_TRUE(bridge);
++  EXPECT_EQ("work", bridge->GetActiveSpaceId());
++  EXPECT_EQ(entries, page->GetController().GetEntryCount());
++  EXPECT_EQ("keep this page", content::EvalJs(page, "window.pickerDraft"));
++  bridge->FocusSpace("personal");
++  EXPECT_EQ(original, browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
++                       EmptySearchAndEscapeKeepTheTemporaryPage) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  auto* original = browser()->GetTabStripModel()->GetActiveWebContents();
++  auto* popup = OpenCoveTemporaryWindow(browser()->GetProfile(),
++      embedded_test_server()->GetURL("/title1.html"));
++  ASSERT_TRUE(popup);
++  auto* page = popup->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  auto* picker = OpenSpacePicker(popup);
++  ASSERT_TRUE(picker);
++  const auto picker_weak = picker->GetWeakPtr();
++  auto* search = views::AsViewClass<views::Textfield>(
++      picker->GetContentsView()->GetViewByElementId(kCoveTemporarySpaceSearchElementId));
++  ASSERT_TRUE(search);
++  search->InsertOrReplaceText(u"no-such-space-987654321");
++  ui::KeyEvent enter(ui::EventType::kKeyPressed, ui::VKEY_RETURN, 0);
++  picker->OnKeyEvent(&enter);
++  EXPECT_TRUE(enter.handled());
++  base::RunLoop().RunUntilIdle();
++  EXPECT_EQ(page, popup->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(original, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_TRUE(picker_weak);
++  ui::KeyEvent escape(ui::EventType::kKeyPressed, ui::VKEY_ESCAPE, 0);
++  picker->OnKeyEvent(&escape);
++  EXPECT_TRUE(escape.handled());
++  ASSERT_TRUE(base::test::RunUntil([&] { return !picker_weak; }));
++  EXPECT_EQ(page, popup->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(original, browser()->GetTabStripModel()->GetActiveWebContents());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
++                       ClosingSourceAlsoClosesItsSpaceChooser) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  auto* original = browser()->GetTabStripModel()->GetActiveWebContents();
++  const int original_tabs = browser()->GetTabStripModel()->count();
++  auto* popup = OpenCoveTemporaryWindow(browser()->GetProfile(),
++      embedded_test_server()->GetURL("/title1.html"));
++  ASSERT_TRUE(popup);
++  ASSERT_TRUE(content::WaitForLoadStop(popup->GetTabStripModel()->GetActiveWebContents()));
++  auto* picker = OpenSpacePicker(popup);
++  ASSERT_TRUE(picker);
++  const auto picker_weak = picker->GetWeakPtr();
++  popup->GetTabStripModel()->CloseAllTabs();
++  ASSERT_TRUE(base::test::RunUntil([&] { return !picker_weak; }));
++  EXPECT_EQ(original, browser()->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(original_tabs, browser()->GetTabStripModel()->count());
++}
