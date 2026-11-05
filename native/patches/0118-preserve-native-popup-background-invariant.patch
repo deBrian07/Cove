@@ -1,0 +1,130 @@
+diff --git a/chrome/browser/ui/cove/cove_temporary_window.cc b/chrome/browser/ui/cove/cove_temporary_window.cc
+--- a/chrome/browser/ui/cove/cove_temporary_window.cc
++++ b/chrome/browser/ui/cove/cove_temporary_window.cc
+@@ -26,6 +26,9 @@
+ #include "ui/views/controls/textfield/textfield_controller.h"
+ 
+ #include <memory>
++#include "ui/views/focus/focus_manager.h"
++#include "ui/base/accelerators/accelerator.h"
++#include "ui/events/keycodes/keyboard_codes.h"
+ #include <set>
+ #include <vector>
+ #include "base/functional/bind.h"
+@@ -445,6 +448,9 @@
+   explicit TemporarySpaceControls(BrowserWindowInterface* popup);
+   ~TemporarySpaceControls() override;
+   bool ActivatePrimary();
++  void AddedToWidget() override;
++  void RemovedFromWidget() override;
++  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+ 
+  private:
+   void RefreshChoices();
+@@ -505,6 +511,20 @@
+   RefreshChoices();
+ }
+ TemporarySpaceControls::~TemporarySpaceControls() = default;
++void TemporarySpaceControls::AddedToWidget() {
++  views::View::AddedToWidget();
++  GetFocusManager()->RegisterAccelerator(
++      ui::Accelerator(ui::VKEY_O, ui::EF_COMMAND_DOWN),
++      ui::AcceleratorManager::kHighPriority, this);
++}
++void TemporarySpaceControls::RemovedFromWidget() {
++  GetFocusManager()->UnregisterAccelerators(this);
++  views::View::RemovedFromWidget();
++}
++bool TemporarySpaceControls::AcceleratorPressed(const ui::Accelerator& accelerator) {
++  return ActivatePrimary();
++}
++
+ void TemporarySpaceControls::RefreshChoices() {
+   if (!popup_)
+     return;
+@@ -725,10 +745,6 @@
+   chrome::AddTabAt(browser, url, -1, true);
+   auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+   auto* toolbar = browser_view->toolbar();
+-  // The entire shared row, including native caption-button space and padding,
+-  // uses the same browser surface.
+-  browser_view->top_container()->SetBackground(
+-      views::CreateSolidBackground(kColorLocationBarBackground));
+   std::u16string profile_name =
+       profile->IsOffTheRecord()
+           ? u"Incognito"
+diff --git a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+--- a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
++++ b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+@@ -44,6 +44,8 @@
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/image/image.h"
+ #include "ui/snapshot/snapshot.h"
++#include "chrome/browser/ui/views/frame/custom_corners_background.h"
++#include "chrome/browser/ui/views/frame/top_container_view.h"
+ #include "ui/views/controls/button/md_text_button.h"
+ #include "ui/views/controls/button/menu_button.h"
+ #include "ui/views/controls/textfield/textfield.h"
+@@ -636,6 +638,10 @@
+   for (int width : {420, 720, 1100}) {
+     widget->SetBounds(gfx::Rect(100, 100, width, 600));
+     widget->LayoutRootViewIfNecessary();
++    auto* background = view->top_container()->background()
++        ->AsA<CustomCornersBackground>();
++    ASSERT_TRUE(background);
++    EXPECT_TRUE(background->is_visible());
+     const auto bounds = view->toolbar()->GetBoundsInScreen();
+     const auto root = widget->GetRootView()->GetBoundsInScreen();
+     EXPECT_LE(bounds.y() - root.y(), 4);
+@@ -687,7 +693,8 @@
+   ASSERT_TRUE(ui_controls::SendKeyPressNotifyWhenDone(
+       popup->GetWindow()->GetNativeWindow(), ui::VKEY_O, false, false, false,
+       true, key_sent.GetCallback(), ui_controls::kKeyPress));
+-  ASSERT_TRUE(key_sent.Wait());
++  // Promotion closes the native input target; wait for the page transfer,
++  // since that target may disappear before delivery acknowledgement.
+   ASSERT_TRUE(base::test::RunUntil([&] {
+     return browser()->GetTabStripModel()->GetActiveWebContents() == page;
+   }));
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc
+@@ -6,6 +6,8 @@
+ 
+ #include "chrome/browser/ui/cove/cove_temporary_window.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view.h"
++#include "chrome/browser/ui/views/frame/custom_corners_background.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+@@ -181,3 +183,15 @@
+                    params.visual_client_area.width(),
+                    params.visual_client_area.y() - original_top);
+ }
++
++void BrowserViewPopupLayoutImpl::ConfigureTopContainerBackground(
++    const BrowserLayoutParams& params, CustomCornersBackground* background) {
++  if (views().toolbar && views().toolbar->GetViewByElementId(
++                             kCoveTemporaryPromoteElementId)) {
++    background->SetVisible(true);
++    background->SetPrimaryColor(kColorLocationBarBackground);
++    background->SetCorners(CustomCornersBackground::Corners());
++    return;
++  }
++  BrowserViewLayoutImpl::ConfigureTopContainerBackground(params, background);
++}
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h b/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h
+--- a/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h
++++ b/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h
+@@ -20,6 +20,10 @@
+   ~BrowserViewPopupLayoutImpl() override;
+ 
+  protected:
++  void ConfigureTopContainerBackground(
++      const BrowserLayoutParams& params,
++      CustomCornersBackground* background) override;
++
+   // BrowserViewLayoutImplCommon:
+   gfx::Size GetMinimumSize(const views::View* host) const override;
+   ProposedLayout CalculateProposedLayout(

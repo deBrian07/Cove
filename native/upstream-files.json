@@ -78,10 +78,13 @@
   "chrome/browser/ui/views/frame/browser_frame_view.h": "3d01658f5f8358b42ef78c9bcb030dfff9f65e4804dbe0aab7b23ad3b1b44f15",
   "chrome/browser/ui/views/frame/browser_frame_view_mac.h": "f623b01156735d7e4d3657808afb2c2a2ef5875e5edbaa207c88d0be0b82ba0d",
   "chrome/browser/ui/views/frame/browser_frame_view_mac.mm": "7c8c99cb64c7d676ab65979253a249940a11b61ea455eb952103613578aed77d",
+  "chrome/browser/ui/views/frame/browser_native_widget_mac.mm": "bd1f9d71d28ff2135567a701c234f4e09f9d9196f81babf38cfe98680ca1fc59",
   "chrome/browser/ui/views/frame/browser_view.cc": "1f50fd9bd07c94240a180e004fdec4469356f256fc936936363541f740942e0a",
   "chrome/browser/ui/views/frame/browser_view.h": "0672990c45e87d45d3b0918a1fa46d14b1de078203f93c9d8ba0bd42036af766",
   "chrome/browser/ui/views/frame/custom_corners.cc": "fe24a6e206c08b4b37886999515eebf120e2636b92c9b56f93255ce900e94e84",
   "chrome/browser/ui/views/frame/custom_corners.h": "bf295ac6bd212332379874d39b2f24ad72f5afd59d6a4404d37732438e28aabc",
+  "chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc": "543c22a66dfbd87d026ea74109c1d1f103977320ab828c8a5cec4b898fcb5b65",
+  "chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h": "3c5ccf6776b692ba1a31ffe8fb074f7ba6200d2dcac8769b8701f6e351cf01e1",
   "chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc": "8c03acb9e4290cbd81be06c76319b831c765d6e4876d3c8b478e4b1d1eaf6287",
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc": "6b3cd1a1933601f9f677dc1dc58a0fc39eefa0e30c273001ec08fb6562b07378",
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h": "053e5ca31d3b78ab07d44469ceeeb4ddac2c2f9c03caf7793840c52342851289",
@@ -118,7 +121,5 @@
   "components/tabs/public/tab_context_menu_command.h": "8666688cc9b1fd766bb8ab0f25c590940a523b6e7dd0f3f857514023dd6dd45d",
   "ui/views/BUILD.gn": "fb0c603ac10a7c42492453ad4953351add8925bd5b135849bee689475f302397",
   "ui/views/controls/scroll_view.cc": "3a2b71a6a950420c2aa43411cd6d72968491ab07897113e6e5b1ea765b2e6efa",
-  "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433",
-  "chrome/browser/ui/views/frame/browser_native_widget_mac.mm": "bd1f9d71d28ff2135567a701c234f4e09f9d9196f81babf38cfe98680ca1fc59",
-  "chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc": "543c22a66dfbd87d026ea74109c1d1f103977320ab828c8a5cec4b898fcb5b65"
+  "ui/views/view.cc": "cfdcf42d0b8db697b127efca28ccb1b66b2e863a718ea332e63a50685f3df433"
 }
