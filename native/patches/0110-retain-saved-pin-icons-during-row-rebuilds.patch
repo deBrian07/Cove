@@ -1,0 +1,151 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -842,7 +842,7 @@
+     return;
+   }
+   pin_favicon_tasks_.TryCancelAll();
+-  cached_pin_icons_.clear();
++  PruneSavedPinIcons();
+   drop_indicator_ = nullptr;
+   row_items_.clear();
+   QueueSessionSync();
+@@ -1044,7 +1044,7 @@
+   ui::ImageModel icon = ui::ImageModel::FromVectorIcon(
+       vector_icons::kGlobeIcon, ui::kColorIcon, 16);
+   if (const auto cached = cached_pin_icons_.find(pin_id);
+-      cached != cached_pin_icons_.end()) icon = cached->second;
++      cached != cached_pin_icons_.end()) icon = cached->second.image;
+   if (const auto bound = bound_pin_handles_.find(pin_id);
+       bound != bound_pin_handles_.end()) {
+     auto* tab = bound->second.Get();
+@@ -1054,6 +1054,29 @@
+       icon = ui::ImageModel::FromImage(driver->GetFavicon());
+   }
+   return icon;
++}
++
++void CoveSidebarLibraryView::PruneSavedPinIcons() {
++  const auto* space = FindSpace(browser_->GetProfile()->GetPrefs()
++      ->GetDict(kCoveSidebarPref), active_space_id_);
++  const auto* pins = space ? space->FindList("pins") : nullptr;
++  std::map<std::string, std::vector<GURL>> homes;
++  if (pins) {
++    for (const auto& value : *pins) {
++      const auto* pin = value.GetIfDict();
++      const auto* id = pin ? pin->FindString("id") : nullptr;
++      const auto* url = pin ? pin->FindString("url") : nullptr;
++      if (id) homes[*id].push_back(url ? GURL(*url) : GURL());
++    }
++  }
++  // Keep images through row rebuilds, but never across changed identities,
++  // ambiguous records or Space boundaries. Callbacks still refresh the cache.
++  std::erase_if(cached_pin_icons_, [&](const auto& entry) {
++    const auto found = homes.find(entry.first);
++    return entry.second.space_id != active_space_id_ || found == homes.end() ||
++           found->second.size() != 1 ||
++           found->second.front() != entry.second.home_url;
++  });
+ }
+ 
+ void CoveSidebarLibraryView::LoadSavedPinFavicons() {
+@@ -1110,7 +1133,14 @@
+   const auto* pin = (*pins)[pin_index].GetIfDict();
+   if (!pin || !pin->FindString("id") || *pin->FindString("id") != pin_id ||
+       !pin->FindString("url") || GURL(*pin->FindString("url")) != home_url) return;
+-  cached_pin_icons_[pin_id] = ui::ImageModel::FromImage(result.image);
++  // Bound retained image memory independently of the saved library size.
++  constexpr size_t kMaxSavedPinIcons = 256;
++  if (!cached_pin_icons_.contains(pin_id) &&
++      cached_pin_icons_.size() >= kMaxSavedPinIcons) {
++    cached_pin_icons_.erase(cached_pin_icons_.begin());
++  }
++  cached_pin_icons_[pin_id] = {
++      active_space_id_, home_url, ui::ImageModel::FromImage(result.image)};
+   // The current live-page icon remains authoritative, including if it arrived
+   // while the saved-home cache read was in flight.
+   row->SetImageModel(views::Button::STATE_NORMAL, PinIconForId(pin_id));
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -259,6 +259,7 @@
+   void Rebuild();
+   void RebuildSpaceFooter();
+   void UpdatePinRowAppearance();
++  void PruneSavedPinIcons();
+   void LoadSavedPinFavicons();
+   ui::ImageModel PinIconForId(const std::string& pin_id) const;
+   void OnPinFaviconLoaded(size_t pin_index, std::string pin_id, GURL home_url,
+@@ -364,7 +365,12 @@
+   base::OnceClosureList tab_drag_destroy_callbacks_;
+   std::map<views::View*, std::string> row_pin_ids_;
+   base::CancelableTaskTracker pin_favicon_tasks_;
+-  std::map<std::string, ui::ImageModel> cached_pin_icons_;
++  struct SavedPinIcon {
++    std::string space_id;
++    GURL home_url;
++    ui::ImageModel image;
++  };
++  std::map<std::string, SavedPinIcon> cached_pin_icons_;
+   std::map<std::string, tabs::TabHandle> bound_pin_handles_;
+   views::ViewTracker space_footer_;
+   views::ViewTracker archive_button_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -261,6 +261,10 @@
+     return nullptr;
+   }
+ 
++  void SwitchSpaceForIconTest(const std::string& id) {
++    library()->SwitchSpace(id);
++  }
++
+   void DeliverPinIcon(size_t index, const std::string& id, const GURL& home,
+                       views::LabelButton* row, SkColor color) {
+     favicon_base::FaviconImageResult result;
+@@ -956,6 +960,44 @@
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       SavedPinIconSurvivesRebuildWithoutStaleIdentityReuse) {
++  Seed();
++  const GURL home("https://pin-p.example/");
++  ASSERT_TRUE(PinRow("p"));
++  DeliverPinIcon(0, "p", home, PinRow("p"), SK_ColorRED);
++  ASSERT_TRUE(RowHasIconColor(PinRow("p"), SK_ColorRED));
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* personal = FindSpace(*update, "personal");
++    personal->FindList("folders")->front().GetDict().Set("name", "Renamed");
++  }
++  // No RunUntil or task pumping: a recreated row must already have its icon.
++  ASSERT_TRUE(PinRow("p"));
++  EXPECT_TRUE(RowHasIconColor(PinRow("p"), SK_ColorRED));
++  const GURL replacement("https://replacement-pin.example/");
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    FindSpace(*update, "personal")->FindList("pins")->front().GetDict()
++        .Set("url", replacement.spec());
++  }
++  ASSERT_TRUE(PinRow("p"));
++  EXPECT_FALSE(RowHasIconColor(PinRow("p"), SK_ColorRED));
++  DeliverPinIcon(0, "p", replacement, PinRow("p"), SK_ColorBLUE);
++  ASSERT_TRUE(RowHasIconColor(PinRow("p"), SK_ColorBLUE));
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), kSidebarPref);
++    auto* work = FindSpace(*update, "work");
++    ASSERT_TRUE(work);
++    base::ListValue pins;
++    pins.Append(Pin("p", "Other Space Pin", replacement.spec().c_str()));
++    work->Set("pins", std::move(pins));
++  }
++  SwitchSpaceForIconTest("work");
++  ASSERT_TRUE(PinRow("p"));
++  EXPECT_FALSE(RowHasIconColor(PinRow("p"), SK_ColorBLUE));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
+                        StaleCachedPinIconCannotReplaceChangedHomeIcon) {
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+       GURL("data:text/html,<title>Unchanged Today</title>")));

@@ -1,0 +1,167 @@
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.cc b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.cc
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.cc
+@@ -274,12 +274,13 @@
+   Rebuild();
+ }
+ 
+-void CoveFavoritesView::SetEmptyDropZoneRevealed(bool revealed) {
+-  if (!tab_drag_active_ || empty_drop_zone_revealed_ == revealed) return;
++bool CoveFavoritesView::SetEmptyDropZoneRevealed(bool revealed) {
++  if (!tab_drag_active_ || empty_drop_zone_revealed_ == revealed) return false;
+   empty_drop_zone_revealed_ = revealed;
+-  if (!row_urls_.empty()) return;
++  if (!row_urls_.empty()) return false;
+   if (!revealed) OnTabDragEnded();
+   Rebuild();
++  return true;
+ }
+ 
+ TabDragTarget* CoveFavoritesView::GetTabDragTarget(
+diff --git a/chrome/browser/ui/views/cove/cove_favorites_view.h b/chrome/browser/ui/views/cove/cove_favorites_view.h
+--- a/chrome/browser/ui/views/cove/cove_favorites_view.h
++++ b/chrome/browser/ui/views/cove/cove_favorites_view.h
+@@ -59,7 +59,7 @@
+ 
+   void SetTabDragActive(bool active);
+   // With no Favorites, the drop box shows only while this is set.
+-  void SetEmptyDropZoneRevealed(bool revealed);
++  bool SetEmptyDropZoneRevealed(bool revealed);
+   TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
+   void OnTabDragEntered() override;
+   TabDragContext* OnTabDragUpdated(TabDragTarget::DragController& controller,
+diff --git a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_live_tab_drag_browsertest.cc
+@@ -224,6 +224,13 @@
+                             ->selection_model()
+                             .GetListSelectionModel(),
+                         ui::mojom::DragEventSource::kMouse));
++    // The compatibility adapter can be only a few DIP from this destination
++    // after scrolling. Explicitly cross the native 10-DIP start threshold.
++    const auto start = views::View::ConvertPointToScreen(source, gfx::Point(4, 4));
++    if ((destination - start).LengthSquared() <= 100) {
++      ASSERT_EQ(TabDragController::Liveness::kAlive,
++                raw->Drag(start + gfx::Vector2d(12, 0)));
++    }
+     ASSERT_EQ(TabDragController::Liveness::kAlive, raw->Drag(destination));
+     ASSERT_TRUE(context->GetDragController());
+     ASSERT_TRUE(raw->started_drag());
+@@ -724,6 +731,81 @@
+ };
+ 
+ IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDirectDragOnlyTabIntoEmptyPins) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), "cove.sidebar");
++    for (auto& space : *update->FindList("spaces"))
++      space.GetDict().Set("folders", base::ListValue());
++  }
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  auto* source = DisplayedTabView(contents);
++  ASSERT_TRUE(source);
++  const auto from = source->GetBoundsInScreen().CenterPoint();
++  const auto to = library()->GetBoundsInScreen().CenterPoint();
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(from));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::DOWN));
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(to));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::UP));
++  base::RunLoop().RunUntilIdle();
++  EXPECT_TRUE(tabs::TabInterface::GetFromContents(contents)->IsPinned());
++  EXPECT_EQ(1, model->count());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDirectDragTwoTabsIntoEmptyPins) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  {
++    ScopedDictPrefUpdate update(browser()->GetProfile()->GetPrefs(), "cove.sidebar");
++    for (auto& space : *update->FindList("spaces"))
++      space.GetDict().Set("folders", base::ListValue());
++  }
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = chrome::AddAndReturnTabAt(
++      browser(), embedded_test_server()->GetURL("/title2.html"), -1, true);
++  ASSERT_TRUE(content::WaitForLoadStop(contents));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* source = DisplayedTabView(contents);
++  ASSERT_TRUE(source);
++  const auto from = source->GetBoundsInScreen().CenterPoint();
++  const auto to = library()->GetBoundsInScreen().CenterPoint();
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(from));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::DOWN));
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(to));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::UP));
++  base::RunLoop().RunUntilIdle();
++  EXPECT_TRUE(tabs::TabInterface::GetFromContents(contents)->IsPinned());
++  EXPECT_EQ(2, model->count());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
++                       MouseDirectDragOnlyTabIntoFirstFavorite) {
++  ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
++  auto* model = browser()->GetTabStripModel();
++  auto* contents = model->GetActiveWebContents();
++  auto* source = DisplayedTabView(contents);
++  ASSERT_TRUE(source);
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(source->GetBoundsInScreen().CenterPoint()));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::DOWN));
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(SidebarTop()));
++  browser_view()->GetWidget()->LayoutRootViewIfNecessary();
++  auto* favorites = FindFavoritesView(browser_view());
++  ASSERT_TRUE(favorites);
++  ASSERT_TRUE(favorites->GetVisible());
++  ASSERT_NO_FATAL_FAILURE(MoveMouse(favorites->GetBoundsInScreen().CenterPoint()));
++  ASSERT_NO_FATAL_FAILURE(Button(ui_controls::UP));
++  base::RunLoop().RunUntilIdle();
++  const auto* list = browser()->GetProfile()->GetPrefs()->GetDict("cove.sidebar")
++                         .FindList("favorites");
++  ASSERT_TRUE(list);
++  EXPECT_EQ(1u, list->size());
++  EXPECT_EQ(1, model->count());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveRealMouseTabDragBrowserTest,
+                        MouseDragsTabIntoFolderPin) {
+   ASSERT_NO_FATAL_FAILURE(PreparePageAndFolder());
+   auto* model = browser()->GetTabStripModel();
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -1275,15 +1275,6 @@
+     return;
+   }
+   const gfx::Point point = views::View::ConvertPointFromScreen(this, screen_point);
+-  if (favorites_view_ && space_clip_view_) {
+-    // An empty Favorites box opens only once the pointer reaches the top of
+-    // the sidebar, so starting a drag never shifts the rows under it. The
+-    // threshold follows the clip as it moves, which keeps the box open while
+-    // the pointer is over it.
+-    const gfx::Rect clip = views::View::ConvertRectToTarget(
+-        space_clip_view_->parent(), this, space_clip_view_->bounds());
+-    favorites_view_->SetEmptyDropZoneRevealed(point.y() < clip.y() + 40);
+-  }
+   if (!cove_drag_ghost_) {
+     auto ghost = std::make_unique<views::View>();
+     ghost->SetProperty(views::kViewIgnoredByLayoutKey, true);
+@@ -1488,6 +1479,16 @@
+ 
+ TabDragTarget* VerticalTabStripRegionView::GetTabDragTarget(
+     const gfx::Point& point_in_screen) {
++  if (favorites_view_ && space_clip_view_ && GetWidget()) {
++    // Resolve the empty Favorites affordance before picking a drop target.
++    // Opening it afterwards can move the saved rows out from under a direct
++    // drag and leave the controller holding the wrong target at mouse-up.
++    const auto point = views::View::ConvertPointFromScreen(this, point_in_screen);
++    const gfx::Rect clip = views::View::ConvertRectToTarget(
++        space_clip_view_->parent(), this, space_clip_view_->bounds());
++    if (favorites_view_->SetEmptyDropZoneRevealed(point.y() < clip.y()))
++      GetWidget()->LayoutRootViewIfNecessary();
++  }
+   if (favorites_view_) {
+     if (auto* target = favorites_view_->GetTabDragTarget(point_in_screen))
+       return target;

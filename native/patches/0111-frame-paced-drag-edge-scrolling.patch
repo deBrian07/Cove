@@ -1,0 +1,214 @@
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -1097,6 +1097,28 @@
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       DragEdgeScrollSpeedIsIndependentOfFrameCadence) {
++  const auto distance = [](float depth, int frames, base::TimeDelta interval) {
++    float total = 0;
++    for (int i = 0; i < frames; ++i)
++      total += VerticalTabStripRegionView::DragEdgeScrollDistanceForTesting(
++          depth, interval);
++    return total;
++  };
++  // Equal wall time at 125, 62.5 and 50 Hz must cover the same distance.
++  EXPECT_NEAR(distance(1, 40, base::Milliseconds(8)),
++              distance(1, 20, base::Milliseconds(16)), 0.001f);
++  EXPECT_NEAR(distance(1, 40, base::Milliseconds(8)),
++              distance(1, 16, base::Milliseconds(20)), 0.001f);
++  EXPECT_LT(distance(0, 1, base::Milliseconds(16)),
++            distance(0.5f, 1, base::Milliseconds(16)));
++  EXPECT_LT(distance(0.5f, 1, base::Milliseconds(16)),
++            distance(1, 1, base::Milliseconds(16)));
++  EXPECT_FLOAT_EQ(15.0f, distance(1, 1, base::Seconds(5)));
++  EXPECT_FLOAT_EQ(0.0f, distance(1, 1, -base::Milliseconds(1)));
++}
++
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
+                        DragEdgeAutoscrollFollowsStationaryPointer) {
+   ASSERT_TRUE(ui_test_utils::NavigateToURL(
+       browser(),
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <limits>
+ #include <optional>
+ #include <utility>
+@@ -105,6 +106,7 @@
+ #include "ui/views/layout/layout_types.h"
+ #include "ui/views/layout/proposed_layout.h"
+ #include "ui/views/view.h"
++#include "ui/compositor/compositor.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "ui/views/view_class_properties.h"
+ #include "ui/views/view_utils.h"
+@@ -117,8 +119,7 @@
+ constexpr int kKeyboardResizeWidth = 50;
+ constexpr int kSnapDistance = 15;
+ constexpr int kDragEdgeBandDip = 24;
+-constexpr float kDragEdgeScrollStepDip = 5.0f;
+-constexpr base::TimeDelta kDragEdgeScrollInterval = base::Milliseconds(20);
++
+ 
+ // Recreate only the painted layer tree. Old layers have no View delegates,
+ // so rebuilding rows cannot make a transition retain destroyed tab Views.
+@@ -1389,31 +1390,65 @@
+     StopDragEdgeAutoscroll();
+     return;
+   }
++  if (drag_edge_screen_point_ &&
++      DragEdgeForScreenPoint(*drag_edge_screen_point_) !=
++          DragEdgeForScreenPoint(screen_point)) {
++    drag_edge_fraction_ = 0;
++  }
+   drag_edge_screen_point_ = screen_point;
+-  if (drag_edge_timer_.IsRunning()) {
+-    return;
+-  }
+-  drag_edge_timer_.Start(
+-      FROM_HERE, kDragEdgeScrollInterval,
+-      base::BindRepeating(
+-          &VerticalTabStripRegionView::OnDragEdgeAutoscrollTick,
+-          weak_factory_.GetWeakPtr()));
++  if (drag_edge_compositor_ || !GetWidget()) {
++    return;
++  }
++  drag_edge_compositor_ = GetWidget()->GetCompositor();
++  if (drag_edge_compositor_) {
++    drag_edge_last_frame_ = base::TimeTicks::Now();
++    // A user can intentionally hold a drag at the edge indefinitely.
++    set_check_active_duration(false);
++    drag_edge_compositor_->AddAnimationObserver(this);
++  }
+ }
+ 
+ void VerticalTabStripRegionView::StopDragEdgeAutoscroll() {
+-  drag_edge_timer_.Stop();
++  if (drag_edge_compositor_) {
++    drag_edge_compositor_->RemoveAnimationObserver(this);
++    drag_edge_compositor_ = nullptr;
++  }
+   drag_edge_screen_point_.reset();
++  drag_edge_last_frame_ = base::TimeTicks();
++  drag_edge_fraction_ = 0;
++}
++
++void VerticalTabStripRegionView::OnCompositingShuttingDown(
++    ui::Compositor* compositor) {
++  StopDragEdgeAutoscroll();
++}
++
++void VerticalTabStripRegionView::OnAnimationStep(base::TimeTicks timestamp) {
++  const auto elapsed = timestamp - drag_edge_last_frame_;
++  drag_edge_last_frame_ = timestamp;
++  if (elapsed.is_positive()) OnDragEdgeAutoscrollTick(elapsed);
+ }
+ 
+ void VerticalTabStripRegionView::FireDragEdgeAutoscrollForTesting() {
+-  OnDragEdgeAutoscrollTick();
++  OnDragEdgeAutoscrollTick(base::Milliseconds(20));
+ }
+ 
+ bool VerticalTabStripRegionView::IsDragEdgeAutoscrollingForTesting() const {
+-  return drag_edge_timer_.IsRunning();
+-}
+-
+-void VerticalTabStripRegionView::OnDragEdgeAutoscrollTick() {
++  return !!drag_edge_compositor_;
++}
++
++float VerticalTabStripRegionView::DragEdgeScrollDistanceForTesting(
++    float depth, base::TimeDelta elapsed) {
++  // Smoothstep gives precise placement at the inner edge and progressively
++  // faster travel toward the boundary. Cap stalls to avoid a large jump.
++  depth = std::clamp(depth, 0.0f, 1.0f);
++  const float speed = 60.0f + 240.0f * depth * depth * (3.0f - 2.0f * depth);
++  return speed * std::clamp(elapsed, base::TimeDelta(), base::Milliseconds(50))
++                     .InSecondsF();
++}
++
++void VerticalTabStripRegionView::OnDragEdgeAutoscrollTick(
++    base::TimeDelta elapsed) {
+   if (!drag_edge_screen_point_ || !CanDragEdgeAutoscroll()) {
+     StopDragEdgeAutoscroll();
+     return;
+@@ -1428,9 +1463,17 @@
+   const float max_offset = std::max(
+       0, scroll->contents()->height() - scroll->GetVisibleRect().height());
+   const float current = scroll->CurrentOffset().y();
+-  const float delta = edge == DragEdge::kBottom ? kDragEdgeScrollStepDip
+-                                                : -kDragEdgeScrollStepDip;
+-  const float next = std::clamp(current + delta, 0.0f, max_offset);
++  const auto local = views::View::ConvertPointFromScreen(scroll, screen_point);
++  const float distance = edge == DragEdge::kBottom
++      ? scroll->height() - local.y() : local.y();
++  const float depth = 1.0f - distance / kDragEdgeBandDip;
++  const float direction = edge == DragEdge::kBottom ? 1.0f : -1.0f;
++  const float delta = direction * DragEdgeScrollDistanceForTesting(depth, elapsed);
++  const float desired = std::clamp(current + delta + drag_edge_fraction_,
++                                 0.0f, max_offset);
++  const float next = std::round(desired);
++  drag_edge_fraction_ = desired - next;
++  if (next == current && desired > 0 && desired < max_offset) return;
+   if (next == current) {
+     StopDragEdgeAutoscroll();
+     return;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -29,6 +29,7 @@
+ #include "ui/base/interaction/element_tracker.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/events/event_handler.h"
++#include "ui/compositor/compositor_animation_observer.h"
+ #include "ui/gfx/geometry/point.h"
+ #include "ui/views/accessible_pane_view.h"
+ #include "ui/views/controls/resize_area_delegate.h"
+@@ -71,7 +72,8 @@
+       public OmniboxTabHelper::Observer,
+       public tabs::VerticalTabStripStateController::Delegate,
+       public OrganizerPanelHost,
+-      public views::LayoutDelegate {
++      public views::LayoutDelegate,
++      public ui::CompositorAnimationObserver {
+   METADATA_HEADER(VerticalTabStripRegionView, BaseTabStripRegionView)
+ 
+  public:
+@@ -112,6 +114,10 @@
+   views::View* cove_drag_ghost_for_testing() { return cove_drag_ghost_; }
+   void FireDragEdgeAutoscrollForTesting();
+   bool IsDragEdgeAutoscrollingForTesting() const;
++  static float DragEdgeScrollDistanceForTesting(float depth,
++                                                base::TimeDelta elapsed);
++  void OnAnimationStep(base::TimeTicks timestamp) override;
++  void OnCompositingShuttingDown(ui::Compositor* compositor) override;
+ 
+   TabDragTarget* GetTabDragTarget(
+       const gfx::Point& point_in_screen) override;
+@@ -295,7 +301,7 @@
+   views::ScrollView* SharedRowsScrollView() const;
+   bool CanDragEdgeAutoscroll() const;
+   DragEdge DragEdgeForScreenPoint(const gfx::Point& screen_point) const;
+-  void OnDragEdgeAutoscrollTick();
++  void OnDragEdgeAutoscrollTick(base::TimeDelta elapsed);
+ 
+   // Organizer panel:
+   raw_ptr<views::View> organizer_panel_view_ = nullptr;
+@@ -378,7 +384,9 @@
+   // The mouse exit event debounce timer.
+   base::OneShotTimer mouse_exit_timer_;
+   // Region-owned so a stationary drag keeps scrolling after the last event.
+-  base::RepeatingTimer drag_edge_timer_;
++  raw_ptr<ui::Compositor> drag_edge_compositor_ = nullptr;
++  base::TimeTicks drag_edge_last_frame_;
++  float drag_edge_fraction_ = 0;
+   std::optional<gfx::Point> drag_edge_screen_point_;
+   raw_ptr<views::View> cove_drag_ghost_ = nullptr;
+   raw_ptr<views::ImageView> cove_drag_ghost_icon_ = nullptr;
