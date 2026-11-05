@@ -1,5 +1,19 @@
 # Native validation — 2026-10-30
 
+## Accepted continuation — Nov 5: native crash and keyboard fixes (0118)
+
+This section supersedes older pending execution notes. Patch0118 keeps Chromium's required CustomCornersBackground and paints the shared Little Cove caption/toolbar surface through popup layout. It fixes the CHECK crash introduced by117's solid-background replacement. The corrected header was rendered and inspected at `.chromium/tmp/cove118/header.png`: native caption buttons and toolbar share a continuous dark surface. Scoped high-priority FocusManager Cmd+O now transfers the exact page into its chosen Space from web-content focus; its accelerator is registered/unregistered with the temporary controls' widget lifecycle. The test waits for actual transfer rather than acknowledgement from the closing source input target.
+
+**All104 browser executions passed in one full run, retries0,840seconds.** JSON records103 SUCCESS keys because PRE_ is folded. Includes6 OS mouse-drag cases,7 media cases,17 Little Cove cases (actual Cmd+O/mouse), session/restart/settings/sidebar/Favorites coverage. Evidence `.chromium/tmp/cove118/{full-tests.log,full-results.json}`. All118 patches pass pinned SHA/sequential verification (`verify-final.json`);38 tooling tests pass (resume logs under cove117/validation). Official GN generation, build receipt and isolated renderer smoke PASS (`cove118/{gen-final.log,receipt-final.log,smoke-final.log}`). Current/generated/built configuration all `d55ae794329c5ebfb59a49d3c0ad5bf633a188ff558daac4a507cc8856fb155d`. No manual stamping.
+
+No builds/tests/normal Cove app remain running after acceptance. Profiles, output, disk and other agent's committed108–117 work preserved.0118 includes regression assertions for required background type and visibility across420/720/1100DIP. Before copies `.chromium/tmp/cove118/before`; patch is authoritative. Earlier failed117/118 logs remain diagnostic history, not current acceptance. No fresh manual desktop/physical trackpad comparison or exact Arc visual parity is claimed. Next product work remains editable popup address/standard keyboard flows, Little Cove launch/settings, Peek, pane headers/joined split rows and rapid Space-motion retargeting; preserve navigation protections and profile boundaries. Read broader architecture notes below before extending them.
+
+
+## Current Nov5 validation
+
+117 patches are integrated; final runtime/build acceptance is still pending. See the top **Current continuation** section of [HANDOFF.md](HANDOFF.md) for exact live processes, logs and resume commands. At117 the searchable Space picker and420/720/1100DIP compact native header layout passed. Two new native input cases stopped at the test harness's ui_controls guard before input; their fixture setup is corrected and rebuilding. The actual picker image was inspected; a white caption-area gap in the header image is corrected in source but awaits a rebuilt image. All38 tooling tests pass. Earlier114 drag/media focused checks passed14/14; the full117 suite, matching official receipt and renderer smoke are not yet accepted. This is not production-readiness or exact Arc parity.
+
+
 ## Active continuation — 2026-10-31: preserve pins during Move to Space
 
 First read the newer 0096–0106 work below; the old “current 95” section is historical. Repository HEAD at this audit was `81e78be` (clean). The latest product work is 0106 floating drag rows (`26dc00d`), following the mini player, MRU switcher, Space moves/themes/icons/export, hover locks and edge autoscroll. The handoff reports 75/75 full browser cases at 0105 and 18/18 focused drag/Favorites cases plus isolated real OS drags at 0106; do not claim a full 0106 rerun from those focused results.
