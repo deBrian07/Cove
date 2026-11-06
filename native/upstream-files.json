@@ -25,6 +25,7 @@
   "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_strip_observer_helper.cc": "fbd5211bc5ce8500b5b56037199c2448b848f8bbd0e273daba7eff8279446c18",
   "chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.cc": "f34dcc1b36ab663d6f910b917cfd31585f7e6f56c05059a406a152ff2e608895",
   "chrome/browser/picture_in_picture/auto_picture_in_picture_window_occlusion_helper_widget.h": "d322e2f836bd99b5516a89664df3eeae3910550f4fd08e971c908e5e743339ad",
+  "chrome/browser/prefs/browser_prefs.cc": "758e5727c98e59e423e8903527db456d44a10914c671f58ddc94b30667698078",
   "chrome/browser/resources/tab_search/app.css": "e0d26c0d52efb336b543e0113f5a076121efb462d08cd24ba386cdc5792aa25a",
   "chrome/browser/resources/tab_search/tab_search.html": "570f6d3fae274d11fe0e81cd55945949efaba8e8471a189941ad110379851569",
   "chrome/browser/resources/tab_search/tab_search_api_proxy.ts": "ac763b7f1afde90fcff7496f57c810747b3bb428c6a3b59a4036ce391f5fe3c0",
