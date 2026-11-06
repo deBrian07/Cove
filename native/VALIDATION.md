@@ -1,4 +1,26 @@
-# Native validation — 2026-10-30
+# Native validation
+
+## Latest completed gate — Nov 6: 0122
+
+Before the latest interruption/disconnection, the current 122-patch native build passed:
+
+- 108 browser executions in one run, retries disabled, 870 seconds. JSON has 107 SUCCESS keys in one iteration with no repeats because PRE_ is folded.
+- All 122 pinned-original SHA/sequential patch checks.
+- All 38 tooling tests (33 scripts + 5 verifier tests); tooling code remained unchanged afterward.
+- Official generation and incremental build receipt, followed by isolated native renderer smoke outside the command sandbox.
+- Current/generated/built identity equality: `562f3b871baecf2266ea2d9e1eade5a83fd276ca614f1f2281f7344c352bb971`.
+
+Evidence: `.chromium/tmp/cove122/{full-tests.log,full-results.json,verify.json,verify-errors.log,gen-final.log,receipt-final.log,identity-final.log,smoke-unsandboxed.log}`; tooling log is `.chromium/tmp/cove121/accepted/tooling.log`. The first smoke attempt under the command sandbox failed and remains in `cove122/smoke-final.log`; it is not a passing result.
+
+The full run covers the reported command-bar bug with three native mouse cycles: inside clicks retain the palette; outside clicks hide it and reach the page button; draft, URL and tab count survive and the cached widget remains. It also passes editable Little Cove Cmd+L/Escape/Enter/history, Cmd+O promotion, Cmd+Shift+O chooser/Escape focus return, actual mouse Space selection, Links preference persistence and both external routes, real drag targets and media behavior. 0122 changes only fixture activation to Chromium's standard helper and its test dependency; early UI-controls setup prevents fake focus.
+
+Desktop acceptance is narrower. A separate validation profile confirmed query entry, Escape and edited-draft retention. The desktop tool inconsistently targeted the floating palette, so its inside-click/page-button attempt is unresolved and is not counted as physical click-delivery acceptance. A diagnostic launch was interrupted before its activation trace was inspected. A code audit identified current-cursor versus native-event coordinate disagreement as a robustness candidate; no fix or regression for that candidate is accepted yet. See [HANDOFF.md](HANDOFF.md) for the exact next test and safe conversion path.
+
+The SanDisk is absent on the latest resume, so these logs and the native checkout are currently inaccessible. No Cove app appeared in the latest CUA inventory. Reconnect and inspect live state before source work. Normal/Arc/prototype profiles and existing output were preserved. Exact Arc visuals, physical trackpad smoothness, frame times, broader site/media behavior and production readiness remain unvalidated.
+
+## Historical validation notes
+
+The checkpoints below predate the completed 0122 gate. Their old active-build, disk and pending-failure statements are historical.
 
 ## Accepted continuation — Nov 5: native crash and keyboard fixes (0118)
 

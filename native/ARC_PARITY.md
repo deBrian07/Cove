@@ -1,24 +1,18 @@
 # Arc function parity
 
-## Accepted continuation — Nov 5: native crash and keyboard fixes (0118)
+## Current — Nov 6: 0122 gate passed; desktop follow-up remains
 
-This section supersedes older pending execution notes. Patch0118 keeps Chromium's required CustomCornersBackground and paints the shared Little Cove caption/toolbar surface through popup layout. It fixes the CHECK crash introduced by117's solid-background replacement. The corrected header was rendered and inspected at `.chromium/tmp/cove118/header.png`: native caption buttons and toolbar share a continuous dark surface. Scoped high-priority FocusManager Cmd+O now transfers the exact page into its chosen Space from web-content focus; its accelerator is registered/unregistered with the temporary controls' widget lifecycle. The test waits for actual transfer rather than acknowledgement from the closing source input target.
+Cove targets Arc's macOS workflows through the native Chromium application. Appearance and functional behavior both matter. Exact Arc visual parity, physical trackpad smoothness and frame-time parity have not been validated.
 
-**All104 browser executions passed in one full run, retries0,840seconds.** JSON records103 SUCCESS keys because PRE_ is folded. Includes6 OS mouse-drag cases,7 media cases,17 Little Cove cases (actual Cmd+O/mouse), session/restart/settings/sidebar/Favorites coverage. Evidence `.chromium/tmp/cove118/{full-tests.log,full-results.json}`. All118 patches pass pinned SHA/sequential verification (`verify-final.json`);38 tooling tests pass (resume logs under cove117/validation). Official GN generation, build receipt and isolated renderer smoke PASS (`cove118/{gen-final.log,receipt-final.log,smoke-final.log}`). Current/generated/built configuration all `d55ae794329c5ebfb59a49d3c0ad5bf633a188ff558daac4a507cc8856fb155d`. No manual stamping.
+Patches 0119–0121 provide editable Little Cove address/navigation, scoped Cmd+L/Cmd+O/Cmd+Shift+O, searchable specific-Space promotion, a real external-link routing preference and outside-click command-bar dismissal. Patch 0122 corrects test activation. All 108 browser executions passed in one run with retries disabled, in 870 seconds (107 JSON SUCCESS keys with PRE_ folded). All 122 patches verified; 38 tooling tests, official generation/build receipt and isolated renderer smoke passed. Current/generated/built identity matched `562f3b871baecf2266ea2d9e1eade5a83fd276ca614f1f2281f7344c352bb971`.
 
-No builds/tests/normal Cove app remain running after acceptance. Profiles, output, disk and other agent's committed108–117 work preserved.0118 includes regression assertions for required background type and visibility across420/720/1100DIP. Before copies `.chromium/tmp/cove118/before`; patch is authoritative. Earlier failed117/118 logs remain diagnostic history, not current acceptance. No fresh manual desktop/physical trackpad comparison or exact Arc visual parity is claimed. Next product work remains editable popup address/standard keyboard flows, Little Cove launch/settings, Peek, pane headers/joined split rows and rapid Space-motion retargeting; preserve navigation protections and profile boundaries. Read broader architecture notes below before extending them.
+The SanDisk disconnected before the final desktop investigation finished; logs and checkout are currently inaccessible. CUA confirmed query entry/Escape/draft retention but inconsistently targeted the floating palette. Do not count its click attempt as independent physical acceptance. Native mouse tests passed inside retention and outside page-button delivery. Current-cursor versus native-event coordinates are a code-audited robustness candidate requiring a deterministic regression, not an accepted 0123 change. See [HANDOFF.md](HANDOFF.md) for exact evidence and resume instructions.
 
+## Historical accepted baseline — 0118
 
-## Current Nov5 Little Cove status
+All 104 browser executions passed in one run with retries disabled, in 840 seconds. JSON records 103 SUCCESS keys because the PRE_ phase is folded. This includes six OS mouse-drag cases, seven media cases, 17 Little Cove cases and session/restart/settings/sidebar/Favorites coverage. All 118 patches verified; 38 tooling tests, official generation/build receipt and isolated renderer smoke passed. The configuration identity was `d55ae794329c5ebfb59a49d3c0ad5bf633a188ff558daac4a507cc8856fb155d`. Evidence is under `.chromium/tmp/cove118/`; this is historical evidence superseded by the completed 0122 gate above.
 
-117 patches are integrated; final runtime/build acceptance is still pending. See the top **Current continuation** section of [HANDOFF.md](HANDOFF.md) for exact live processes, logs and resume commands. At117 the searchable Space picker and420/720/1100DIP compact native header layout passed. Two new native input cases stopped at the test harness's ui_controls guard before input; their fixture setup is corrected and rebuilding. The actual picker image was inspected; a white caption-area gap in the header image is corrected in source but awaits a rebuilt image. All38 tooling tests pass. Earlier114 drag/media focused checks passed14/14; the full117 suite, matching official receipt and renderer smoke are not yet accepted. This is not production-readiness or exact Arc parity.
-
-
-Cove targets Arc's macOS workflows in the native Chromium application. Feature coverage takes priority over further cosmetic polish. This is the working acceptance list, not a claim that all of Arc is implemented. An implemented command must perform its native operation; a matching label or screenshot does not count.
-
-The latest reviewed product series is 0106. Handoff evidence reports a full 75-case browser run, tooling and renderer smoke at 0105, then 18 focused drag/Favorites cases and isolated real OS pin/Favorite drags at 0106. Features added since 0095 include hover locks, drag-edge autoscroll, per-Space themes/icons/deletion/export, Control-Tab MRU switching, Move to Space, the mini player and floating drag rows. The 75 model/animation tests last passed on 0089; those implementations are unchanged. These reported checks predate the repository-local checkout relocation. Its interrupted rebuild left no accepted build receipt; the active 0107 continuation is rebuilding before claiming current runtime acceptance.
-
-Patch 0107 addresses a code-audited data-loss risk in Move to Space: a navigated pin must retain its saved home, title and unknown fields rather than be recreated from its current page. New normal/collision/rejection regressions are pending native compilation. See [HANDOFF.md](HANDOFF.md) and [VALIDATION.md](VALIDATION.md) for current evidence and logs. This remains an incomplete Arc implementation.
+That baseline includes saved-pin preservation during Move to Space, retained pin icons, frame-paced drag-edge scrolling, corrected empty pin/Favorite drop targets, compact media controls and native temporary external-link windows. Patch 0118 preserves Chromium's required `CustomCornersBackground`, fixes the temporary-window header crash and enables scoped Cmd+O promotion from page focus. Its header image was inspected at `.chromium/tmp/cove118/header.png`. These checks do not establish production readiness or exact Arc parity.
 
 ## Spaces and organization
 
@@ -26,15 +20,15 @@ Patch 0107 addresses a code-audited data-loss risk in Move to Space: a navigated
 | --- | --- | --- |
 | Create, rename and delete Spaces | Native footer/menu; 0099 adds confirmation, neighbor selection and normal close handling for deleted Space pages | Broader beforeunload/multi-window acceptance and Space ordering remain |
 | Switch Spaces through footer | Live native switching preserves pages | Repeat after new features; preserve drafts, history, groups and splits |
-| Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition implemented | Physical trackpad acceptance remains. Automation delivered dx=0/dy=0, so its horizontal scroll is not evidence |
+| Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition implemented | Rapid interruption/reversal still needs a continuity fix and pixel checks. Physical trackpad and frame-time acceptance remain; automation delivered dx=0/dy=0 |
 | Control+1–9 Space selection | Added in 0076 | Verify native shortcuts, missing slots and use while the palette is open |
 | Type a Space name in Cmd+T | Stable Space IDs added in 0076 | Verify switching to both populated and empty Spaces |
 | Next/previous Space actions | Added in 0076 | Verify boundaries and slide direction |
 | Independent Space themes and icons | 0098 stores sidebar/accent/highlight colors separately; 0099 persists emoji/symbol footer icons | Broader light/dark/high-contrast and restart acceptance remain |
 | Profiles assigned to Spaces | Missing | Separate cookies, storage, credentials and profile-specific Favorites |
-| Tab moves and Space ordering | 0102 adds tab-menu Move to Space, including split partners and source blank canvas | 0107 saved-pin record preservation is in progress; group ownership and Space ordering remain |
+| Tab moves and Space ordering | 0102 adds tab-menu Move to Space, including split partners and source blank canvas; 0107 preserves saved home, title, ID and unknown fields, including collision/rejection coverage accepted in 0118 | Broader group ownership and Space ordering remain |
 | Restore Spaces after restart | 0082–0083 add ownership, parked journals and pending canvases; 0093 passes real PRE_/fresh-process restoration for one window/two Spaces, exact history, navigated pin home/ID and saved organization | Multi-window/group/split fresh-process and actual process-kill recovery, saved-group sync and migration acceptance remain |
-| Air Traffic Control | Missing | URL rules, default destination and external-link routing |
+| Air Traffic Control | 0113/0120 route external web links to Little Cove or a same-profile main window through a real preference | URL rules, automatic destination-Space selection and broader Air Traffic Control UI remain |
 | Share/import Spaces | 0100 exports a Space into a folder in another Space, retaining live pages and renaming colliding IDs | File/share import and hosted shared views remain |
 
 The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/en-us/articles/19228064149143-Spaces-Distinct-Browsing-Areas), including Control+number and name-based selection. Cove does not use Arc accounts or services.
@@ -48,11 +42,11 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Replace a pin's home with its current page | Added in 0076 | Verify home persists and a later reset uses the replacement |
 | Reset all pins in a Space | Added in 0076 | Verify only the current Space's live pins navigate |
 | Rename pins | Native context menu; 0076 adds command | Ordinary unpinned custom tab labels remain missing |
-| Favorites | Saved URLs/grid, reordering and URL/live-tab drops; 0096 source hover locks and 0106 floating live-drag row | Isolated real mouse drags passed at 0106; broader drag/trackpad and shared live Favorite ownership remain |
+| Favorites | Saved URLs/grid, reordering and URL/live-tab drops; source hover locks, floating live-drag row and corrected first-Favorite drop targets are included in accepted 0118 coverage | Broader hardware drag/trackpad and shared live Favorite ownership remain |
 | Create, rename and collapse folders | Native nested rows, New Subfolder and visible New Folder action; 0095 adds aligned blue folder rows | Automated nesting/collapse/hover tests pass; physical UI acceptance remains |
-| Move and reorder whole folders | Mixed saved order, native dragging and common menu ordering; 0094 scrolling/reveal, 0096 hover locks and 0097 edge autoscroll | Broader hardware drag and cross-Space folder moves remain |
+| Move and reorder whole folders | Mixed saved order, native dragging and common menu ordering; scrolling/reveal, source hover locks and 0111 frame-paced edge autoscroll are implemented | Broader hardware drag and cross-Space folder moves remain |
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
-| Closed saved-pin site icons | 0095 reads local cached icons for rendered rows; live icons take priority, stale callbacks are rejected | Missing cache data retains a globe; exact Arc folder artwork/font tuning remain |
+| Closed saved-pin site icons | Local cached icons load for rendered rows, live icons take priority and stale callbacks are rejected; 0110 retains cached icons during row rebuilds | Missing cache data retains a globe; exact Arc folder artwork/font tuning remain |
 | Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
 | Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
 | Recently used tab switcher | 0101 adds Control-Tab MRU overlay, reverse traversal and modifier-release activation | Broader multi-window/Space keyboard acceptance remains |
@@ -62,11 +56,11 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 
 | Function | Cove status | Remaining acceptance or implementation |
 | --- | --- | --- |
-| Native Cmd+T input and URL/search submission | Implemented; current desktop checks accept text with sidebar shown/hidden, Cmd+S/Escape dismiss safely; submission previously exercised | Measured cold/warm latency and broader activation/multi-window acceptance remain |
+| Native Cmd+T input and URL/search submission | Native palette with shown/hidden-sidebar input and safe Cmd+S/Escape dismissal; 0121 focused mouse regression passes three outside-click/reopen cycles while preserving click delivery, draft, URL, tab count and cached widget | Measured cold/warm latency, multi-window activation, native context-menu edges and the desktop click discrepancy remain |
 | Open tabs and recently closed results | Native stable handles/session IDs | Parked tabs in inactive Spaces are not yet searched or activated directly |
 | Actions mode | Native `/` or `>` mode | 0076 expands browser and library actions; verify enabled-state and actual effects |
 | Common browser actions | 0076 adds window/private-window, navigation, find, downloads, history, preferences, extensions, developer tools, fullscreen, save/print, zoom and open-file entries | Native Chromium operations are reused; Arc-specific panel layouts are separate work |
-| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; current desktop checks pass Cmd+S palette dismissal and persistent sidebar collapse | Broader shortcut combinations, split contexts and editable bindings remain |
+| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; focused 0119 tests pass Little Cove Cmd+L address focus, Escape/Enter/history and scoped Cmd+O/Cmd+Shift+O promotion/chooser behavior | Broader shortcut combinations, split contexts and editable bindings remain |
 | Editable keybindings | Missing | User-defined bindings, conflict reporting, reset and persistence |
 | Full address suggestions | Partial | Current native bar classifies destinations; history/bookmark/online suggestion ranking is incomplete |
 
@@ -83,14 +77,14 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 | Split layouts, pane swap and size reset | Added in 0078 | Live-check side-by-side/top-bottom, swap, equal sizing and Control+Shift+1/2 focus |
 | More than two split panes | Missing | Extend native model and persistence |
 | Peek previews | Missing | Shift-click and pinned-link rules, overlay navigation, promote/dismiss and focus return |
-| Little Arc | Missing | Lightweight external-link window, routing, promotion and global shortcut |
-| Picture-in-picture and media | 0105 adds automatic video mini player on tab/Space/app departure and return-to-tab routing; six focused cases and full suite reported passing | Broader site/media/desktop acceptance and mini audio surfaces remain |
+| Little Arc | 0113–0120 implement native temporary external-link windows, a compact header, searchable specific-Space promotion preserving the exact page/history/draft, editable address, scoped Cmd+L/Cmd+O/Cmd+Shift+O and a real external-routing preference; focused input checks pass | Global launch shortcut, broader desktop/site acceptance and exact visual matching remain |
+| Picture-in-picture and media | Automatic video mini player on tab/Space/app departure and return-to-tab routing; 0114 adds compact sidebar audio/media controls. Seven media cases passed in accepted 0118 | Broader site/media/desktop acceptance and visual comparison remain |
 
 ## Native settings
 
-Cove → Settings and Cmd+, open Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Repeated opening and closing, preference persistence, real command routing and view cleanup pass browser tests.
+Cove → Settings and Cmd+, open Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Patch 0120 adds the real `cove.external_links_in_temporary_windows` profile preference, default true, and a Links toggle selecting temporary windows or a same-profile main window for external URLs. Its regression passed preference persistence, reopening settings and both routing choices in the full 0122 run. Repeated settings opening/closing, existing preference persistence, command routing and view cleanup passed the accepted baseline tests.
 
-The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. Peek/Little Arc settings are not represented by dummy switches.
+The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. The Links toggle controls implemented Little Cove routing. Peek remains unimplemented and has no dummy switch.
 
 ## Remaining product functions
 
@@ -124,17 +118,17 @@ The native series through patch 0055 implements:
 
 Those frame dimensions describe the earlier baseline. Patch 0080 removes the 36 DIP top strip and uses 8 DIP page corners in hidden-toolbar mode, with darker violet surfaces. Its build and renderer smoke passed; rendered frame and caption-control acceptance remain pending.
 
-The latest live pass also exercised split creation, focus and separation, command-bar URL submission, and the retained-pin lifecycle. Patches 0054–0055 passed the final native empty-to-real tab, Archive Today and reopen checks. Other build and runtime observations are in [VALIDATION.md](VALIDATION.md). Cove remains an incomplete Arc replica; source changes and renderer smoke do not establish full interaction parity.
+The earlier live pass exercised split creation, focus and separation, command-bar URL submission and the retained-pin lifecycle. Patches 0054–0055 passed the final native empty-to-real tab, Archive Today and reopen checks. Other build and runtime observations are in [VALIDATION.md](VALIDATION.md). Cove remains an incomplete Arc replica; source changes and renderer smoke do not establish full interaction parity.
 
 The command bar targets approximately 760px width, a 64px query field and five 48px single-line result rows, with a dark surface, blue selection, thin border and restrained shadow. URL/search/tab-switch submission dismisses the native bubble. Remaining layout differences must be assessed from the rendered app rather than a mockup.
 
 ## Implementation order
 
-1. Complete the current Space, pin and command functions and validate their effects.
-2. Manually validate the corrected drag/folder paths, finish saved-row/Favorites hover lifetime and drag-edge autoscroll, then complete multi-window/crash restoration and grouped/split/cross-Space moves.
-3. Split rows, pane headers, split-by-drag and additional layouts.
-4. Peek, Little Arc and editable shortcuts; broaden MRU keyboard acceptance.
-5. Appearance/Boosts, capture/library/media and integration features.
-6. Optional sync using existing identity, import/recovery and release packaging.
+1. Reconnect the existing SSD, inspect the interrupted desktop activation trace and resolve click-coordinate robustness with deterministic coverage before claiming physical acceptance. The 0122 native gate passed.
+2. Validate corrected drag/folder paths on physical input and address rapid Space-transition interruption/reversal with pixel and bounded-state checks. Hover locks and frame-paced edge scrolling already exist.
+3. Complete joined split rows, pane headers, split-by-drag and broader grouped/split/cross-Space and multi-window/crash restoration.
+4. Implement Peek, a global Little Cove launch shortcut and editable shortcuts; broaden MRU keyboard acceptance. Preserve safe specific-Space transfer and ordinary popup behavior.
+5. Compare rendered appearance and media workflows with the supplied Arc references, then extend appearance/Boosts, capture/library and integrations.
+6. Add profile assignment to Spaces, optional sync using existing identity, import/recovery and release packaging.
 
-Reliability checks follow each functional batch. Avoid spending the whole session polishing one popup while major Arc workflows are absent.
+Reliability checks follow each functional batch. Native fixture coverage and renderer smoke do not replace desktop interaction, physical trackpad or frame-time validation.
