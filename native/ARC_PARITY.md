@@ -56,11 +56,11 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 
 | Function | Cove status | Remaining acceptance or implementation |
 | --- | --- | --- |
-| Native Cmd+T input and URL/search submission | Native palette with shown/hidden-sidebar input and safe Cmd+S/Escape dismissal; 0121 focused mouse regression passes three outside-click/reopen cycles while preserving click delivery, draft, URL, tab count and cached widget | Measured cold/warm latency, multi-window activation, native context-menu edges and the desktop click discrepancy remain |
+| Native Cmd+T input and URL/search submission | Native palette with shown/hidden-sidebar input and safe Cmd+S/Escape dismissal; 0121 mouse regression passes three outside-click/reopen cycles in the full 0122 run while preserving click delivery, draft, URL, tab count and cached widget | Measured cold/warm latency, multi-window activation, native context-menu edges and the desktop click discrepancy remain |
 | Open tabs and recently closed results | Native stable handles/session IDs | Parked tabs in inactive Spaces are not yet searched or activated directly |
 | Actions mode | Native `/` or `>` mode | 0076 expands browser and library actions; verify enabled-state and actual effects |
 | Common browser actions | 0076 adds window/private-window, navigation, find, downloads, history, preferences, extensions, developer tools, fullscreen, save/print, zoom and open-file entries | Native Chromium operations are reused; Arc-specific panel layouts are separate work |
-| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; focused 0119 tests pass Little Cove Cmd+L address focus, Escape/Enter/history and scoped Cmd+O/Cmd+Shift+O promotion/chooser behavior | Broader shortcut combinations, split contexts and editable bindings remain |
+| Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; 0119 tests included in the full 0122 run pass Little Cove Cmd+L address focus, Escape/Enter/history and scoped Cmd+O/Cmd+Shift+O promotion/chooser behavior | Broader shortcut combinations, split contexts and editable bindings remain |
 | Editable keybindings | Missing | User-defined bindings, conflict reporting, reset and persistence |
 | Full address suggestions | Partial | Current native bar classifies destinations; history/bookmark/online suggestion ranking is incomplete |
 
@@ -77,8 +77,8 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 | Split layouts, pane swap and size reset | Added in 0078 | Live-check side-by-side/top-bottom, swap, equal sizing and Control+Shift+1/2 focus |
 | More than two split panes | Missing | Extend native model and persistence |
 | Peek previews | Missing | Shift-click and pinned-link rules, overlay navigation, promote/dismiss and focus return |
-| Little Arc | 0113–0120 implement native temporary external-link windows, a compact header, searchable specific-Space promotion preserving the exact page/history/draft, editable address, scoped Cmd+L/Cmd+O/Cmd+Shift+O and a real external-routing preference; focused input checks pass | Global launch shortcut, broader desktop/site acceptance and exact visual matching remain |
-| Picture-in-picture and media | Automatic video mini player on tab/Space/app departure and return-to-tab routing; 0114 adds compact sidebar audio/media controls. Seven media cases passed in accepted 0118 | Broader site/media/desktop acceptance and visual comparison remain |
+| Little Arc | 0113–0120 implement native temporary external-link windows, a compact header, searchable specific-Space promotion preserving the exact page/history/draft, editable address, scoped Cmd+L/Cmd+O/Cmd+Shift+O and a real external-routing preference; native input checks pass in the full 0122 run | Global launch shortcut, broader desktop/site acceptance and exact visual matching remain |
+| Picture-in-picture and media | Automatic video mini player on tab/Space/app departure and return-to-tab routing; 0114 adds compact sidebar audio/media controls. Seven media cases passed in the full 0122 run | Broader site/media/desktop acceptance and visual comparison remain |
 
 ## Native settings
 

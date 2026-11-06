@@ -2,6 +2,8 @@
 
 Read the current section of [HANDOFF.md](HANDOFF.md), then [VALIDATION.md](VALIDATION.md), [ARC_PARITY.md](ARC_PARITY.md), AGENTS.md and SPACE_RESTORE_DESIGN.md. The user wants Arc-like appearance and reliable daily behavior, specifically correct outside-click dismissal and Little Cove promotion into a specific Space. Keep the app fully native Chromium. No separate Cove account; no co-author trailers.
 
+When several agents work here, use [AGENT_TASKS.md](AGENT_TASKS.md) to claim source ownership and coordinate shared metadata, builds, foreground tests and handback evidence. [HANDOFF_HISTORY.md](HANDOFF_HISTORY.md) contains superseded checkpoints, not current process state.
+
 ## Current state
 
 Patches 0119–0121 are committed and preserved. Patch 0122 is committed as `d7e1dd4`; it is test-only and uses Chromium's standard native window-activation helper. Before the interruption, all 108 browser executions passed in one run with retries disabled (870 seconds; JSON 107 SUCCESS keys because PRE_ is folded), all 122 patches verified, 38 tooling tests passed, official gen/build receipt passed and renderer smoke passed outside the command sandbox. The verified current/generated/built identity was `562f3b871baecf2266ea2d9e1eade5a83fd276ca614f1f2281f7344c352bb971`. Evidence paths are in HANDOFF.md.
