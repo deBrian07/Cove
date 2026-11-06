@@ -1,0 +1,177 @@
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -28,6 +28,9 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/cove/cove_settings_view.h"
++#include "chrome/browser/ui/views/cove/cove_command_bar_view.h"
++#include "ui/base/test/ui_controls.h"
++#include "content/public/browser/render_widget_host_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tab_search_bubble_host.h"
+@@ -81,6 +84,15 @@
+ 
+ class CoveCaptionButtonsBrowserTest : public InProcessBrowserTest {
+  protected:
++  void SetUpCommandLine(base::CommandLine* command_line) override {
++    InProcessBrowserTest::SetUpCommandLine(command_line);
++    ui_controls::EnableUIControls();
++  }
++  void SetUpOnMainThread() override {
++    InProcessBrowserTest::SetUpOnMainThread();
++    [NSApp activateIgnoringOtherApps:YES];
++    ASSERT_TRUE(base::test::RunUntil([&] { return NSApp.isActive; }));
++  }
+   void ExpectHidden(bool hidden) {
+     NSWindow* window = BrowserView::GetBrowserViewForBrowser(browser())
+                            ->GetWidget()
+@@ -456,3 +468,59 @@
+   }));
+   EXPECT_EQ(count + 1, browser()->GetTabStripModel()->count());
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       OutsideClickDismissesPaletteAndStillReachesPage) {
++  auto* page = browser()->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::NavigateToURL(page, GURL(
++      "data:text/html,<title>Outside click</title><textarea>draft</textarea>"
++      "<button style='position:fixed;right:0;bottom:0;width:200px;height:100px' "
++      "onclick='window.clicks=(window.clicks||0)+1'>Target</button>")));
++  ASSERT_TRUE(content::ExecJs(page, "window.clicks=0"));
++  const auto url = page->GetVisibleURL();
++  const int tabs = browser()->GetTabStripModel()->count();
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* host = view->GetTabSearchBubbleHost();
++  ASSERT_TRUE(host);
++  for (int iteration = 0; iteration < 3; ++iteration) {
++    host->ShowTabSearchBubble(true);
++    auto* palette = host->native_palette_widget_for_testing();
++    ASSERT_TRUE(palette);
++    ASSERT_TRUE(base::test::RunUntil([&] { return palette->IsActive(); }));
++    auto* bar = views::AsViewClass<CoveCommandBarView>(
++        palette->widget_delegate()->GetContentsView());
++    ASSERT_TRUE(bar);
++    const auto inside = bar->search_field_for_testing()->GetBoundsInScreen().CenterPoint();
++    base::test::TestFuture<void> inside_move;
++    ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++        inside.x(), inside.y(), inside_move.GetCallback(), palette->GetNativeWindow()));
++    ASSERT_TRUE(inside_move.Wait());
++    base::test::TestFuture<void> inside_click;
++    ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
++        ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP,
++        inside_click.GetCallback(), ui_controls::kNoAccelerator, palette->GetNativeWindow()));
++    ASSERT_TRUE(inside_click.Wait());
++    ASSERT_TRUE(palette->IsVisible());
++    const auto bounds = page->GetRenderWidgetHostView()->GetViewBounds();
++    const gfx::Point outside(bounds.right() - 100, bounds.bottom() - 50);
++    ASSERT_FALSE(palette->GetWindowBoundsInScreen().Contains(outside));
++    base::test::TestFuture<void> moved;
++    ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++        outside.x(), outside.y(), moved.GetCallback(), view->GetWidget()->GetNativeWindow()));
++    ASSERT_TRUE(moved.Wait());
++    base::test::TestFuture<void> clicked;
++    ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
++        ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP,
++        clicked.GetCallback(), ui_controls::kNoAccelerator,
++        view->GetWidget()->GetNativeWindow()));
++    ASSERT_TRUE(clicked.Wait());
++    ASSERT_TRUE(base::test::RunUntil([&] { return !palette->IsVisible(); }));
++    EXPECT_EQ(palette, host->native_palette_widget_for_testing());
++    ASSERT_TRUE(base::test::RunUntil([&] {
++      return content::EvalJs(page, "window.clicks").ExtractInt() == iteration + 1;
++    }));
++    EXPECT_EQ(url, page->GetVisibleURL());
++    EXPECT_EQ(tabs, browser()->GetTabStripModel()->count());
++    EXPECT_EQ("draft", content::EvalJs(page, "document.querySelector('textarea').value"));
++  }
++}
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -43,6 +43,7 @@
+ #include "ui/gfx/font_list.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/background.h"
++#include "ui/views/event_monitor.h"
+ #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+ #include "ui/views/border.h"
+ #include "ui/views/controls/button/button.h"
+@@ -188,6 +189,10 @@
+     VLOG(1) << "Cove native palette rebuild_ready_ms="
+             << (base::TimeTicks::Now() - started).InMillisecondsF();
+   }
++  if (!bar->outside_click_monitor_) {
++    bar->outside_click_monitor_ = views::EventMonitor::CreateApplicationMonitor(
++        bar, widget->GetNativeWindow(), {ui::EventType::kMousePressed});
++  }
+   widget->Show();
+   VLOG(1) << "Cove native palette shown_ms="
+           << (base::TimeTicks::Now() - started).InMillisecondsF();
+@@ -245,6 +250,21 @@
+ }
+ 
+ CoveCommandBarView::~CoveCommandBarView() = default;
++void CoveCommandBarView::RemovedFromWidget() {
++  outside_click_monitor_.reset();
++  views::View::RemovedFromWidget();
++}
++void CoveCommandBarView::OnEvent(const ui::Event& event) {
++  if (event.type() != ui::EventType::kMousePressed || !GetWidget() ||
++      !GetWidget()->IsVisible() || !outside_click_monitor_) return;
++  if (!GetWidget()->GetWindowBoundsInScreen().Contains(
++          outside_click_monitor_->GetLastMouseLocation())) {
++    // Do not restore focus or consume the click: the intended target owns it.
++    // Keep the cached widget alive for the next command-bar opening.
++    GetWidget()->Hide();
++  }
++}
++
+ views::View* CoveCommandBarView::GetAnchorView() const {
+   return browser_ ? BrowserView::GetBrowserViewForBrowser(browser_.get()) : nullptr;
+ }
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.h b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.h
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+@@ -9,6 +9,7 @@
+ #include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "ui/events/event_observer.h"
+ #include "base/memory/weak_ptr.h"
+ #include "ui/base/models/image_model.h"
+ #include "ui/views/view.h"
+@@ -18,11 +19,13 @@
+ namespace views {
+ class Textfield;
+ class BubbleDialogDelegate;
++class EventMonitor;
+ }
+ 
+ // The primary input surface is native: input never waits on a renderer or Mojo.
+ class CoveCommandBarView : public views::View,
+-                           public views::TextfieldController {
++                           public views::TextfieldController,
++                           public ui::EventObserver {
+   METADATA_HEADER(CoveCommandBarView, views::View)
+  public:
+   static std::unique_ptr<views::Widget> Create(
+@@ -31,6 +34,9 @@
+   static void ShowExisting(views::Widget* widget);
+   explicit CoveCommandBarView(BrowserWindowInterface* browser);
+   ~CoveCommandBarView() override;
++  using views::View::OnEvent;
++  void OnEvent(const ui::Event& event) override;
++  void RemovedFromWidget() override;
+   void ContentsChanged(views::Textfield* sender,
+                        const std::u16string& new_contents) override;
+   bool HandleKeyEvent(views::Textfield* sender,
+@@ -55,6 +61,7 @@
+   void Dismiss();
+   void RunTypedText(bool force_new_tab);
+ 
++  std::unique_ptr<views::EventMonitor> outside_click_monitor_;
+   base::WeakPtr<BrowserWindowInterface> browser_;
+   raw_ptr<views::Textfield> input_ = nullptr;
+   raw_ptr<views::View> rows_view_ = nullptr;
