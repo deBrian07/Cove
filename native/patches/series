@@ -119,3 +119,4 @@
 0119-editable-little-cove-address-and-keyboard-navigation.patch
 0120-configure-external-link-temporary-windows.patch
 0121-dismiss-command-bar-on-outside-click.patch
+0122-use-native-test-window-activation-helper.patch

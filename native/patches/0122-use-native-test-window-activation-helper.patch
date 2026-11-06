@@ -1,0 +1,53 @@
+diff --git a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+--- a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
++++ b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+@@ -27,6 +27,7 @@
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/interactive_test_utils.h"
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/prefs/pref_change_registrar.h"
+ #include "components/prefs/pref_service.h"
+@@ -154,8 +155,7 @@
+   }
+   void SetUpOnMainThread() override {
+     CoveTemporaryWindowBrowserTest::SetUpOnMainThread();
+-    [NSApp activateIgnoringOtherApps:YES];
+-    ASSERT_TRUE(base::test::RunUntil([&] { return NSApp.isActive; }));
++    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+   }
+ };
+ 
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -36,6 +36,7 @@
+ #include "chrome/browser/ui/views/tab_search_bubble_host.h"
+ #include "chrome/common/pref_names.h"
+ #include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/interactive_test_utils.h"
+ #include "components/keep_alive_registry/keep_alive_types.h"
+ #include "components/keep_alive_registry/scoped_keep_alive.h"
+ #include "components/prefs/pref_service.h"
+@@ -90,8 +91,7 @@
+   }
+   void SetUpOnMainThread() override {
+     InProcessBrowserTest::SetUpOnMainThread();
+-    [NSApp activateIgnoringOtherApps:YES];
+-    ASSERT_TRUE(base::test::RunUntil([&] { return NSApp.isActive; }));
++    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+   }
+   void ExpectHidden(bool hidden) {
+     NSWindow* window = BrowserView::GetBrowserViewForBrowser(browser())
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1673,6 +1673,7 @@
+       "//testing/libfuzzer:fuzztest_init_support",
+       "//chrome/test/base:in_process_browser_test",
+       "//chrome/test/base:ui_test_utils",
++      "//chrome/test/base:interactive_test_utils",
+       "//components/sessions",
+       "//components/split_tabs",
+       "//components/tabs:public",
