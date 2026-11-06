@@ -1,0 +1,500 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -62,6 +62,7 @@
+ #include "chrome/browser/ui/actions/command_action_updater.h"
+ #include "chrome/browser/ui/browser_actions.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/cove/cove_temporary_window.h"
+ #include "chrome/browser/ui/views/cove/cove_settings_view.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
+@@ -538,8 +539,9 @@
+   // toolbar is hidden. Reserve its focus shortcuts before the first responder
+   // can consume them. Keep the fullscreen/app policy gates above intact.
+   if ((command_id == IDC_FOCUS_LOCATION || command_id == IDC_FOCUS_SEARCH) &&
+-      browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+-      !window()->IsLocationBarVisible()) {
++      (IsCoveTemporaryWindow(browser_) ||
++       (browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++        !window()->IsLocationBarVisible()))) {
+     return true;
+   }
+ 
+@@ -700,8 +702,9 @@
+   // so a hidden toolbar action cannot consume the native keyboard shortcut.
+   const bool cove_location_command =
+       (id == IDC_FOCUS_LOCATION || id == IDC_FOCUS_SEARCH) &&
+-      browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+-      !window()->IsLocationBarVisible();
++      (IsCoveTemporaryWindow(browser_) ||
++       (browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++        !window()->IsLocationBarVisible()));
+   if (::cove::IsLibraryCommand(id)) {
+     if (auto* library = CoveSpaceCloseHandler::Get(browser_->GetUnownedUserDataHost()))
+       library->ExecuteArcCommand(id);
+@@ -1826,6 +1829,7 @@
+ }
+ 
+ bool BrowserCommandController::IsShowingLocationBar() {
++  if (IsCoveTemporaryWindow(browser_)) return true;
+   return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+       WindowFeatureController::WindowFeature::kFeatureLocationBar);
+ }
+@@ -2478,7 +2482,8 @@
+   const bool main_not_fullscreen = show_main_ui && !is_fullscreen;
+ 
+   // Navigation commands
+-  command_updater_->UpdateCommandEnabled(IDC_OPEN_CURRENT_URL, show_main_ui);
++  command_updater_->UpdateCommandEnabled(
++      IDC_OPEN_CURRENT_URL, show_main_ui || IsCoveTemporaryWindow(browser_));
+ 
+   // Window management commands
+   command_updater_->UpdateCommandEnabled(
+diff --git a/chrome/browser/ui/cove/cove_temporary_window.cc b/chrome/browser/ui/cove/cove_temporary_window.cc
+--- a/chrome/browser/ui/cove/cove_temporary_window.cc
++++ b/chrome/browser/ui/cove/cove_temporary_window.cc
+@@ -4,6 +4,7 @@
+ #include "chrome/browser/ui/cove/cove_temporary_window.h"
+ 
+ #include <algorithm>
++#include "base/logging.h"
+ #include "base/i18n/case_conversion.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "build/build_config.h"
+@@ -26,6 +27,8 @@
+ #include "ui/views/controls/textfield/textfield_controller.h"
+ 
+ #include <memory>
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/browser/ui/browser_command_controller.h"
+ #include "ui/views/focus/focus_manager.h"
+ #include "ui/base/accelerators/accelerator.h"
+ #include "ui/events/keycodes/keyboard_codes.h"
+@@ -458,7 +461,7 @@
+   void ShowMenu();
+   void ChooseSpace(std::string id);
+   void ClosePicker();
+-  void ClearClosedPicker(uint64_t generation);
++  void ClearClosedPicker(uint64_t generation, bool restore_focus);
+   base::WeakPtr<BrowserWindowInterface> popup_;
+   base::WeakPtr<BrowserWindowInterface> destination_;
+   bool create_if_missing_ = false;
+@@ -514,7 +517,13 @@
+ void TemporarySpaceControls::AddedToWidget() {
+   views::View::AddedToWidget();
+   GetFocusManager()->RegisterAccelerator(
++      ui::Accelerator(ui::VKEY_L, ui::EF_COMMAND_DOWN),
++      ui::AcceleratorManager::kHighPriority, this);
++  GetFocusManager()->RegisterAccelerator(
+       ui::Accelerator(ui::VKEY_O, ui::EF_COMMAND_DOWN),
++      ui::AcceleratorManager::kHighPriority, this);
++  GetFocusManager()->RegisterAccelerator(
++      ui::Accelerator(ui::VKEY_O, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN),
+       ui::AcceleratorManager::kHighPriority, this);
+ }
+ void TemporarySpaceControls::RemovedFromWidget() {
+@@ -522,6 +531,16 @@
+   views::View::RemovedFromWidget();
+ }
+ bool TemporarySpaceControls::AcceleratorPressed(const ui::Accelerator& accelerator) {
++  if (accelerator.key_code() == ui::VKEY_L) {
++    if (!popup_) return false;
++    BrowserView::GetBrowserViewForBrowser(popup_.get())->toolbar()
++        ->location_bar_view()->FocusLocation(true, true);
++    return true;
++  }
++  if (accelerator.IsShiftDown()) {
++    ShowMenu();
++    return true;
++  }
+   return ActivatePrimary();
+ }
+ 
+@@ -599,12 +618,14 @@
+       picker_->delegate.get(),
+       base::BindOnce(
+           [](base::WeakPtr<TemporarySpaceControls> controls, uint64_t token,
+-             views::Widget::ClosedReason) {
++             views::Widget::ClosedReason reason) {
++            VLOG(1) << "Cove chooser closed reason=" << static_cast<int>(reason);
+             if (controls)
+               base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                   FROM_HERE,
+                   base::BindOnce(&TemporarySpaceControls::ClearClosedPicker,
+-                                 controls, token));
++                                 controls, token,
++                                 reason == views::Widget::ClosedReason::kEscKeyPressed));
+           },
+           weak_factory_.GetWeakPtr(), generation));
+   menu_->SetImageModel(
+@@ -629,15 +650,27 @@
+   if (picker_ && picker_->widget)
+     picker_->widget->Close();
+ }
+-void TemporarySpaceControls::ClearClosedPicker(uint64_t generation) {
++void TemporarySpaceControls::ClearClosedPicker(uint64_t generation,
++                                               bool restore_focus) {
+   if (generation != picker_generation_)
+     return;
++  VLOG(1) << "Cove chooser restoring_focus=" << restore_focus;
+   menu_->SetImageModel(
+       views::Button::STATE_NORMAL,
+       ui::ImageModel::FromVectorIcon(vector_icons::kKeyboardArrowDownIcon,
+                                      ui::kColorIcon, 14));
+   base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
+       FROM_HERE, std::move(picker_));
++  if (restore_focus) {
++    // Let the native child finish destruction before restoring its owner.
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce([](base::WeakPtr<BrowserWindowInterface> popup) {
++          if (!popup || popup->GetTabStripModel()->closing_all()) return;
++          popup->GetWindow()->Activate();
++          if (auto* page = popup->GetTabStripModel()->GetActiveWebContents())
++            page->Focus();
++        }, popup_));
++  }
+ }
+ BEGIN_METADATA(TemporarySpaceControls)
+ END_METADATA
+@@ -768,8 +801,7 @@
+       views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+                                views::MaximumFlexSizeRule::kPreferred));
+   profile_label->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
+-  if (auto* address = toolbar->location_bar_view())
+-    address->omnibox_view()->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++
+   auto* controls =
+       toolbar->AddChildView(std::make_unique<TemporarySpaceControls>(browser));
+   controls->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 8));
+@@ -779,9 +811,26 @@
+       views::kFlexBehaviorKey,
+       views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+                                views::MaximumFlexSizeRule::kPreferred));
++  // Ordinary web popups keep their security-oriented read-only location bar.
++  // Only this explicitly created, tagged temporary browser supports editing.
++  if (auto* address = toolbar->location_bar_view()) {
++    auto* omnibox = address->omnibox_view();
++    omnibox->SetReadOnly(false);
++    omnibox->GetViewAccessibility().SetReadOnly(false);
++    omnibox->GetViewAccessibility().SetIsEditable(true);
++    omnibox->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    chrome::BrowserCommandController::From(browser)->UpdateCommandEnabled(
++        IDC_OPEN_CURRENT_URL, true);
++    chrome::BrowserCommandController::From(browser)->UpdateCommandEnabled(
++        IDC_FOCUS_LOCATION, true);
++  }
+ #if BUILDFLAG(IS_MAC)
+   ConfigureCoveTemporaryWindowFrame(browser);
+ #endif
+   browser->GetWindow()->Show();
++  browser_view->GetWidget()->LayoutRootViewIfNecessary();
++  // The location-only toolbar was initialized as a read-only popup before
++  // the temporary controls identified this window as an editable browser.
++  toolbar->location_bar_view()->UpdateFocusBehavior(true);
+   return browser;
+ }
+diff --git a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+--- a/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
++++ b/chrome/browser/ui/cove/cove_temporary_window_browsertest.mm
+@@ -6,6 +6,7 @@
+ #include "base/command_line.h"
+ #include "base/files/file_util.h"
+ #include "base/run_loop.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/test/bind.h"
+ #include "base/test/run_until.h"
+ #include "base/test/test_future.h"
+@@ -21,6 +22,9 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
++#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
++#include "chrome/browser/ui/browser_command_controller.h"
++#include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
+@@ -36,7 +40,12 @@
+ #include "content/public/test/browser_test_utils.h"
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "ui/base/base_window.h"
++#include "ui/base/ime/input_method.h"
++#include "ui/base/ime/text_input_client.h"
+ #include "ui/base/test/ui_controls.h"
++#include "ui/base/hit_test.h"
++#include "ui/views/window/non_client_view.h"
++#include "ui/views/focus/focus_manager.h"
+ #include "ui/compositor/compositor.h"
+ #include "ui/compositor/layer.h"
+ #include "ui/events/event.h"
+@@ -55,6 +64,27 @@
+ #include "ui/views/widget/widget.h"
+ 
+ namespace {
++void TraceNativeInput(const char* stage, views::Widget* widget,
++                      views::Textfield* field = nullptr) {
++  NSWindow* native = widget->GetNativeWindow().GetNativeNSWindow();
++  NSWindow* key = NSApp.keyWindow;
++  auto* focused = widget->GetFocusManager()
++                      ? widget->GetFocusManager()->GetFocusedView() : nullptr;
++  auto* input_method = widget->GetInputMethod();
++  ui::TextInputClient* client = input_method ? input_method->GetTextInputClient() : nullptr;
++  ui::TextInputClient* expected = field;
++  NSLog(@"CoveNativeInput %s app_active=%d active=%d key_matches=%d target_key=%d target_main=%d visible=%d occlusion=%lu target_class=%@ target_responder=%@ key_responder=%@ focused=%s expected_focused=%d client_matches=%d client_type=%d expected_type=%d",
++        stage, NSApp.isActive, widget->IsActive(), key == native, native.isKeyWindow,
++        native.isMainWindow, native.isVisible,
++        static_cast<unsigned long>(native.occlusionState),
++        NSStringFromClass(native.class), NSStringFromClass(native.firstResponder.class),
++        NSStringFromClass(key.firstResponder.class),
++        focused ? std::string(focused->GetClassName()).c_str() : "none", focused == field,
++        client && client == expected,
++        client ? static_cast<int>(client->GetTextInputType()) : -1,
++        expected ? static_cast<int>(expected->GetTextInputType()) : -1);
++}
++
+ void CaptureTemporaryWindowIfRequested(
+     views::Widget* widget,
+     const char* flag = "cove-temporary-snapshot") {
+@@ -102,7 +132,32 @@
+ }
+ }  // namespace
+ 
+-class CoveTemporaryWindowBrowserTest : public InProcessBrowserTest {};
++class CoveTemporaryWindowBrowserTest : public InProcessBrowserTest {
++ protected:
++  void SendKey(BrowserWindowInterface* window, ui::KeyboardCode key,
++               bool command = false, bool shift = false) {
++    base::test::TestFuture<void> sent;
++    ASSERT_TRUE(ui_controls::SendKeyPressNotifyWhenDone(
++        window->GetWindow()->GetNativeWindow(), key, false, shift, false,
++        command, sent.GetCallback()));
++    ASSERT_TRUE(sent.Wait());
++  }
++};
++
++class CoveTemporaryWindowNativeInputBrowserTest
++    : public CoveTemporaryWindowBrowserTest {
++ protected:
++  void SetUpCommandLine(base::CommandLine* command_line) override {
++    CoveTemporaryWindowBrowserTest::SetUpCommandLine(command_line);
++    // Must precede InProcessBrowserTest's fake NSWindow-focus decision.
++    ui_controls::EnableUIControls();
++  }
++  void SetUpOnMainThread() override {
++    CoveTemporaryWindowBrowserTest::SetUpOnMainThread();
++    [NSApp activateIgnoringOtherApps:YES];
++    ASSERT_TRUE(base::test::RunUntil([&] { return NSApp.isActive; }));
++  }
++};
+ 
+ IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
+                        PromotionPreservesPageHistoryAndDraft) {
+@@ -673,10 +728,9 @@
+   EXPECT_FALSE(plain_window.styleMask & NSWindowStyleMaskFullSizeContentView);
+ }
+ 
+-IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowNativeInputBrowserTest,
+                        CommandOMovesTheExactPageFromWebContentsFocus) {
+   // This fixture is run exclusively, with test-launcher-jobs=1.
+-  ui_controls::EnableUIControls();
+   ASSERT_TRUE(embedded_test_server()->Start());
+   auto* popup = OpenCoveTemporaryWindow(
+       browser()->GetProfile(), embedded_test_server()->GetURL("/title1.html"));
+@@ -688,6 +742,9 @@
+   ASSERT_TRUE(content::ExecJs(page, "window.shortcutDraft='still here'"));
+   const int entries = page->GetController().GetEntryCount();
+   popup->GetWindow()->Activate();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return BrowserView::GetBrowserViewForBrowser(popup)->GetWidget()->IsActive();
++  }));
+   page->Focus();
+   base::test::TestFuture<void> key_sent;
+   ASSERT_TRUE(ui_controls::SendKeyPressNotifyWhenDone(
+@@ -702,10 +759,9 @@
+   EXPECT_EQ("still here", content::EvalJs(page, "window.shortcutDraft"));
+ }
+ 
+-IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowBrowserTest,
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowNativeInputBrowserTest,
+                        MouseChoosesAFilteredSpaceWithoutReloading) {
+   // This fixture is run exclusively, with test-launcher-jobs=1.
+-  ui_controls::EnableUIControls();
+   ASSERT_TRUE(embedded_test_server()->Start());
+   auto* popup = OpenCoveTemporaryWindow(
+       browser()->GetProfile(), embedded_test_server()->GetURL("/title1.html"));
+@@ -743,3 +799,143 @@
+   EXPECT_EQ("work", bridge->GetActiveSpaceId());
+   EXPECT_EQ("preserved", content::EvalJs(page, "window.mouseDraft"));
+ }
++
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowNativeInputBrowserTest,
++                       EditableAddressKeepsNavigationInTheTemporaryPage) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  const auto first = embedded_test_server()->GetURL("/title1.html");
++  const auto second = embedded_test_server()->GetURL("/title2.html");
++  auto* popup = OpenCoveTemporaryWindow(browser()->GetProfile(), first);
++  ASSERT_TRUE(popup);
++  auto* page = popup->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  const auto windows = GlobalBrowserCollection::GetInstance()->GetSize();
++  const int history = page->GetController().GetEntryCount();
++  auto* view = BrowserView::GetBrowserViewForBrowser(popup);
++  auto* omnibox = view->toolbar()->location_bar_view()->omnibox_view();
++  ASSERT_TRUE(IsCoveTemporaryWindow(popup));
++  ASSERT_TRUE(view->IsToolbarVisible());
++  ASSERT_TRUE(view->IsLocationBarVisible());
++  ASSERT_FALSE(omnibox->GetReadOnly());
++  EXPECT_TRUE(chrome::BrowserCommandController::From(popup)
++                  ->IsCommandEnabled(IDC_OPEN_CURRENT_URL));
++  popup->GetWindow()->Activate();
++  ASSERT_TRUE(base::test::RunUntil([&] { return view->GetWidget()->IsActive(); }));
++  view->GetWidget()->LayoutRootViewIfNecessary();
++  EXPECT_EQ(views::View::FocusBehavior::ALWAYS, omnibox->GetFocusBehavior());
++  ASSERT_TRUE(omnibox->GetEnabledInViewsSubtree());
++  ASSERT_TRUE(omnibox->IsDrawn());
++  ASSERT_FALSE(omnibox->GetBoundsInScreen().IsEmpty());
++  ASSERT_TRUE(omnibox->IsFocusable());
++  page->Focus();
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_L, true));
++  ASSERT_TRUE(base::test::RunUntil([&] { return omnibox->HasFocus(); }));
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_ESCAPE));
++  page->Focus();
++  ASSERT_TRUE(base::test::RunUntil([&] { return !omnibox->HasFocus(); }));
++  const auto address_point = omnibox->GetBoundsInScreen().CenterPoint();
++  auto* root = view->GetWidget()->GetRootView();
++  const auto root_point = views::View::ConvertPointFromScreen(root, address_point);
++  auto* handler = root->GetEventHandlerForPoint(root_point);
++  ASSERT_TRUE(handler);
++  EXPECT_TRUE(handler == omnibox || handler == view->toolbar()->location_bar_view())
++      << "Mouse handler: " << handler->GetClassName();
++  EXPECT_EQ(HTCLIENT, view->GetWidget()->non_client_view()->NonClientHitTest(root_point));
++  base::test::TestFuture<void> moved;
++  ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++      address_point.x(), address_point.y(), moved.GetCallback(),
++      view->GetWidget()->GetNativeWindow()));
++  ASSERT_TRUE(moved.Wait());
++  base::test::TestFuture<void> clicked;
++  ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
++      ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP,
++      clicked.GetCallback(), ui_controls::kNoAccelerator,
++      view->GetWidget()->GetNativeWindow()));
++  ASSERT_TRUE(clicked.Wait());
++  ASSERT_TRUE(base::test::RunUntil([&] { return omnibox->HasFocus(); }));
++  page->Focus();
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_L, true));
++  ASSERT_TRUE(base::test::RunUntil([&] { return omnibox->HasFocus(); }));
++  TraceNativeInput("address-before-edit", view->GetWidget(), omnibox);
++  omnibox->SetUserText(u"discard this edit");
++  TraceNativeInput("address-before-escape", view->GetWidget(), omnibox);
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_ESCAPE));
++  TraceNativeInput("address-after-first-escape", view->GetWidget(), omnibox);
++  EXPECT_EQ(first, page->GetVisibleURL());
++  EXPECT_EQ(history, page->GetController().GetEntryCount());
++  // Chromium closes autocomplete first; a second Escape reverts the edit.
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_ESCAPE));
++  TraceNativeInput("address-after-second-escape", view->GetWidget(), omnibox);
++  EXPECT_NE(u"discard this edit", omnibox->GetText());
++
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_L, true));
++  ASSERT_TRUE(base::test::RunUntil([&] { return omnibox->HasFocus(); }));
++  omnibox->SetUserText(base::UTF8ToUTF16(second.spec()));
++  TraceNativeInput("address-before-enter", view->GetWidget(), omnibox);
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_RETURN));
++  TraceNativeInput("address-after-enter", view->GetWidget(), omnibox);
++  ASSERT_TRUE(base::test::RunUntil([&] { return page->GetVisibleURL() == second; }));
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  EXPECT_EQ(page, popup->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(1, popup->GetTabStripModel()->count());
++  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
++  EXPECT_EQ(history + 1, page->GetController().GetEntryCount());
++
++  page->Focus();
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_OEM_4, true));
++  ASSERT_TRUE(base::test::RunUntil([&] { return page->GetVisibleURL() == first; }));
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  ASSERT_NO_FATAL_FAILURE(SendKey(popup, ui::VKEY_OEM_6, true));
++  ASSERT_TRUE(base::test::RunUntil([&] { return page->GetVisibleURL() == second; }));
++  EXPECT_EQ(page, popup->GetTabStripModel()->GetActiveWebContents());
++  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
++
++  BrowserWindowCreateParams params(BrowserWindowInterface::TYPE_POPUP,
++                                   *browser()->GetProfile(), true);
++  auto* ordinary = CreateBrowserWindow(std::move(params));
++  chrome::AddTabAt(ordinary, first, -1, true);
++  EXPECT_TRUE(BrowserView::GetBrowserViewForBrowser(ordinary)->toolbar()
++                  ->location_bar_view()->omnibox_view()->GetReadOnly());
++}
++
++IN_PROC_BROWSER_TEST_F(CoveTemporaryWindowNativeInputBrowserTest,
++                       CommandShiftOOpensChooserWithoutPromotingPage) {
++  ASSERT_TRUE(embedded_test_server()->Start());
++  auto* popup = OpenCoveTemporaryWindow(
++      browser()->GetProfile(), embedded_test_server()->GetURL("/title1.html"));
++  ASSERT_TRUE(popup);
++  auto* page = popup->GetTabStripModel()->GetActiveWebContents();
++  ASSERT_TRUE(content::WaitForLoadStop(page));
++  ASSERT_TRUE(content::ExecJs(page, "window.keyboardChooserDraft='preserved'"));
++  popup->GetWindow()->Activate();
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return BrowserView::GetBrowserViewForBrowser(popup)->GetWidget()->IsActive();
++  }));
++  page->Focus();
++  views::NamedWidgetShownWaiter shown(views::test::AnyWidgetTestPasskey{},
++                                     "CoveTemporarySpaceChooser");
++  base::test::TestFuture<void> shortcut_sent;
++  ASSERT_TRUE(ui_controls::SendKeyPressNotifyWhenDone(
++      popup->GetWindow()->GetNativeWindow(), ui::VKEY_O, false, true, false,
++      true, shortcut_sent.GetCallback(), ui_controls::kKeyPress));
++  auto* picker = shown.WaitIfNeededAndGet();
++  ASSERT_TRUE(picker);
++  ASSERT_TRUE(base::test::RunUntil([&] { return picker->IsActive(); }));
++  auto picker_weak = picker->GetWeakPtr();
++  TraceNativeInput("chooser-before-escape", picker);
++  TraceNativeInput("chooser-source-before-escape",
++                   BrowserView::GetBrowserViewForBrowser(popup)->GetWidget());
++  EXPECT_EQ(page, popup->GetTabStripModel()->GetActiveWebContents());
++  base::test::TestFuture<void> escaped;
++  ASSERT_TRUE(ui_controls::SendKeyPressNotifyWhenDone(
++      picker->GetNativeWindow(), ui::VKEY_ESCAPE, false, false, false, false,
++      escaped.GetCallback()));
++  NSLog(@"CoveNativeInput chooser-after-escape alive=%d closed=%d",
++        !!picker_weak, picker_weak ? picker_weak->IsClosed() : true);
++  TraceNativeInput("chooser-source-after-escape",
++                   BrowserView::GetBrowserViewForBrowser(popup)->GetWidget());
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return BrowserView::GetBrowserViewForBrowser(popup)->GetWidget()->IsActive();
++  }));
++  EXPECT_EQ("preserved", content::EvalJs(page, "window.keyboardChooserDraft"));
++}
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "base/logging.h"
++#include "chrome/browser/ui/cove/cove_temporary_window.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ 
+ #include <stdint.h>
+@@ -3112,6 +3113,9 @@
+   }
+ #endif
+ 
++  if (IsCoveTemporaryWindow(browser_.get()))
++    return true;
++
+   // Cove's vertical sidebar owns navigation. The page starts at the top edge
+   // instead of under a full-width address bar.
+   if (auto* vertical_tabs =
+@@ -3137,6 +3141,8 @@
+ }
+ 
+ bool BrowserView::IsLocationBarVisible() const {
++  if (IsCoveTemporaryWindow(browser_.get()))
++    return IsToolbarVisible() && GetLocationBar()->IsVisible();
+   // The hidden toolbar retains logical child visibility in Views. Its address
+   // field must not receive focus while Cove owns the sidebar address host.
+   if (vertical_tab_strip_region_view_ && !IsToolbarVisible()) {
