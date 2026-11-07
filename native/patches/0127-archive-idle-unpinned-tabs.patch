@@ -1,0 +1,236 @@
+diff --git a/chrome/browser/prefs/browser_prefs.cc b/chrome/browser/prefs/browser_prefs.cc
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -1856,6 +1856,8 @@
+   TRACE_EVENT0("browser", "chrome::RegisterProfilePrefs");
+ #if BUILDFLAG(IS_MAC)
+   registry->RegisterBooleanPref("cove.external_links_in_temporary_windows", true);
++  // Hours of inactivity before unpinned tabs are archived; 0 never archives.
++  registry->RegisterIntegerPref("cove.archive_after_hours", 12);
+ #endif
+   // User prefs. Please keep this list alphabetized.
+   AccessibilityLabelsService::RegisterProfilePrefs(registry);
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.h
+@@ -270,6 +270,9 @@
+   void ShowLibraryMenu();
+   bool HasArchivableTabs() const;
+   void ArchiveToday();
++  // Like Arc, closes unpinned pages idle longer than cove.archive_after_hours
++  // into recently closed history. Returns the number of pages archived.
++  size_t ArchiveIdleTabs(base::TimeTicks now);
+   void UpdateArchiveButtonState();
+   void ScheduleCleanupForInsertedTabs(std::vector<tabs::TabHandle> handles,
+                                       int generation);
+@@ -390,6 +393,7 @@
+   size_t switcher_index_ = 0;
+   std::unique_ptr<views::Widget> recent_switcher_;
+   base::RepeatingTimer switcher_release_timer_;
++  base::RepeatingTimer archive_timer_;
+   base::RepeatingCallback<bool()> control_key_probe_;
+   std::string menu_space_id_;
+   std::map<int, std::string> menu_folder_moves_;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -580,6 +580,17 @@
+   pref_change_registrar_.Add(
+       kCoveSidebarPref, base::BindRepeating(&CoveSidebarLibraryView::Rebuild,
+                                             weak_factory_.GetWeakPtr()));
++  if (!browser_->GetProfile()->IsOffTheRecord()) {
++    archive_timer_.Start(
++        FROM_HERE, base::Minutes(5),
++        base::BindRepeating(
++            [](base::WeakPtr<CoveSidebarLibraryView> view) {
++              if (view) {
++                view->ArchiveIdleTabs(base::TimeTicks::Now());
++              }
++            },
++            weak_factory_.GetWeakPtr()));
++  }
+ }
+ 
+ CoveSidebarLibraryView::~CoveSidebarLibraryView() {
+@@ -1294,6 +1305,46 @@
+                               TabCloseTypes::CLOSE_USER_GESTURE |
+                                   TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+   }
++}
++
++size_t CoveSidebarLibraryView::ArchiveIdleTabs(base::TimeTicks now) {
++  if (!browser_ || browser_->GetProfile()->IsOffTheRecord() ||
++      switching_space_ || restoring_session_ || closing_active_space_) {
++    return 0;
++  }
++  const PrefService* prefs = browser_->GetProfile()->GetPrefs();
++  const auto* pref = prefs->FindPreference("cove.archive_after_hours");
++  const int hours = pref ? prefs->GetInteger("cove.archive_after_hours") : 0;
++  if (hours <= 0) {
++    return 0;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  const tabs::TabInterface* active = model->GetActiveTab();
++  std::vector<tabs::TabHandle> idle;
++  for (const tabs::TabHandle& handle : GetArchivableTabHandles(model)) {
++    tabs::TabInterface* tab = handle.Get();
++    content::WebContents* contents = tab ? tab->GetContents() : nullptr;
++    // Keep what the person is using or hearing, and split layouts they built.
++    if (!contents || tab == active || tab->IsSplit() ||
++        contents->IsCurrentlyAudible() || contents->HasPictureInPictureVideo() ||
++        now - contents->GetLastActiveTimeTicks() < base::Hours(hours)) {
++      continue;
++    }
++    idle.push_back(handle);
++  }
++  size_t archived = 0;
++  for (const tabs::TabHandle& handle : idle) {
++    tabs::TabInterface* tab = handle.Get();
++    const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
++    if (index == TabStripModel::kNoTab || tab->IsPinned() ||
++        model->count() <= 1) {
++      continue;
++    }
++    model->CloseWebContentsAt(index,
++                              TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++    ++archived;
++  }
++  return archived;
+ }
+ 
+ void CoveSidebarLibraryView::ScheduleCleanupForInsertedTabs(
+diff --git a/chrome/browser/ui/views/cove/cove_settings_view.cc b/chrome/browser/ui/views/cove/cove_settings_view.cc
+--- a/chrome/browser/ui/views/cove/cove_settings_view.cc
++++ b/chrome/browser/ui/views/cove/cove_settings_view.cc
+@@ -221,6 +221,7 @@
+     shortcut_rows_ = nullptr;
+     search_ = nullptr;
+     theme_buttons_.clear();
++    archive_buttons_.clear();
+     body_->RemoveAllChildViews();
+     for (size_t i = 0; i < tabs_.size(); ++i) {
+       tabs_[i]->SetBackground(views::CreateRoundedRectBackground(
+@@ -288,6 +289,20 @@
+     PrefToggle(startup, u"Ask before quitting", prefs::kConfirmToQuitEnabled,
+                true);
+ #endif
++    auto* tabs_card = Card(u"TABS");
++    auto* archive = Row(tabs_card, u"Archive unpinned tabs after");
++    archive_buttons_.clear();
++    for (const auto& [label, hours] :
++         std::array<std::pair<const char16_t*, int>, 5>{
++             {{u"12 hours", 12}, {u"24 hours", 24}, {u"7 days", 168},
++              {u"30 days", 720}, {u"Never", 0}}}) {
++      auto* button = Button(
++          archive, label,
++          base::BindRepeating(&CoveSettingsView::SetArchiveHours,
++                              base::Unretained(this), hours));
++      archive_buttons_.push_back({button, hours});
++    }
++    RefreshArchiveButtons();
+     auto* browsing = Card(u"BROWSING");
+     Action(browsing, u"Default search engine", u"Search settings…",
+            Settings("search"));
+@@ -349,6 +364,23 @@
+     ThemeServiceFactory::GetForProfile(browser_->GetProfile())
+         ->SetBrowserColorScheme(scheme);
+     RefreshThemeButtons();
++  }
++  void SetArchiveHours(int hours) {
++    if (auto* prefs = Prefs()) {
++      prefs->SetInteger("cove.archive_after_hours", hours);
++    }
++    RefreshArchiveButtons();
++  }
++  void RefreshArchiveButtons() {
++    auto* prefs = Prefs();
++    const int hours =
++        prefs && prefs->FindPreference("cove.archive_after_hours")
++            ? prefs->GetInteger("cove.archive_after_hours")
++            : 12;
++    for (const auto& [button, value] : archive_buttons_) {
++      button->SetBackground(views::CreateRoundedRectBackground(
++          value == hours ? kSelected : kLine, 6));
++    }
+   }
+   void RefreshThemeButtons() {
+     if (!browser_) {
+@@ -511,6 +543,7 @@
+   raw_ptr<views::Textfield> search_ = nullptr;
+   std::vector<raw_ptr<views::LabelButton>> tabs_;
+   std::vector<raw_ptr<views::LabelButton>> theme_buttons_;
++  std::vector<std::pair<raw_ptr<views::LabelButton>, int>> archive_buttons_;
+ };
+ BEGIN_METADATA(CoveSettingsView)
+ END_METADATA
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -72,6 +72,8 @@
+ #include "ui/compositor/layer_tree_owner.h"
+ #include "ui/gfx/animation/animation.h"
+ #include "ui/gfx/animation/animation_test_api.h"
++#include "chrome/browser/sessions/tab_restore_service_factory.h"
++#include "components/sessions/core/tab_restore_service.h"
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/scoped_animation_duration_scale_mode.h"
+ #include "ui/gfx/geometry/rect_conversions.h"
+@@ -266,6 +268,10 @@
+ 
+   void SwitchSpaceForIconTest(const std::string& id) {
+     library()->SwitchSpace(id);
++  }
++
++  size_t ArchiveIdle(base::TimeTicks now) {
++    return library()->ArchiveIdleTabs(now);
+   }
+ 
+   void DeliverPinIcon(size_t index, const std::string& id, const GURL& home,
+@@ -1918,3 +1924,47 @@
+   }));
+   EXPECT_TRUE(region->space_rows_transform_for_testing().IsIdentity());
+ }
++
++// Like Arc, unpinned pages left idle past the chosen time are archived into
++// recently closed history; the current, pinned and playing pages stay.
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       IdleUnpinnedTabsAreArchivedIntoHistory) {
++  auto* model = browser()->GetTabStripModel();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Pinned</title>")));
++  model->SetTabPinned(model->active_index(), true);
++  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
++      browser(), GURL("data:text/html,<title>Idle</title>"),
++      WindowOpenDisposition::NEW_FOREGROUND_TAB,
++      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
++  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
++      browser(), GURL("data:text/html,<title>Current</title>"),
++      WindowOpenDisposition::NEW_FOREGROUND_TAB,
++      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
++  ASSERT_EQ(3, model->count());
++  auto* current = model->GetActiveWebContents();
++  PrefService* prefs = browser()->GetProfile()->GetPrefs();
++  EXPECT_EQ(12, prefs->GetInteger("cove.archive_after_hours"));
++
++  // Nothing is idle yet.
++  EXPECT_EQ(0u, ArchiveIdle(base::TimeTicks::Now()));
++  EXPECT_EQ(3, model->count());
++
++  // "Never" keeps everything.
++  prefs->SetInteger("cove.archive_after_hours", 0);
++  EXPECT_EQ(0u,
++            ArchiveIdle(base::TimeTicks::Now() + base::Days(40)));
++  EXPECT_EQ(3, model->count());
++
++  // Past 12 hours, only the unpinned background page goes.
++  prefs->SetInteger("cove.archive_after_hours", 12);
++  EXPECT_EQ(1u,
++            ArchiveIdle(base::TimeTicks::Now() + base::Hours(13)));
++  ASSERT_TRUE(base::test::RunUntil([&] { return model->count() == 2; }));
++  EXPECT_EQ(current, model->GetActiveWebContents());
++  EXPECT_TRUE(model->IsTabPinned(0));
++  auto* service =
++      TabRestoreServiceFactory::GetForProfile(browser()->GetProfile());
++  ASSERT_TRUE(service);
++  ASSERT_TRUE(base::test::RunUntil([&] { return !service->entries().empty(); }));
++}
