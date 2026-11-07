@@ -1,0 +1,707 @@
+diff --git a/chrome/browser/ui/views/cove/cove_welcome_view.h b/chrome/browser/ui/views/cove/cove_welcome_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_welcome_view.h
+@@ -0,0 +1,27 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_WELCOME_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_WELCOME_VIEW_H_
++
++class BrowserWindowInterface;
++
++namespace views {
++class View;
++}
++
++// Set once the person finishes or skips Cove's welcome.
++inline constexpr char kCoveOnboardingCompletePref[] = "cove.onboarding_complete";
++
++// Shows Cove's full-window welcome (import, color, default browser, basics)
++// the first time a brand-new profile opens a normal window.
++void MaybeShowCoveWelcome(BrowserWindowInterface* browser);
++
++// Shows the welcome over |browser| regardless of first-run state.
++views::View* ShowCoveWelcome(BrowserWindowInterface* browser);
++
++// Ends the welcome as if the person finished it.
++void FinishCoveWelcome(BrowserWindowInterface* browser);
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_WELCOME_VIEW_H_
+diff --git a/chrome/browser/ui/views/cove/cove_welcome_view.cc b/chrome/browser/ui/views/cove/cove_welcome_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_welcome_view.cc
+@@ -0,0 +1,572 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_welcome_view.h"
++
++#include <algorithm>
++#include <array>
++#include <memory>
++#include <string>
++#include <string_view>
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/functional/bind.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
++#include "base/timer/timer.h"
++#include "chrome/browser/first_run/first_run.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/shell_integration.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/chrome_pages.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "cc/paint/paint_flags.h"
++#include "cc/paint/paint_shader.h"
++#include "chrome/common/chrome_switches.h"
++#include "components/prefs/pref_service.h"
++#include "components/prefs/scoped_user_pref_update.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/compositor/layer.h"
++#include "ui/gfx/canvas.h"
++#include "ui/gfx/font_list.h"
++#include "ui/gfx/geometry/skia_conversions.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/view.h"
++#include "ui/views/view_observer.h"
++#include "ui/views/view_utils.h"
++
++namespace {
++
++constexpr char kSidebarPref[] = "cove.sidebar";
++// Cove brand: Ocean and Slate, with the logo's blues.
++constexpr SkColor kOcean = SkColorSetRGB(0x25, 0x63, 0xeb);
++constexpr SkColor kDeep = SkColorSetRGB(0x1e, 0x2f, 0x7a);
++constexpr SkColor kSky = SkColorSetRGB(0x5b, 0x9a, 0xf2);
++constexpr SkColor kPanel = SkColorSetRGB(0x14, 0x15, 0x19);
++constexpr SkColor kText = SkColorSetRGB(0xf5, 0xf6, 0xf8);
++constexpr SkColor kMuted = SkColorSetRGB(0xa1, 0xa6, 0xb3);
++constexpr SkColor kButton = SkColorSetRGB(0x2a, 0x2c, 0x33);
++constexpr SkColor kLightButton = SkColorSetARGB(0xd8, 0xf5, 0xf6, 0xff);
++
++struct Palette {
++  const char16_t* name;
++  const char* sidebar;
++  const char* accent;
++  const char* highlight;
++};
++// Matches the Space theme presets offered in the sidebar's theme menu.
++constexpr std::array<Palette, 6> kPalettes = {{
++    {u"Cove", "#121b30", "#2563eb", "#1f3260"},
++    {u"Dusk", "#241f33", "#8b7ec8", "#3c3458"},
++    {u"Harbor", "#17262e", "#5ea0c0", "#2c4654"},
++    {u"Grove", "#1a2820", "#6eaa78", "#2c4634"},
++    {u"Ember", "#2a201c", "#d08a68", "#4a342c"},
++    {u"Slate", "#1e1f24", "#a8b0bc", "#34363e"},
++}};
++
++SkColor ParseHex(const char* hex) {
++  uint32_t value = 0;
++  base::HexStringToUInt(std::string_view(hex).substr(1), &value);
++  return SkColorSetA(static_cast<SkColor>(value), 0xff);
++}
++
++void PaintGradient(gfx::Canvas* canvas,
++                   const gfx::Rect& bounds,
++                   SkColor from,
++                   SkColor to) {
++  const SkPoint points[] = {gfx::PointToSkPoint(bounds.origin()),
++                            gfx::PointToSkPoint(bounds.bottom_right())};
++  const SkColor4f colors[] = {SkColor4f::FromColor(from),
++                              SkColor4f::FromColor(to)};
++  cc::PaintFlags flags;
++  flags.setShader(cc::PaintShader::MakeLinearGradient(
++      points, colors, nullptr, 2, SkTileMode::kClamp));
++  canvas->DrawRect(bounds, flags);
++}
++
++views::Label* AddLabel(views::View* parent,
++                       std::u16string text,
++                       SkColor color,
++                       int size_delta,
++                       gfx::Font::Weight weight = gfx::Font::Weight::NORMAL,
++                       int max_width = 420) {
++  auto* label = parent->AddChildView(std::make_unique<views::Label>(text));
++  label->SetEnabledColor(color);
++  label->SetFontList(
++      gfx::FontList().Derive(size_delta, gfx::Font::NORMAL, weight));
++  label->SetMultiLine(true);
++  label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  label->SetMaximumWidth(max_width);
++  label->SetBackgroundColor(SK_ColorTRANSPARENT);
++  label->SetAutoColorReadabilityEnabled(false);
++  return label;
++}
++
++views::LabelButton* AddButton(views::View* parent,
++                              std::u16string text,
++                              SkColor background,
++                              SkColor foreground,
++                              views::Button::PressedCallback callback) {
++  auto* button = parent->AddChildView(
++      std::make_unique<views::LabelButton>(std::move(callback), text));
++  button->SetEnabledTextColors(foreground);
++  button->SetTextColor(views::Button::STATE_HOVERED, foreground);
++  button->SetBackground(views::CreateRoundedRectBackground(background, 10));
++  button->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(10, 22)));
++  button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  return button;
++}
++
++// The right half of a step: a gradient with a small sidebar preview painted
++// in the chosen Space color, so the choice is visible before browsing.
++class PreviewView : public views::View {
++  METADATA_HEADER(PreviewView, views::View)
++
++ public:
++  // With |cycle|, the preview tours the Space colors, as Arc's welcome does.
++  PreviewView(const Palette* palette, bool cycle) : palette_(palette) {
++    if (cycle) {
++      timer_.Start(FROM_HERE, base::Milliseconds(2600),
++                   base::BindRepeating(&PreviewView::Advance,
++                                       base::Unretained(this)));
++    }
++  }
++
++  void Advance() {
++    index_ = (index_ + 1) % kPalettes.size();
++    palette_ = &kPalettes[index_];
++    SchedulePaint();
++  }
++
++  void OnPaint(gfx::Canvas* canvas) override {
++    const SkColor accent = palette_ ? ParseHex(palette_->accent) : kOcean;
++    PaintGradient(canvas, GetLocalBounds(), kDeep, accent);
++    // A floating sidebar card, like the browser beside it.
++    const int width = std::min(260, GetLocalBounds().width() - 80);
++    const int height = std::min(430, GetLocalBounds().height() - 120);
++    gfx::Rect card((GetLocalBounds().width() - width) / 2,
++                   (GetLocalBounds().height() - height) / 2, width, height);
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    flags.setColor(palette_ ? ParseHex(palette_->sidebar)
++                            : SkColorSetRGB(0x12, 0x1b, 0x30));
++    canvas->DrawRoundRect(card, 14, flags);
++    const SkColor highlight = palette_ ? ParseHex(palette_->highlight)
++                                       : SkColorSetRGB(0x1f, 0x32, 0x60);
++    flags.setColor(highlight);
++    gfx::Rect row(card.x() + 14, card.y() + 18, card.width() - 28, 26);
++    canvas->DrawRoundRect(row, 8, flags);  // Address field.
++    for (int i = 0; i < 3; ++i) {         // Favorites.
++      const int size = (card.width() - 28 - 20) / 3;
++      canvas->DrawRoundRect(
++          gfx::Rect(card.x() + 14 + i * (size + 10), card.y() + 58, size, 34),
++          8, flags);
++    }
++    flags.setColor(SkColorSetA(kText, 0x2a));
++    for (int i = 0; i < 5; ++i) {  // Pinned and today tabs.
++      canvas->DrawRoundRect(gfx::Rect(card.x() + 14, card.y() + 112 + i * 34,
++                                      card.width() - 28 - (i % 2) * 40, 22),
++                            6, flags);
++    }
++    flags.setColor(accent);
++    canvas->DrawRoundRect(gfx::Rect(card.x() + 14, card.y() + 112,
++                                    card.width() - 28, 22),
++                          6, flags);  // The selected tab.
++    for (int i = 0; i < 3; ++i) {     // Space dots.
++      flags.setColor(i == 0 ? kText : SkColorSetA(kText, 0x55));
++      canvas->DrawCircle(
++          gfx::Point(card.CenterPoint().x() - 14 + i * 14, card.bottom() - 18),
++          3, flags);
++    }
++  }
++
++ private:
++  raw_ptr<const Palette> palette_;
++  size_t index_ = 0;
++  base::RepeatingTimer timer_;
++};
++
++BEGIN_METADATA(PreviewView)
++END_METADATA
++
++class CoveWelcomeView : public views::View, public views::ViewObserver {
++  METADATA_HEADER(CoveWelcomeView, views::View)
++
++ public:
++  explicit CoveWelcomeView(BrowserWindowInterface* browser)
++      : browser_(browser->GetWeakPtr()) {
++    SetPaintToLayer();
++    layer()->SetFillsBoundsOpaquely(true);
++    ShowStep(0);
++  }
++
++  void Attach(views::View* host) {
++    observation_.Observe(host);
++    SetBoundsRect(host->GetLocalBounds());
++  }
++
++  void Finish() {
++    if (browser_) {
++      browser_->GetProfile()->GetPrefs()->SetBoolean(
++          kCoveOnboardingCompletePref, true);
++    }
++    observation_.Reset();
++    if (parent()) {
++      parent()->RemoveChildViewT(this);  // Deletes this.
++    }
++  }
++
++  // views::View:
++  void Layout(PassKey) override {
++    if (children().size() == 2) {
++      // Split screen: content on the left, preview on the right.
++      const int half = width() / 2;
++      children()[0]->SetBounds(0, 0, half, height());
++      children()[1]->SetBounds(half, 0, width() - half, height());
++    } else if (!children().empty()) {
++      children()[0]->SetBoundsRect(GetLocalBounds());
++    }
++  }
++  void OnPaint(gfx::Canvas* canvas) override {
++    if (step_ == 0) {
++      PaintGradient(canvas, GetLocalBounds(), kOcean, kDeep);
++      PaintGradient(canvas,
++                    gfx::Rect(width() / 3, 0, width() * 2 / 3, height() / 2),
++                    SkColorSetA(kSky, 0x00), SkColorSetA(kSky, 0x40));
++    } else {
++      canvas->DrawColor(kPanel);
++    }
++  }
++  bool OnMousePressed(const ui::MouseEvent& event) override {
++    return true;  // The page underneath waits until setup is done.
++  }
++
++  // views::ViewObserver:
++  void OnViewBoundsChanged(views::View* observed_view) override {
++    SetBoundsRect(observed_view->GetLocalBounds());
++  }
++
++ private:
++  static constexpr int kSteps = 5;
++
++  void ShowStep(int step) {
++    step_ = step;
++    RemoveAllChildViews();
++    default_button_ = nullptr;
++    if (step == 0) {
++      Intro();
++    } else {
++      auto* column = Column();
++      switch (step) {
++        case 1:
++          Heading(column, u"Bring your stuff",
++                  u"Import bookmarks, history and passwords from Chrome, "
++                  u"Safari, Arc or another browser.");
++          Primary(column, u"Import from a Browser…",
++                  base::BindRepeating(&CoveWelcomeView::Import,
++                                      base::Unretained(this)));
++          Secondary(column, u"Start fresh");
++          break;
++        case 2:
++          Heading(column, u"Make it yours",
++                  u"Pick a color for your sidebar. Every Space can have its "
++                  u"own.");
++          Swatches(column);
++          Primary(column, u"Continue",
++                  base::BindRepeating(&CoveWelcomeView::Next,
++                                      base::Unretained(this)));
++          break;
++        case 3:
++          Heading(column, u"Make Cove your default browser",
++                  u"Links from Mail, Messages and other apps open in Little "
++                  u"Cove, a small window you can keep with ⌘O.");
++          default_button_ = Primary(
++              column, u"Set as Default Browser",
++              base::BindRepeating(&CoveWelcomeView::MakeDefault,
++                                  base::Unretained(this)));
++          Secondary(column, u"Not now");
++          break;
++        default:
++          Heading(column, u"You're all set",
++                  u"A few things that make Cove calm and quick:");
++          Tips(column);
++          Primary(column, u"Start Browsing",
++                  base::BindRepeating(&CoveWelcomeView::Next,
++                                      base::Unretained(this)));
++          break;
++      }
++      Progress(column);
++      AddChildView(std::make_unique<PreviewView>(&kPalettes[chosen_],
++                                                 /*cycle=*/step != 2));
++    }
++    InvalidateLayout();
++    SchedulePaint();
++  }
++
++  void Intro() {
++    auto* content = AddChildView(std::make_unique<views::View>());
++    auto* layout = content->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 28));
++    layout->set_main_axis_alignment(
++        views::BoxLayout::MainAxisAlignment::kCenter);
++    layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    AddLabel(content, u"A calmer way to browse.", kText, 34,
++             gfx::Font::Weight::BOLD, 900);
++    auto* next = AddButton(content, u"→", kLightButton, kOcean,
++                           base::BindRepeating(&CoveWelcomeView::Next,
++                                               base::Unretained(this)));
++    next->SetMinSize(gfx::Size(68, 40));
++    next->GetViewAccessibility().SetName(u"Get started");
++  }
++
++  views::View* Column() {
++    auto* column = AddChildView(std::make_unique<views::View>());
++    auto* layout = column->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(0, 48), 18));
++    layout->set_main_axis_alignment(
++        views::BoxLayout::MainAxisAlignment::kCenter);
++    layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    AddLabel(column, u"Cove", kSky, 6, gfx::Font::Weight::BOLD);
++    return column;
++  }
++
++  void Heading(views::View* column, std::u16string title,
++               std::u16string subtitle) {
++    AddLabel(column, std::move(title), kText, 18, gfx::Font::Weight::BOLD);
++    AddLabel(column, std::move(subtitle), kMuted, 3);
++  }
++
++  views::LabelButton* Primary(views::View* column, std::u16string text,
++                              views::Button::PressedCallback callback) {
++    return AddButton(column, std::move(text), kButton, kText,
++                     std::move(callback));
++  }
++
++  void Secondary(views::View* column, std::u16string text) {
++    auto* link = AddButton(column, std::move(text), SK_ColorTRANSPARENT,
++                           kMuted,
++                           base::BindRepeating(&CoveWelcomeView::Next,
++                                               base::Unretained(this)));
++    link->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++  }
++
++  void Swatches(views::View* column) {
++    auto* row = column->AddChildView(std::make_unique<views::View>());
++    row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 10));
++    for (size_t i = 0; i < kPalettes.size(); ++i) {
++      auto* swatch = AddButton(
++          row, std::u16string(), ParseHex(kPalettes[i].accent), kText,
++          base::BindRepeating(&CoveWelcomeView::ChooseColor,
++                              base::Unretained(this), i));
++      swatch->SetMinSize(gfx::Size(36, 36));
++      swatch->SetTooltipText(kPalettes[i].name);
++      swatch->GetViewAccessibility().SetName(kPalettes[i].name);
++      if (i == chosen_) {
++        swatch->SetBorder(views::CreateRoundedRectBorder(3, 10, kText));
++      }
++    }
++  }
++
++  void Tips(views::View* column) {
++    for (const auto& [keys, text] :
++         std::array<std::pair<const char16_t*, const char16_t*>, 5>{{
++             {u"⌘T", u"Search, open a site or jump to any tab"},
++             {u"⌘S", u"Hide the sidebar for more room"},
++             {u"⌘D", u"Pin a tab so it stays in this Space"},
++             {u"⇧ Click", u"Peek at a link without leaving the page"},
++             {u"12 h", u"Unpinned tabs tidy themselves away"},
++         }}) {
++      auto* row = column->AddChildView(std::make_unique<views::View>());
++      row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 12));
++      auto* key = row->AddChildView(std::make_unique<views::Label>(keys));
++      key->SetEnabledColor(kText);
++      key->SetBackground(views::CreateRoundedRectBackground(kButton, 6));
++      key->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(4, 8)));
++      key->SetPreferredSize(gfx::Size(70, 26));
++      key->SetAutoColorReadabilityEnabled(false);
++      auto* label = row->AddChildView(std::make_unique<views::Label>(text));
++      label->SetEnabledColor(kMuted);
++      label->SetAutoColorReadabilityEnabled(false);
++    }
++  }
++
++  void Progress(views::View* column) {
++    std::u16string dots;
++    for (int i = 1; i < kSteps; ++i) {
++      dots += i == step_ ? u"●  " : u"○  ";
++    }
++    AddLabel(column, dots, kMuted, 0);
++  }
++
++  void ChooseColor(size_t index) {
++    chosen_ = index;
++    if (browser_) {
++      ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
++                                  kSidebarPref);
++      base::ListValue* spaces = update->FindList("spaces");
++      const std::string* active = update->FindString("active");
++      base::ListValue none;
++      for (base::Value& value : spaces ? *spaces : none) {
++        base::DictValue* space = value.GetIfDict();
++        const std::string* id = space ? space->FindString("id") : nullptr;
++        if (!space || (active && id && *id != *active)) {
++          continue;
++        }
++        const Palette& palette = kPalettes[index];
++        base::DictValue theme;
++        theme.Set("sidebar", palette.sidebar);
++        theme.Set("accent", palette.accent);
++        theme.Set("highlight", palette.highlight);
++        space->Set("theme", std::move(theme));
++        space->Set("color", palette.accent);
++        break;
++      }
++    }
++    Rerun(step_);
++  }
++
++  void Import() {
++    if (browser_) {
++      chrome::ShowImportDialog(browser_.get());
++    }
++    Next();
++  }
++
++  void MakeDefault() {
++    auto worker =
++        base::MakeRefCounted<shell_integration::DefaultBrowserWorker>();
++    worker->StartSetAsDefault(base::BindOnce(
++        [](base::WeakPtr<CoveWelcomeView> view,
++           shell_integration::DefaultWebClientState state) {
++          if (view) {
++            view->Next();
++          }
++        },
++        weak_factory_.GetWeakPtr()));
++  }
++
++  void Next() {
++    if (step_ + 1 < kSteps) {
++      Rerun(step_ + 1);
++      return;
++    }
++    // Leave after the press finishes; this view is about to go away.
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&CoveWelcomeView::Finish,
++                                  weak_factory_.GetWeakPtr()));
++  }
++
++  // Rebuild after the current press; the pressed button is about to go away.
++  void Rerun(int step) {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&CoveWelcomeView::ShowStep,
++                                  weak_factory_.GetWeakPtr(), step));
++  }
++
++  base::WeakPtr<BrowserWindowInterface> browser_;
++  int step_ = 0;
++  size_t chosen_ = 0;
++  raw_ptr<views::LabelButton> default_button_ = nullptr;
++  base::ScopedObservation<views::View, views::ViewObserver> observation_{this};
++  base::WeakPtrFactory<CoveWelcomeView> weak_factory_{this};
++};
++
++BEGIN_METADATA(CoveWelcomeView)
++END_METADATA
++
++CoveWelcomeView* FindWelcome(BrowserView* browser_view) {
++  for (views::View* child : browser_view->children()) {
++    if (auto* welcome = views::AsViewClass<CoveWelcomeView>(child)) {
++      return welcome;
++    }
++  }
++  return nullptr;
++}
++
++void ShowWhenVisible(base::WeakPtr<BrowserWindowInterface> browser,
++                     int attempts_left) {
++  auto* view =
++      browser ? BrowserView::GetBrowserViewForBrowser(browser.get()) : nullptr;
++  if (!view || !view->GetWidget()) {
++    return;
++  }
++  if (!view->GetWidget()->IsVisible()) {
++    if (attempts_left > 0) {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++          FROM_HERE,
++          base::BindOnce(&ShowWhenVisible, browser, attempts_left - 1),
++          base::Milliseconds(100));
++    }
++    return;
++  }
++  ShowCoveWelcome(browser.get());
++}
++
++}  // namespace
++
++views::View* ShowCoveWelcome(BrowserWindowInterface* browser) {
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
++  if (!browser_view) {
++    return nullptr;
++  }
++  if (auto* existing = FindWelcome(browser_view)) {
++    return existing;
++  }
++  // Full-window, above the sidebar and the page, like Arc's welcome.
++  auto* welcome =
++      browser_view->AddChildView(std::make_unique<CoveWelcomeView>(browser));
++  welcome->Attach(browser_view);
++  return welcome;
++}
++
++void FinishCoveWelcome(BrowserWindowInterface* browser) {
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
++  if (auto* welcome = browser_view ? FindWelcome(browser_view) : nullptr) {
++    welcome->Finish();
++  }
++}
++
++void MaybeShowCoveWelcome(BrowserWindowInterface* browser) {
++  if (!browser || browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return;
++  }
++  Profile* profile = browser->GetProfile();
++  PrefService* prefs = profile->GetPrefs();
++  if (profile->IsOffTheRecord() || profile->IsGuestSession() ||
++      !prefs->FindPreference(kCoveOnboardingCompletePref) ||
++      prefs->GetBoolean(kCoveOnboardingCompletePref)) {
++    return;
++  }
++  // Only for a brand-new profile: people who already use Cove keep browsing.
++  const base::CommandLine& command_line =
++      *base::CommandLine::ForCurrentProcess();
++  if (!command_line.HasSwitch(switches::kForceFirstRun) &&
++      !first_run::IsChromeFirstRun()) {
++    prefs->SetBoolean(kCoveOnboardingCompletePref, true);
++    return;
++  }
++  // Show once, after the first window appears on screen.
++  static bool scheduled = false;
++  if (scheduled) {
++    return;
++  }
++  scheduled = true;
++  ShowWhenVisible(browser->GetWeakPtr(), 100);
++}
+diff --git a/chrome/browser/ui/views/cove/cove_welcome_browsertest.cc b/chrome/browser/ui/views/cove/cove_welcome_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_welcome_browsertest.cc
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_welcome_view.h"
++
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "components/prefs/pref_service.h"
++#include "content/public/test/browser_test.h"
++#include "ui/views/view.h"
++
++using CoveWelcomeBrowserTest = InProcessBrowserTest;
++
++// An existing profile (not first run) never sees the welcome, and is marked
++// done so it never appears later.
++IN_PROC_BROWSER_TEST_F(CoveWelcomeBrowserTest, ExistingProfileSkipsWelcome) {
++  PrefService* prefs = browser()->GetProfile()->GetPrefs();
++  prefs->SetBoolean(kCoveOnboardingCompletePref, false);
++  MaybeShowCoveWelcome(browser());
++  EXPECT_TRUE(prefs->GetBoolean(kCoveOnboardingCompletePref));
++}
++
++// The welcome covers the whole window, like Arc's, and finishing it records
++// completion and removes it.
++IN_PROC_BROWSER_TEST_F(CoveWelcomeBrowserTest, WelcomeCoversWindowUntilDone) {
++  PrefService* prefs = browser()->GetProfile()->GetPrefs();
++  prefs->SetBoolean(kCoveOnboardingCompletePref, false);
++  views::View* welcome = ShowCoveWelcome(browser());
++  ASSERT_TRUE(welcome);
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
++  EXPECT_EQ(browser_view->GetLocalBounds(), welcome->bounds());
++  EXPECT_TRUE(welcome->GetVisible());
++  const size_t children = browser_view->children().size();
++  FinishCoveWelcome(browser());
++  EXPECT_EQ(children - 1, browser_view->children().size());
++  EXPECT_TRUE(prefs->GetBoolean(kCoveOnboardingCompletePref));
++}
+diff --git a/chrome/browser/prefs/browser_prefs.cc b/chrome/browser/prefs/browser_prefs.cc
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -1860,6 +1860,7 @@
+   registry->RegisterIntegerPref("cove.archive_after_hours", 12);
+   // Free the memory of pages in Spaces left unused for two hours.
+   registry->RegisterBooleanPref("cove.discard_parked_spaces", true);
++  registry->RegisterBooleanPref("cove.onboarding_complete", false);
+ #endif
+   // User prefs. Please keep this list alphabetized.
+   AccessibilityLabelsService::RegisterProfilePrefs(registry);
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3576,6 +3576,8 @@
+       "views/cove/cove_mini_media_view.h",
+       "views/cove/cove_peek_view.cc",
+       "views/cove/cove_peek_view.h",
++      "views/cove/cove_welcome_view.cc",
++      "views/cove/cove_welcome_view.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1627,6 +1627,7 @@
+       "../browser/ui/views/cove/cove_favorites_view_browsertest.cc",
+       "../browser/ui/views/cove/cove_mini_player_browsertest.cc",
+       "../browser/ui/views/cove/cove_peek_browsertest.cc",
++      "../browser/ui/views/cove/cove_welcome_browsertest.cc",
+       "../browser/ui/cove/cove_temporary_window_browsertest.mm",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -11,6 +11,7 @@
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
+ 
+ #include "chrome/browser/ui/views/cove/cove_peek_view.h"
++#include "chrome/browser/ui/views/cove/cove_welcome_view.h"
+ 
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+@@ -581,6 +582,7 @@
+   }
+   Rebuild();
+   CovePeekView::InstallHooks();
++  MaybeShowCoveWelcome(browser_);
+   pref_change_registrar_.Init(browser_->GetProfile()->GetPrefs());
+   pref_change_registrar_.Add(
+       kCoveSidebarPref, base::BindRepeating(&CoveSidebarLibraryView::Rebuild,
