@@ -1,0 +1,118 @@
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.h b/chrome/browser/ui/views/cove/cove_location_view.h
+--- a/chrome/browser/ui/views/cove/cove_location_view.h
++++ b/chrome/browser/ui/views/cove/cove_location_view.h
+@@ -32,6 +32,7 @@
+                                public content::WebContentsObserver {
+   METADATA_HEADER(CoveLocationView, views::View)
+  public:
++  views::Textfield* address_for_testing() { return address_; }
+   explicit CoveLocationView(BrowserWindowInterface* browser);
+   ~CoveLocationView() override;
+   // Transfer the native navigation buttons into the sidebar caption row. The
+diff --git a/chrome/browser/ui/views/cove/cove_location_view.cc b/chrome/browser/ui/views/cove/cove_location_view.cc
+--- a/chrome/browser/ui/views/cove/cove_location_view.cc
++++ b/chrome/browser/ui/views/cove/cove_location_view.cc
+@@ -38,6 +38,21 @@
+ #include "ui/views/controls/textfield/textfield.h"
+ #include "ui/views/layout/box_layout.h"
+ #include "url/url_constants.h"
++
++namespace {
++// Like Arc, a new tab or blank page leaves the field empty so its "Search or
++// Enter URL" placeholder shows, instead of an internal chrome:// address.
++bool IsBlankDestination(const GURL& url) {
++  return url.IsAboutBlank() ||
++         (url.SchemeIs("chrome") &&
++          (url.host() == "newtab" || url.host() == "new-tab-page")) ||
++         url.SchemeIs("chrome-search");
++}
++std::u16string EditableText(const GURL& url) {
++  return IsBlankDestination(url) ? std::u16string()
++                                 : base::UTF8ToUTF16(url.spec());
++}
++}  // namespace
+ 
+ CoveLocationView::CoveLocationView(BrowserWindowInterface* browser)
+     : browser_(browser->GetWeakPtr()) {
+@@ -157,8 +172,8 @@
+   }
+   const GURL& url = contents->GetVisibleURL();
+   const std::string_view display =
+-      url == GURL("about:blank") ? ""
+-                                 : (url.has_host() ? url.host() : url.spec());
++      IsBlankDestination(url) ? ""
++                              : (url.has_host() ? url.host() : url.spec());
+   address_->SetText(base::UTF8ToUTF16(display));
+   address_->SetTooltipText(base::UTF8ToUTF16(url.spec()));
+ }
+@@ -168,8 +183,7 @@
+           << " enabled=" << address_->GetEnabled()
+           << " focused=" << address_->HasFocus();
+   if (web_contents()) {
+-    address_->SetText(
+-        base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
++    address_->SetText(EditableText(web_contents()->GetVisibleURL()));
+     address_->SelectAll(false);
+   }
+ }
+@@ -177,8 +191,7 @@
+   if (now == address_) {
+     UpdateAddressFocusStyle();
+     if (web_contents()) {
+-      address_->SetText(
+-          base::UTF8ToUTF16(web_contents()->GetVisibleURL().spec()));
++      address_->SetText(EditableText(web_contents()->GetVisibleURL()));
+       address_->SelectAll(false);
+     }
+   } else if (before == address_) {
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -114,6 +114,7 @@
+                          const gfx::Point& screen_point);
+   void HideCoveDragGhost();
+   views::View* cove_drag_ghost_for_testing() { return cove_drag_ghost_; }
++  CoveLocationView* cove_location_view_for_testing() { return location_view_; }
+   // Presented transforms, for continuity tests of interrupted switches.
+   gfx::Transform space_rows_transform_for_testing() const;
+   std::vector<gfx::Transform> space_snapshot_transforms_for_testing() const;
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view_browsertest.cc
+@@ -13,7 +13,10 @@
+ #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/unload_controller.h"
++#include "chrome/browser/ui/views/cove/cove_location_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++#include "ui/views/controls/textfield/textfield.h"
+ #include "chrome/test/base/in_process_browser_test.h"
+ #include "chrome/test/base/ui_test_utils.h"
+ #include "components/sessions/core/tab_restore_service.h"
+@@ -193,3 +196,25 @@
+ }
+ 
+ }  // namespace
++
++// Like Arc, a new tab leaves the address empty for its placeholder instead of
++// showing chrome://newtab, both idle and while editing.
++IN_PROC_BROWSER_TEST_F(CoveSidebarLibraryBrowserTest,
++                       NewTabAddressShowsPlaceholderNotInternalURL) {
++  auto* region = BrowserView::GetBrowserViewForBrowser(browser())
++                     ->vertical_tab_strip_region_view_for_testing();
++  ASSERT_TRUE(region);
++  auto* location = region->cove_location_view_for_testing();
++  ASSERT_TRUE(location);
++  auto* address = location->address_for_testing();
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
++                                           GURL("chrome://newtab/")));
++  location->Refresh();
++  EXPECT_EQ(u"", address->GetText());
++  location->FocusLocation();
++  EXPECT_EQ(u"", address->GetText());
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), GURL("data:text/html,<title>Page</title>")));
++  location->FocusLocation();
++  EXPECT_EQ(u"data:text/html,<title>Page</title>", address->GetText());
++}
