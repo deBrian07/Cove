@@ -125,3 +125,4 @@
 0125-continue-interrupted-space-slides.patch
 0126-defer-crash-restore-prompt-until-window-shows.patch
 0127-archive-idle-unpinned-tabs.patch
+0128-command-bar-puts-typed-text-first.patch

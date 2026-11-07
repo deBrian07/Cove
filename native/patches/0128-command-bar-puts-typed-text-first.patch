@@ -1,0 +1,144 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -12,6 +12,7 @@
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/time/time.h"
+@@ -72,6 +73,29 @@
+ constexpr int kRowHeight = 48;
+ constexpr int kRowGap = 4;
+ 
++// True when every word of |query| starts some word of |text| (ASCII case-
++// insensitive), e.g. "co ur" matches "Copy Current URL" but "c" does not
++// match "Focus".
++bool MatchesWordPrefixes(const std::u16string& text,
++                         const std::u16string& query) {
++  const std::u16string lower_text = base::ToLowerASCII(text);
++  const std::u16string lower_query = base::ToLowerASCII(query);
++  const auto words = base::SplitString(lower_text, u" ", base::TRIM_WHITESPACE,
++                                       base::SPLIT_WANT_NONEMPTY);
++  const auto terms = base::SplitString(lower_query, u" ", base::TRIM_WHITESPACE,
++                                       base::SPLIT_WANT_NONEMPTY);
++  if (terms.empty()) {
++    return false;
++  }
++  for (const auto& term : terms) {
++    if (std::ranges::none_of(words, [&](const std::u16string& word) {
++          return word.starts_with(term);
++        })) {
++      return false;
++    }
++  }
++  return true;
++}
+ bool Matches(const std::u16string& text, const std::u16string& query) {
+   return query.empty() ||
+          base::ToLowerASCII(text).find(query) != std::u16string::npos;
+@@ -422,20 +446,36 @@
+   auto* library = browser_ ? CoveSpaceCloseHandler::Get(
+       browser_->GetUnownedUserDataHost()) : nullptr;
+   const auto spaces = library ? library->GetSpaces() : std::vector<CoveSpaceInfo>();
+-  bool actions = explicit_actions;
+-  if (!query.empty()) for (const auto& space : spaces)
+-    if (Matches(u"Focus on " + space.name, query)) { actions = true; break; }
+-  if (!actions && query.size() >= 2 && browser_) {
++  // Like Arc, what you type always comes first: the search or URL row leads
++  // and matching commands follow it. Only "/" or ">" lists commands alone.
++  // Suggested commands match word prefixes so one letter does not pull in
++  // every title that merely contains it.
++  std::vector<Row> suggested_actions;
++  if (!explicit_actions && !query.empty() && browser_) {
++    constexpr size_t kSuggestedActions = 2;
++    for (const auto& space : spaces) {
++      if (suggested_actions.size() == kSuggestedActions) break;
++      if (MatchesWordPrefixes(u"Focus on " + space.name, query) &&
++          space.id != (library ? library->GetActiveSpaceId() : std::string())) {
++        suggested_actions.push_back({Kind::kSpace, u"Focus on " + space.name,
++                                     u"Space", u"Switch ↩", globe, 0,
++                                     space.id});
++      }
++    }
+     for (const auto& command : commands) {
++      if (suggested_actions.size() == kSuggestedActions || query.size() < 2) {
++        break;
++      }
+       if (command.enabled &&
+           chrome::IsCommandEnabled(browser_.get(), command.id) &&
+-          Matches(command.title, query)) {
+-        actions = true;
+-        break;
++          MatchesWordPrefixes(command.title, query)) {
++        suggested_actions.push_back({Kind::kCommand, command.title,
++                                     u"Browser command", u"Run ↩", globe,
++                                     command.id});
+       }
+     }
+   }
+-  if (actions && browser_) {
++  if (explicit_actions && browser_) {
+     const auto words = explicit_actions ? query.substr(1) : query;
+     std::u16string action_query;
+     base::TrimWhitespace(words, base::TRIM_ALL, &action_query);
+@@ -474,6 +514,11 @@
+            search ? u"Your default search engine"
+                   : base::UTF8ToUTF16(match.destination_url.spec()),
+            search ? u"Search ↩" : u"Open ↩", globe});
++    }
++    for (auto& row : suggested_actions) {
++      if (rows_.size() < max_rows) {
++        rows_.push_back(std::move(row));
++      }
+     }
+     ProfileBrowserCollection::GetForProfile(browser_->GetProfile())
+         ->ForEach([&](BrowserWindowInterface* window) {
+@@ -617,7 +662,7 @@
+   }
+   if (rows_.empty()) {
+     auto* empty = rows_view_->AddChildView(std::make_unique<views::Label>(
+-        actions ? u"No matching command" : u"Type a URL or search"));
++        explicit_actions ? u"No matching command" : u"Type a URL or search"));
+     empty->SetEnabledColor(kMuted);
+     empty->SetAutoColorReadabilityEnabled(false);
+     empty->SetPreferredSize(gfx::Size(100, kRowHeight));
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -647,3 +647,33 @@
+       [&] { return library->GetActiveSpaceId() == home; }));
+   EXPECT_EQ(parked, browser()->GetTabStripModel()->GetActiveWebContents());
+ }
++
++// Like Arc, the typed text is always the first result; commands follow it,
++// and only "/" lists commands alone.
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       CommandBarPutsTypedTextFirst) {
++  auto* host =
++      BrowserView::GetBrowserViewForBrowser(browser())->GetTabSearchBubbleHost();
++  host->ShowTabSearchBubble(true);
++  auto* palette = host->native_palette_widget_for_testing();
++  ASSERT_TRUE(palette);
++  auto* bar = views::AsViewClass<CoveCommandBarView>(
++      palette->widget_delegate()->GetContentsView());
++  ASSERT_TRUE(bar);
++  const auto type = [&](const std::u16string& text) {
++    bar->search_field_for_testing()->SetText(text);
++    bar->ContentsChanged(bar->search_field_for_testing(), text);
++  };
++  type(u"c");
++  ASSERT_LT(0u, bar->row_count_for_testing());
++  EXPECT_EQ(u"Search ↩", bar->row_action_for_testing(0));
++  type(u"work");
++  ASSERT_LT(1u, bar->row_count_for_testing());
++  EXPECT_EQ(u"Search ↩", bar->row_action_for_testing(0));
++  EXPECT_EQ(u"Switch ↩", bar->row_action_for_testing(1));
++  type(u"/copy");
++  ASSERT_LT(0u, bar->row_count_for_testing());
++  for (size_t i = 0; i < bar->row_count_for_testing(); ++i) {
++    EXPECT_NE(u"Search ↩", bar->row_action_for_testing(i));
++  }
++}
