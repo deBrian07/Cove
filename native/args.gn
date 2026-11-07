@@ -9,3 +9,6 @@ target_os = "mac"
 target_cpu = "arm64"
 # A local Mac build must not depend on Google's remote compilation service.
 use_remoteexec = false
+# Play the web's common H.264/AAC media, as Chrome and Arc do.
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
