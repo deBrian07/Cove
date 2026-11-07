@@ -1,0 +1,39 @@
+diff --git a/chrome/test/data/webui/tab_search/tab_search_page_test.ts b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+--- a/chrome/test/data/webui/tab_search/tab_search_page_test.ts
++++ b/chrome/test/data/webui/tab_search/tab_search_page_test.ts
+@@ -873,7 +873,7 @@
+     const action = tabSearchPage.shadowRoot.querySelector<HTMLElement>(
+         '#palette-action-0');
+     assertTrue(!!action);
+-    assertTrue(action.textContent!.includes('Pin Tab'));
++    assertTrue(action.textContent.includes('Pin Tab'));
+     keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
+     assertEquals('pin-tab', await testProxy.whenCalled('executeAction'));
+     assertEquals(0, testProxy.getCallCount('openSearch'));
+@@ -888,7 +888,7 @@
+         '[data-action="unpin-tab"]');
+     assertTrue(!!action);
+     assertEquals('true', action.getAttribute('aria-disabled'));
+-    assertTrue(action.textContent!.includes('Not Pinned'));
++    assertTrue(action.textContent.includes('Not Pinned'));
+     keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
+     assertEquals(0, testProxy.getCallCount('executeAction'));
+     assertEquals(0, testProxy.getCallCount('openSearch'));
+@@ -905,7 +905,7 @@
+         '[data-action="pin-tab"]');
+     assertTrue(!!action);
+     assertEquals('true', action.getAttribute('aria-disabled'));
+-    assertTrue(action.textContent!.includes('Already Pinned'));
++    assertTrue(action.textContent.includes('Already Pinned'));
+     keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
+     assertEquals(0, testProxy.getCallCount('executeAction'));
+     assertEquals(0, testProxy.getCallCount('openSearch'));
+@@ -967,7 +967,7 @@
+         '[data-action="add-split"]');
+     assertTrue(!!action);
+     assertEquals('true', action.getAttribute('aria-disabled'));
+-    assertTrue(action.textContent!.includes('Already in Split View'));
++    assertTrue(action.textContent.includes('Already in Split View'));
+     keyDownOn(tabSearchPage.getSearchInput(), 0, [], 'Enter');
+     assertEquals(0, testProxy.getCallCount('executeAction'));
+     assertEquals(0, testProxy.getCallCount('openSearch'));

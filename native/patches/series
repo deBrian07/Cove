@@ -134,3 +134,4 @@
 0134-peek-links-in-a-floating-card.patch
 0135-new-tab-address-shows-placeholder.patch
 0136-arc-style-welcome-for-new-profiles.patch
+0137-drop-unneeded-assertions-in-tab-search-test.patch
