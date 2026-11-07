@@ -1,0 +1,178 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -4,6 +4,9 @@
+ #include "chrome/browser/ui/views/cove/cove_command_bar_view.h"
+ 
+ #include <algorithm>
++#include <map>
++#include <string>
++#include <vector>
+ #include <utility>
+ 
+ #include "base/functional/bind.h"
+@@ -478,8 +481,29 @@
+             return true;
+           }
+           auto* model = window->GetTabStripModel();
+-          for (int i = 0; i < model->count() && rows_.size() < max_rows; ++i) {
+-            auto* tab = model->GetTabAtIndex(i);
++          // Include pages parked in this window's other Spaces, like Arc.
++          auto* window_library =
++              CoveSpaceCloseHandler::Get(window->GetUnownedUserDataHost());
++          std::vector<tabs::TabHandle> handles;
++          if (window_library) {
++            handles = window_library->GetMediaTabs();
++          } else {
++            for (auto* tab : *model) {
++              handles.push_back(tab->GetHandle());
++            }
++          }
++          std::map<std::string, std::u16string> space_names;
++          if (window_library) {
++            for (const auto& space : window_library->GetSpaces()) {
++              space_names[space.id] = space.name;
++            }
++          }
++          for (size_t i = 0; i < handles.size() && rows_.size() < max_rows;
++               ++i) {
++            auto* tab = handles[i].Get();
++            if (!tab) {
++              continue;
++            }
+             auto* contents = tab->GetContents();
+             if (IsCoveEmptyCanvas(contents)) {
+               continue;
+@@ -501,7 +525,16 @@
+                 icon = ui::ImageModel::FromImage(image);
+               }
+             }
+-            rows_.push_back({Kind::kTab, title, url, u"Switch to Tab →", icon,
++            std::u16string action = u"Switch to Tab →";
++            if (model->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
++              const auto* state = GetCoveTabSessionState(contents);
++              const auto name = state ? space_names.find(state->space)
++                                      : space_names.end();
++              action = name != space_names.end() && !name->second.empty()
++                           ? u"In " + name->second + u" →"
++                           : u"In another Space →";
++            }
++            rows_.push_back({Kind::kTab, title, url, action, icon,
+                              tab->GetHandle().raw_value()});
+           }
+           return rows_.size() < max_rows;
+@@ -679,8 +712,34 @@
+   } else if (row.kind == Kind::kTab) {
+     // Resolve the stable handle now: a closed tab never means its old
+     // neighbour.
+-    auto* tab = tabs::TabHandle(row.id).Get();
++    const tabs::TabHandle handle(row.id);
++    auto* tab = handle.Get();
+     if (!tab) {
++      return;
++    }
++    // A page parked in another Space has no window; its Space owner shows it.
++    BrowserWindowInterface* parked_owner = nullptr;
++    ProfileBrowserCollection::GetForProfile(browser->GetProfile())
++        ->ForEach([&](BrowserWindowInterface* window) {
++          auto* library =
++              CoveSpaceCloseHandler::Get(window->GetUnownedUserDataHost());
++          if (window->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++              library &&
++              window->GetTabStripModel()->GetIndexOfTab(tab) ==
++                  TabStripModel::kNoTab &&
++              std::ranges::contains(library->GetMediaTabs(), handle)) {
++            parked_owner = window;
++            library->ActivateMediaTab(handle);
++            return false;
++          }
++          return true;
++        });
++    tab = handle.Get();
++    if (!tab) {
++      return;
++    }
++    if (parked_owner && parked_owner->GetTabStripModel()->GetIndexOfTab(tab) ==
++                            TabStripModel::kNoTab) {
+       return;
+     }
+     auto* owner = tab->GetBrowserWindowInterface();
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.h b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.h
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+@@ -42,6 +42,11 @@
+   bool HandleKeyEvent(views::Textfield* sender,
+                       const ui::KeyEvent& event) override;
+   views::Textfield* search_field_for_testing() { return input_; }
++  size_t row_count_for_testing() const { return rows_.size(); }
++  const std::u16string& row_action_for_testing(size_t index) const {
++    return rows_[index].action;
++  }
++  void RunRowForTesting(size_t index) { RunRow(index); }
+ 
+  private:
+   enum class Kind { kTab, kRestore, kNavigate, kCommand, kSpace };
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+ #include "net/test/embedded_test_server/embedded_test_server.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+@@ -597,3 +598,52 @@
+   EXPECT_FALSE(palette->IsVisible());
+   EXPECT_EQ(palette, host->native_palette_widget_for_testing());
+ }
++
++// Like Arc, Cmd+T finds pages parked in another Space and switching to one
++// shows that Space.
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       CommandBarFindsAndOpensTabInAnotherSpace) {
++  auto* library =
++      CoveSpaceCloseHandler::Get(browser()->GetUnownedUserDataHost());
++  ASSERT_TRUE(library);
++  ASSERT_TRUE(content::NavigateToURL(
++      browser()->GetTabStripModel()->GetActiveWebContents(),
++      GURL("data:text/html,<title>ParkedNeedle</title>")));
++  auto* parked = browser()->GetTabStripModel()->GetActiveWebContents();
++  const std::string home = library->GetActiveSpaceId();
++  std::string other;
++  for (const auto& space : library->GetSpaces()) {
++    if (space.id != home) {
++      other = space.id;
++      break;
++    }
++  }
++  ASSERT_FALSE(other.empty());
++  library->FocusSpace(other);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return library->GetActiveSpaceId() == other; }));
++  ASSERT_EQ(TabStripModel::kNoTab,
++            browser()->GetTabStripModel()->GetIndexOfWebContents(parked));
++
++  auto* host =
++      BrowserView::GetBrowserViewForBrowser(browser())->GetTabSearchBubbleHost();
++  host->ShowTabSearchBubble(true);
++  auto* palette = host->native_palette_widget_for_testing();
++  ASSERT_TRUE(palette);
++  auto* bar = views::AsViewClass<CoveCommandBarView>(
++      palette->widget_delegate()->GetContentsView());
++  ASSERT_TRUE(bar);
++  bar->search_field_for_testing()->SetText(u"ParkedNeedle");
++  bar->ContentsChanged(bar->search_field_for_testing(), u"ParkedNeedle");
++  std::optional<size_t> row;
++  for (size_t i = 0; i < bar->row_count_for_testing(); ++i) {
++    if (bar->row_action_for_testing(i).starts_with(u"In ")) {
++      row = i;
++    }
++  }
++  ASSERT_TRUE(row);
++  bar->RunRowForTesting(*row);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return library->GetActiveSpaceId() == home; }));
++  EXPECT_EQ(parked, browser()->GetTabStripModel()->GetActiveWebContents());
++}

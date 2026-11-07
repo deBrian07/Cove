@@ -121,3 +121,4 @@
 0121-dismiss-command-bar-on-outside-click.patch
 0122-use-native-test-window-activation-helper.patch
 0123-use-press-location-for-command-bar-outside-clicks.patch
+0124-command-bar-finds-tabs-in-other-spaces.patch
