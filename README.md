@@ -9,6 +9,16 @@
 
 # Cove
 
+> **Status: archived (November 2026).** Cove is no longer under active development. A Chromium fork needs continuous security rebases, signing and update infrastructure that a solo project can't sustain, and maintained open-source browsers now cover most of Arc's workflow. The code below builds and works as described, but it is a development build: unsigned, Apple Silicon only, no auto-update, pinned to Chromium 156.0.8078.48 and receiving no security fixes. Don't use it as a daily browser.
+>
+> **What works**, built and covered by native browser tests through patch 0131: Spaces with live parked pages, swipes and interrupted slides; pins that keep a saved home; nested folders; global Favorites; drag and drop; the ⌘T command bar, which searches tabs in every Space with typed text first; Little Cove for external links, with ⌘O and a Space picker; split view; the mini player; automatic archiving; and a native settings window.
+>
+> **Written but never built or tested:** patches 0132–0137 compile on their own and apply cleanly, but no app was built with them and their tests never ran. They add freeing memory from unused Spaces, Cove naming in place of Chromium, Peek (Shift+click), the new-tab address placeholder and a full-window welcome for new profiles. The H.264/AAC codec setting in `native/args.gn` is likewise unbuilt.
+>
+> **Never built:** signed, notarized releases and updates; Intel builds; sync; profiles per Space; Air Traffic Control rules; Boosts and Easel.
+>
+> To resume, mount or set up the checkout (below), run `npm run chromium:gen`, then `npm run build`. Read [AGENTS.md](AGENTS.md) and [native/ARC_PARITY.md](native/ARC_PARITY.md) first.
+
 Cove is a native Chromium browser. This repository holds everything needed to build it: the pinned Chromium revision (`native/chromium.json`), the GN configuration (`native/args.gn`) and Cove's ordered patch series (`native/patches/`). Chromium itself is fetched into the ignored `.chromium/` directory inside this repository, so no other location is involved.
 
 ## Build

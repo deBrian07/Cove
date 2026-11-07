@@ -8,7 +8,11 @@ Patches 0119–0121 provide editable Little Cove address/navigation, scoped Cmd+
 
 The SanDisk disconnected before the final desktop investigation finished; logs and checkout are currently inaccessible. CUA confirmed query entry/Escape/draft retention but inconsistently targeted the floating palette. Do not count its click attempt as independent physical acceptance. Native mouse tests passed inside retention and outside page-button delivery. Current-cursor versus native-event coordinates are a code-audited robustness candidate requiring a deterministic regression, not an accepted 0123 change. See [HANDOFF.md](HANDOFF.md) for exact evidence and resume instructions.
 
-## Current — Nov 6: 0123–0131 committed; VM testing
+## Archived — Nov 7
+
+Cove is archived; see the README. Patches 0132–0137 and the codec setting compile and apply cleanly but were never built into an app or tested. Treat their rows below as written, not accepted.
+
+## Nov 6: 0123–0131 committed; VM testing
 
 0123 judges command-bar outside clicks by the press location. 0124 searches pages parked in other Spaces. 0125 continues interrupted Space slides. 0126 fixes a launch crash after any unclean exit, where Chromium's restore prompt anchored to the hidden toolbar before the window was shown. 0127 archives idle unpinned tabs. 0128 keeps typed text as the first command-bar result; Space and command suggestions follow it and match word prefixes. 0129 hides the Little Cove profile chip when only one profile exists. 0130 drives the mini player from audio-focus and session events instead of a 250 ms poll. 0131 releases the command bar's application-wide event monitor while it is hidden.
 
@@ -82,7 +86,7 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 | Drag or Option-click into a split | Missing | Drag targeting, replacing panes and moving existing tabs |
 | Split layouts, pane swap and size reset | Added in 0078 | Live-check side-by-side/top-bottom, swap, equal sizing and Control+Shift+1/2 focus |
 | More than two split panes | Missing | Extend native model and persistence |
-| Peek previews | Missing | Shift-click and pinned-link rules, overlay navigation, promote/dismiss and focus return |
+| Peek previews | 0134: Shift+click, or a link that leaves a pinned tab's site, opens a floating card over the page; Esc, Cmd+W or a click outside closes it; Open as Tab (Cmd+Return) moves the same page into the Space | Same-tab cross-site links in pins, Favorites-specific rules, Open in Split and inline find remain |
 | Little Arc | 0113–0120 implement native temporary external-link windows, a compact header, searchable specific-Space promotion preserving the exact page/history/draft, editable address, scoped Cmd+L/Cmd+O/Cmd+Shift+O and a real external-routing preference; native input checks pass in the full 0122 run | Global launch shortcut, broader desktop/site acceptance and exact visual matching remain |
 | Picture-in-picture and media | Automatic video mini player on tab/Space/app departure and return-to-tab routing; 0114 adds compact sidebar audio/media controls. Seven media cases passed in the full 0122 run | Broader site/media/desktop acceptance and visual comparison remain |
 
@@ -90,7 +94,23 @@ The action baseline is Arc's [command-bar reference](https://start.arc.net/comma
 
 Cove → Settings and Cmd+, open Cove's native settings window with General, Profiles, Appearance, Links, Shortcuts and Advanced sections. It uses grouped dark controls inspired by the supplied settings screenshots, with Cove's own layout and labels. Startup restoration, quitting confirmation, download prompts, color scheme and sidebar hover use existing preferences; other entries open real Chromium management pages. Startup URLs survive toggling restoration. Patch 0120 adds the real `cove.external_links_in_temporary_windows` profile preference, default true, and a Links toggle selecting temporary windows or a same-profile main window for external URLs. Its regression passed preference persistence, reopening settings and both routing choices in the full 0122 run. Repeated settings opening/closing, existing preference persistence, command routing and view cleanup passed the accepted baseline tests.
 
-The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. The Links toggle controls implemented Little Cove routing. Peek remains unimplemented and has no dummy switch.
+The user explicitly requested no separate Cove account. Existing profiles and a Google account page link are available. That link uses the selected profile's browsing session; it does not implement a Cove identity layer, Chrome Sync or cross-device sidebar sync. Shortcuts display actual current native bindings; customization remains unfinished. The Links toggle controls implemented Little Cove routing. Peek (0134) has no setting yet.
+
+## First run
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Welcome for new profiles | 0136: full-window welcome modeled on Arc's (gradient intro, then split screens with a live sidebar preview): import from another browser, pick a sidebar color, make Cove the default browser, the basics | Shown only on a brand-new profile; there is no Cove account by design |
+| New tab address | 0135: a new tab shows the empty "Search or Enter URL" field instead of chrome://newtab | — |
+
+## Efficiency and media
+
+| Function | Cove status | Remaining acceptance or implementation |
+| --- | --- | --- |
+| Idle work | 0130 replaces the mini player's 250 ms poll with audio-focus and session events; 0131 releases the command bar's application-wide event monitor while it is hidden | Measured idle wakeups on low-end Macs |
+| Memory from unused Spaces | 0132 discards pages in Spaces left unused for two hours (Settings → General → Tabs); they keep history and reload when shown, and playing, captured or unsaved pages are kept | Per-Space exceptions |
+| Common video and audio | args.gn enables H.264/AAC (proprietary codecs) | Release packaging and licensing notes |
+| Product naming | 0133 renames user-facing Chromium strings to Cove; translations fall back to English for changed strings | Localized Cove strings |
 
 ## Remaining product functions
 

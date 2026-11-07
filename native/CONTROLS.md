@@ -27,6 +27,8 @@ The full-width toolbar is hidden in vertical-sidebar mode. Create a split from t
 
 Patch 0080 removes the 36 DIP top strip in hidden-toolbar mode, changes the page corners to 8 DIP and darkens the violet frame surfaces. Patch 0081 defaults web pages to the system appearance while keeping Cove's chrome dark; saved explicit appearance choices take precedence. These changes compile and pass renderer smoke; actual UI and appearance-browser validation remain pending.
 
+Shift+click a link to Peek at it in a floating card over the current page. Links that leave a pinned tab's site open in Peek too. Press Escape, ⌘W or click outside the card to close it; press ⌘Return or choose Open as Tab to keep the page as a tab in the current Space.
+
 Type into ⌘T and the first result is always your search or URL. Matching Spaces and commands follow it (word-prefix matches), then open tabs, including pages parked in other Spaces ("In Work →"; choosing one switches there), then recently closed pages. Use `/` or `>` to list commands only. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
 
 New native action groups:
