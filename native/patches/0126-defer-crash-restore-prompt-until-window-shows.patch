@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/ui/views/session_crashed_bubble_view.cc b/chrome/browser/ui/views/session_crashed_bubble_view.cc
+--- a/chrome/browser/ui/views/session_crashed_bubble_view.cc
++++ b/chrome/browser/ui/views/session_crashed_bubble_view.cc
+@@ -3,6 +3,9 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/session_crashed_bubble_view.h"
++
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
+ 
+ #include <stddef.h>
+ 
+@@ -260,6 +263,27 @@
+ 
+   BrowserWindowInterface* browser = browser_observer->browser();
+ 
++  // Cove hides the toolbar, so the app menu button is not drawn and the bubble
++  // anchors to the browser's fallback popup anchor. That anchor only exists once
++  // the window is shown, and startup restore runs before then. Wait for the
++  // window instead of anchoring to an element that is not there yet.
++  static int cove_visibility_retries = 0;
++  if (browser) {
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser);
++    if (view && view->GetWidget() && !view->GetWidget()->IsVisible() &&
++        cove_visibility_retries < 100) {
++      ++cove_visibility_retries;
++      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++          FROM_HERE,
++          base::BindOnce(&SessionCrashedBubbleView::Show,
++                         std::move(browser_observer), skip_tab_checking,
++                         uma_opted_in_already),
++          base::Milliseconds(50));
++      return;
++    }
++  }
++  cove_visibility_retries = 0;
++
+   if (browser && (skip_tab_checking ||
+                   browser->GetTabStripModel()->GetActiveWebContents())) {
+     ShowBubble(browser, uma_opted_in_already, offer_uma_optin);

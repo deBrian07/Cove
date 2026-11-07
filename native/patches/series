@@ -123,3 +123,4 @@
 0123-use-press-location-for-command-bar-outside-clicks.patch
 0124-command-bar-finds-tabs-in-other-spaces.patch
 0125-continue-interrupted-space-slides.patch
+0126-defer-crash-restore-prompt-until-window-shows.patch

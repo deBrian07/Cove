@@ -90,6 +90,7 @@
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc": "6b3cd1a1933601f9f677dc1dc58a0fc39eefa0e30c273001ec08fb6562b07378",
   "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h": "053e5ca31d3b78ab07d44469ceeeb4ddac2c2f9c03caf7793840c52342851289",
   "chrome/browser/ui/views/location_bar/lens_overlay_homework_page_action_controller.cc": "1315e720b7c2ca48cac96957bb7ecd3495e63fa2cc7374e1cf2b6ed3de7603c0",
+  "chrome/browser/ui/views/session_crashed_bubble_view.cc": "8bd17e0fb4f111c52aaa976a4adb5da26215889529c589dc4663c3c0e6afc65a",
   "chrome/browser/ui/views/tab_search_bubble_host.cc": "1b0ce74db337fe5ea48bb01d787bd86cc9c6b312aedbbb01e406da6d0299b7c8",
   "chrome/browser/ui/views/tab_search_bubble_host.h": "836b3ff500e9a31511f8685afd391967b84a8baaee94a3904f3258ffe719948d",
   "chrome/browser/ui/views/tab_search_bubble_host_browsertest.cc": "dce5ddef1269d5a62063cb8e2d35cbb2311531f89e9aa240846d0122b8a23c52",
