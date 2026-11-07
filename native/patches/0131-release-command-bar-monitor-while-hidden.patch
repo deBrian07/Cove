@@ -1,0 +1,75 @@
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.h b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.h
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.h
+@@ -37,6 +37,10 @@
+   using views::View::OnEvent;
+   void OnEvent(const ui::Event& event) override;
+   void RemovedFromWidget() override;
++  void VisibilityChanged(views::View* starting_from, bool is_visible) override;
++  bool has_outside_click_monitor_for_testing() const {
++    return !!outside_click_monitor_;
++  }
+   void ContentsChanged(views::Textfield* sender,
+                        const std::u16string& new_contents) override;
+   bool HandleKeyEvent(views::Textfield* sender,
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -15,6 +15,7 @@
+ #include "base/strings/string_split.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+@@ -284,6 +285,26 @@
+ void CoveCommandBarView::RemovedFromWidget() {
+   outside_click_monitor_.reset();
+   views::View::RemovedFromWidget();
++}
++void CoveCommandBarView::VisibilityChanged(views::View* starting_from,
++                                           bool is_visible) {
++  views::View::VisibilityChanged(starting_from, is_visible);
++  if (is_visible || !outside_click_monitor_) {
++    return;
++  }
++  // A hidden bar needs no application-wide event monitor: every event would
++  // otherwise be converted and inspected while the bar is closed. Release it
++  // after the current event, since hiding can happen inside OnEvent();
++  // ShowExisting() creates a new one on the next opening.
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(
++                     [](base::WeakPtr<CoveCommandBarView> bar) {
++                       if (bar && !(bar->GetWidget() &&
++                                    bar->GetWidget()->IsVisible())) {
++                         bar->outside_click_monitor_.reset();
++                       }
++                     },
++                     weak_factory_.GetWeakPtr()));
+ }
+ void CoveCommandBarView::OnEvent(const ui::Event& event) {
+   if (event.type() != ui::EventType::kMousePressed || !GetWidget() ||
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -546,6 +546,11 @@
+     EXPECT_EQ(url, page->GetVisibleURL());
+     EXPECT_EQ(tabs, browser()->GetTabStripModel()->count());
+     EXPECT_EQ("draft", content::EvalJs(page, "document.querySelector('textarea').value"));
++    // A closed bar releases its application-wide monitor.
++    auto* closed_bar = views::AsViewClass<CoveCommandBarView>(
++        palette->widget_delegate()->GetContentsView());
++    ASSERT_TRUE(base::test::RunUntil(
++        [&] { return !closed_bar->has_outside_click_monitor_for_testing(); }));
+   }
+ }
+ 
+@@ -568,6 +573,7 @@
+   auto* bar = views::AsViewClass<CoveCommandBarView>(
+       palette->widget_delegate()->GetContentsView());
+   ASSERT_TRUE(bar);
++  EXPECT_TRUE(bar->has_outside_click_monitor_for_testing());
+   ASSERT_FALSE(palette->GetWindowBoundsInScreen().Contains(page_point));
+   const gfx::Point inside =
+       bar->search_field_for_testing()->GetBoundsInScreen().CenterPoint();
