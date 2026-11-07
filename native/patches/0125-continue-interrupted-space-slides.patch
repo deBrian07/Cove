@@ -1,0 +1,205 @@
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -6,6 +6,7 @@
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
+ 
+ #include <memory>
++#include <vector>
+ #include <optional>
+ 
+ #include "base/callback_list.h"
+@@ -113,6 +114,9 @@
+                          const gfx::Point& screen_point);
+   void HideCoveDragGhost();
+   views::View* cove_drag_ghost_for_testing() { return cove_drag_ghost_; }
++  // Presented transforms, for continuity tests of interrupted switches.
++  gfx::Transform space_rows_transform_for_testing() const;
++  std::vector<gfx::Transform> space_snapshot_transforms_for_testing() const;
+   void FireDragEdgeAutoscrollForTesting();
+   bool IsDragEdgeAutoscrollingForTesting() const;
+   static float DragEdgeScrollDistanceForTesting(float depth,
+@@ -313,6 +317,10 @@
+   raw_ptr<views::View> space_clip_view_ = nullptr;
+   raw_ptr<views::View> space_rows_view_ = nullptr;
+   std::unique_ptr<ui::LayerTreeOwner> space_snapshot_;
++  // Copies still leaving the sidebar when a newer switch interrupted them.
++  std::vector<std::unique_ptr<ui::LayerTreeOwner>> space_departing_snapshots_;
++  // Where incoming rows start when a switch reverses one in flight.
++  std::optional<gfx::Transform> space_incoming_start_;
+   std::unique_ptr<views::AnimationAbortHandle> space_animation_;
+   int space_transition_generation_ = 0;
+   int space_direction_ = 1;
+diff --git a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -1078,18 +1078,60 @@
+   ++space_transition_generation_;
+   space_animation_.reset();
+   space_snapshot_.reset();
++  space_departing_snapshots_.clear();
++  space_incoming_start_.reset();
+   if (space_rows_view_ && space_rows_view_->layer())
+     space_rows_view_->layer()->SetTransform(gfx::Transform());
+ }
+ 
++gfx::Transform VerticalTabStripRegionView::space_rows_transform_for_testing()
++    const {
++  return space_rows_view_ && space_rows_view_->layer()
++             ? space_rows_view_->layer()->transform()
++             : gfx::Transform();
++}
++
++std::vector<gfx::Transform>
++VerticalTabStripRegionView::space_snapshot_transforms_for_testing() const {
++  std::vector<gfx::Transform> result;
++  for (const auto& departing : space_departing_snapshots_) {
++    result.push_back(departing->root()->transform());
++  }
++  if (space_snapshot_) {
++    result.push_back(space_snapshot_->root()->transform());
++  }
++  return result;
++}
++
+ void VerticalTabStripRegionView::BeginSpaceTransition(int direction) {
+   StopDragEdgeAutoscroll();
+-  ClearSpaceTransition();
+-  if (!gfx::Animation::ShouldRenderRichAnimation() || !GetWidget() ||
+-      !GetWidget()->IsVisible() || width() < kUncollapsedMinWidth ||
+-      !space_rows_view_->layer() || space_clip_view_->width() <= 0) return;
+-  space_direction_ = base::i18n::IsRTL() ? -direction : direction;
++  const int new_direction = base::i18n::IsRTL() ? -direction : direction;
++  const bool eligible =
++      gfx::Animation::ShouldRenderRichAnimation() && GetWidget() &&
++      GetWidget()->IsVisible() && width() >= kUncollapsedMinWidth &&
++      space_rows_view_->layer() && space_clip_view_->width() > 0;
++  // A switch during a slide continues from what is on screen. Aborting the
++  // running animation leaves every layer at its presented transform.
++  const bool interrupting = eligible && space_snapshot_ && space_animation_;
++  if (!interrupting) {
++    ClearSpaceTransition();
++    if (!eligible) return;
++  } else {
++    ++space_transition_generation_;
++    space_animation_.reset();
++    space_incoming_start_.reset();
++    if (new_direction == -space_direction_) {
++      // Reversal: the page being left is the one on its way out, so the
++      // incoming rows pick up exactly where that departing copy is.
++      space_incoming_start_ = space_snapshot_->root()->transform();
++      space_snapshot_.reset();
++    } else {
++      space_departing_snapshots_.push_back(std::move(space_snapshot_));
++    }
++  }
++  space_direction_ = new_direction;
+   auto old = space_rows_view_->RecreateLayer();
++  space_rows_view_->layer()->SetTransform(gfx::Transform());
+   space_rows_view_->SchedulePaint();
+   SnapshotChildLayers(space_rows_view_, old.get());
+   space_snapshot_ = std::make_unique<ui::LayerTreeOwner>(std::move(old));
+@@ -1098,12 +1140,26 @@
+ void VerticalTabStripRegionView::FinishSpaceTransition() {
+   if (!space_snapshot_ || !GetWidget()) return;
+   GetWidget()->LayoutRootViewIfNecessary();
+-  const int distance = space_clip_view_->width() * space_direction_;
++  const int width = space_clip_view_->width();
++  const int distance = width * space_direction_;
+   gfx::Transform incoming;
+   incoming.Translate(distance, 0);
++  if (space_incoming_start_) {
++    incoming = *space_incoming_start_;
++  }
+   space_rows_view_->layer()->SetTransform(incoming);
+-  gfx::Transform outgoing;
+-  outgoing.Translate(-distance, 0);
++  // Keep the speed of a full slide: a reversal from halfway takes half as long.
++  const float travel =
++      width > 0 ? std::min(1.0f, std::abs(incoming.To2dTranslation().x()) /
++                                     static_cast<float>(width))
++                : 1.0f;
++  const auto duration =
++      std::max(base::Milliseconds(90), base::Milliseconds(240) * travel);
++  const auto departing = [&](ui::Layer* layer) {
++    gfx::Transform target = layer->transform();
++    target.PostTranslate(gfx::Vector2dF(-distance, 0));
++    return target;
++  };
+   views::AnimationBuilder animation;
+   animation.OnEnded(base::BindOnce(
+       [](base::WeakPtr<VerticalTabStripRegionView> region, int generation) {
+@@ -1115,9 +1171,16 @@
+                 }, region, generation));
+       }, weak_factory_.GetWeakPtr(), space_transition_generation_));
+   space_animation_ = animation.GetAbortHandle();
+-  animation.Once().SetDuration(base::Milliseconds(240))
+-      .SetTransform(space_rows_view_->layer(), gfx::Transform(), gfx::Tween::EASE_OUT)
+-      .SetTransform(space_snapshot_->root(), outgoing, gfx::Tween::EASE_OUT);
++  auto& sequence = animation.Once().SetDuration(duration);
++  sequence.SetTransform(space_rows_view_->layer(), gfx::Transform(),
++                        gfx::Tween::EASE_OUT);
++  sequence.SetTransform(space_snapshot_->root(),
++                        departing(space_snapshot_->root()),
++                        gfx::Tween::EASE_OUT);
++  for (const auto& copy : space_departing_snapshots_) {
++    sequence.SetTransform(copy->root(), departing(copy->root()),
++                          gfx::Tween::EASE_OUT);
++  }
+ }
+ 
+ void VerticalTabStripRegionView::UpdateCovePinnedTabsVisibility() {
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_drag_browsertest.cc
+@@ -70,7 +70,10 @@
+ #include "ui/events/event.h"
+ #include "ui/compositor/layer.h"
+ #include "ui/compositor/layer_tree_owner.h"
++#include "ui/gfx/animation/animation.h"
++#include "ui/gfx/animation/animation_test_api.h"
+ #include "ui/gfx/codec/png_codec.h"
++#include "ui/gfx/scoped_animation_duration_scale_mode.h"
+ #include "ui/gfx/geometry/rect_conversions.h"
+ #include "ui/views/controls/button/label_button.h"
+ #include "ui/views/controls/menu/menu_runner.h"
+@@ -1879,3 +1882,39 @@
+   EXPECT_TRUE(model->IsTabPinned(model->active_index()));
+   EXPECT_EQ(before, browser()->GetProfile()->GetPrefs()->GetDict(kSidebarPref));
+ }
++
++// Switching again while a Space slide is running must continue from what is on
++// screen: no snap to the resting position and no restart from off-screen.
++IN_PROC_BROWSER_TEST_F(CoveSidebarDragBrowserTest,
++                       InterruptedSpaceSlideContinuesFromScreen) {
++  Seed();
++  auto rich = gfx::AnimationTestApi::SetRichAnimationRenderMode(
++      gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
++  gfx::ScopedAnimationDurationScaleMode slow(
++      gfx::ScopedAnimationDurationScaleMode::SLOW_DURATION);
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* region = view->vertical_tab_strip_region_view_for_testing();
++  ASSERT_TRUE(region);
++  const float width = region->width();
++  ASSERT_GT(width, 0);
++
++  // Reversal: personal -> work -> personal before the first slide settles.
++  SwitchSpaceForIconTest("work");
++  ASSERT_EQ(1u, region->space_snapshot_transforms_for_testing().size());
++  const float departing =
++      region->space_snapshot_transforms_for_testing()[0].To2dTranslation().x();
++  SwitchSpaceForIconTest("personal");
++  const float incoming =
++      region->space_rows_transform_for_testing().To2dTranslation().x();
++  // The returning rows start where their departing copy was, not a full
++  // sidebar width away.
++  EXPECT_FLOAT_EQ(departing, incoming);
++  EXPECT_LT(std::abs(incoming), width);
++  EXPECT_EQ(1u, region->space_snapshot_transforms_for_testing().size());
++
++  // Settling clears every copy and leaves the rows at rest.
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return region->space_snapshot_transforms_for_testing().empty();
++  }));
++  EXPECT_TRUE(region->space_rows_transform_for_testing().IsIdentity());
++}
