@@ -1,6 +1,23 @@
 # Cove native continuation
 
-## Current — Nov 6: 0122 validated; SSD disconnected on resume
+## Current — Nov 6 evening: 0123–0131 committed; codec rebuild running
+
+Patches 0123–0131 are committed one per change (see ARC_PARITY.md for what each does). All 131 patches pass the pinned-original verifier, and applying the series to pristine sources reproduces the built checkout exactly. `upstream-files.json` gained `session_crashed_bubble_view.cc` (0126). Each patch compiled in an incremental `chrome cove_session_browsertests` build.
+
+`args.gn` now sets `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"`: H.264/AAC (MP4) media did not play before. `out/Cove/args.gn` was reconciled explicitly, official `gen` succeeded, and a long official `build --jobs 2` is the next gate. After it, smoke-test MP4 playback, then commit the args change.
+
+### Testing in the terminal-mac VM
+
+Real-input tests must not run on the user's own Mac. A shared terminal-mac VM (`default`, user `bibimbap`, macOS 27.2, 4 GB) is used instead. Another agent (the Nalana session) shares it; coordinate turns with SendMessage ("taking VM", "VM free"). Close every window you are done with.
+
+- Host serves `.chromium/tmp/vm/` on `192.168.64.1:18765`; `.chromium/tmp/vm/upload_server.py` receives uploads on `:18766` into `uploads/`.
+- Guest layout: `~/CoveTest/src/out/Cove` holds the component build (`~/CoveTest/build` links to it); test pages sit under `~/CoveTest/src/chrome/test/data` and `net/data/ssl`. Run `curl -fsS 192.168.64.1:18765/s | sh` once to create it.
+- `pack-delta.sh`, `pack-tests.sh` package changed outputs and the test bundle; in the guest, `u` updates, `t '<filter>'` runs tests with a 300 s timeout and uploads `test.log`, `d` uploads diagnostics, `run.sh` launches Cove with `~/CoveTest/profile`.
+- Type commands through Terminal's Shell > New Command (⇧⌘N). The MCP `type` tool drops text unless one `key` press precedes it.
+
+VM results: CommandBarPutsTypedTextFirst, OutsideClickUsesPressLocationNotCursor, InterruptedSpaceSlideContinuesFromScreen and RejectsNonWebDestinations passed. Three new tests hit the default 45 s timeout in the slow VM, and 17 Little Cove plus one mini-player test failed only because their test pages were absent. Rerun them with the data layout above before claiming acceptance.
+
+## Previous — Nov 6: 0122 validated; SSD disconnected on resume
 
 Read this section before the historical checkpoints below. Patches 0119–0121 were committed by the other agent and preserved. Patch 0122, committed as `d7e1dd4`, corrects the native test fixtures to use Chromium's standard foreground activation helper. The full suite, official generation/build receipt and isolated renderer smoke all passed before the interruption. On the latest resume, `/Volumes/SanDisk 1TB` is absent and `.chromium/` is unmounted. Do not replace it with the older local image or create a second checkout. The user has been asked to reconnect the SSD.
 

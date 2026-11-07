@@ -8,6 +8,12 @@ Patches 0119–0121 provide editable Little Cove address/navigation, scoped Cmd+
 
 The SanDisk disconnected before the final desktop investigation finished; logs and checkout are currently inaccessible. CUA confirmed query entry/Escape/draft retention but inconsistently targeted the floating palette. Do not count its click attempt as independent physical acceptance. Native mouse tests passed inside retention and outside page-button delivery. Current-cursor versus native-event coordinates are a code-audited robustness candidate requiring a deterministic regression, not an accepted 0123 change. See [HANDOFF.md](HANDOFF.md) for exact evidence and resume instructions.
 
+## Current — Nov 6: 0123–0131 committed; VM testing
+
+0123 judges command-bar outside clicks by the press location. 0124 searches pages parked in other Spaces. 0125 continues interrupted Space slides. 0126 fixes a launch crash after any unclean exit, where Chromium's restore prompt anchored to the hidden toolbar before the window was shown. 0127 archives idle unpinned tabs. 0128 keeps typed text as the first command-bar result; Space and command suggestions follow it and match word prefixes. 0129 hides the Little Cove profile chip when only one profile exists. 0130 drives the mini player from audio-focus and session events instead of a 250 ms poll. 0131 releases the command bar's application-wide event monitor while it is hidden.
+
+On the terminal-mac VM, CommandBarPutsTypedTextFirst, OutsideClickUsesPressLocationNotCursor and InterruptedSpaceSlideContinuesFromScreen passed. Little Cove external-link opening and Cmd+O promotion were checked by hand. The remaining runs need test data and a longer timeout in the slower VM; see HANDOFF.md. H.264/AAC playback was missing because proprietary codecs were not enabled; args.gn now enables them.
+
 ## Historical accepted baseline — 0118
 
 All 104 browser executions passed in one run with retries disabled, in 840 seconds. JSON records 103 SUCCESS keys because the PRE_ phase is folded. This includes six OS mouse-drag cases, seven media cases, 17 Little Cove cases and session/restart/settings/sidebar/Favorites coverage. All 118 patches verified; 38 tooling tests, official generation/build receipt and isolated renderer smoke passed. The configuration identity was `d55ae794329c5ebfb59a49d3c0ad5bf633a188ff558daac4a507cc8856fb155d`. Evidence is under `.chromium/tmp/cove118/`; this is historical evidence superseded by the completed 0122 gate above.
@@ -20,7 +26,7 @@ That baseline includes saved-pin preservation during Move to Space, retained pin
 | --- | --- | --- |
 | Create, rename and delete Spaces | Native footer/menu; 0099 adds confirmation, neighbor selection and normal close handling for deleted Space pages | Broader beforeunload/multi-window acceptance and Space ordering remain |
 | Switch Spaces through footer | Live native switching preserves pages | Repeat after new features; preserve drafts, history, groups and splits |
-| Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition implemented | Rapid interruption/reversal still needs a continuity fix and pixel checks. Physical trackpad and frame-time acceptance remain; automation delivered dx=0/dy=0 |
+| Swipe between Spaces with a slide | Native gesture state and 240 ms layer transition; 0125 continues an interrupted slide from its on-screen position and lets a reversal pick up the departing copy | Pixel-continuity and physical trackpad/frame-time acceptance remain |
 | Control+1–9 Space selection | Added in 0076 | Verify native shortcuts, missing slots and use while the palette is open |
 | Type a Space name in Cmd+T | Stable Space IDs added in 0076 | Verify switching to both populated and empty Spaces |
 | Next/previous Space actions | Added in 0076 | Verify boundaries and slide direction |
@@ -48,7 +54,7 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Remove folders while retaining contents | 0079 reparents direct child folders and pins to the removed folder's parent | Verify saved children, pins and open pages survive removal |
 | Closed saved-pin site icons | Local cached icons load for rendered rows, live icons take priority and stale callbacks are rejected; 0110 retains cached icons during row rebuilds | Missing cache data retains a globe; exact Arc folder artwork/font tuning remain |
 | Move pins into or outside folders | Native menus and saved-row dragging; loose live-tab drops pin the same page into a folder without reloading, including only-tab case | Physical drag, grouped/split/multi-tab and cross-Space live moves remain |
-| Clear Today and reopen closed tabs | Native; 0076 exposes Clear Today in palette | Timed automatic archiving and Arc-style archive/library UI remain missing |
+| Clear Today and reopen closed tabs | Native; 0127 adds Arc-style automatic archiving of idle unpinned tabs into recently closed history (12 h default; 24 h, 7 days, 30 days or Never in Settings) | Archive/library browsing UI remains missing; parked Spaces archive when next shown |
 | Recently used tab switcher | 0101 adds Control-Tab MRU overlay, reverse traversal and modifier-release activation | Broader multi-window/Space keyboard acceptance remains |
 | Sidebar undo/restore | Missing | Recover sidebar organization changes without replacing browser profiles |
 
@@ -57,7 +63,7 @@ The Space baseline comes from Arc's [Space guide](https://resources.arc.net/hc/e
 | Function | Cove status | Remaining acceptance or implementation |
 | --- | --- | --- |
 | Native Cmd+T input and URL/search submission | Native palette with shown/hidden-sidebar input and safe Cmd+S/Escape dismissal; 0121 mouse regression passes three outside-click/reopen cycles in the full 0122 run while preserving click delivery, draft, URL, tab count and cached widget | Measured cold/warm latency, multi-window activation, native context-menu edges and the desktop click discrepancy remain |
-| Open tabs and recently closed results | Native stable handles/session IDs | Parked tabs in inactive Spaces are not yet searched or activated directly |
+| Open tabs and recently closed results | Native stable handles/session IDs; 0124 lists pages parked in other Spaces as "In <Space>" and opening one switches to its Space | Ranking by recency remains basic |
 | Actions mode | Native `/` or `>` mode | 0076 expands browser and library actions; verify enabled-state and actual effects |
 | Common browser actions | 0076 adds window/private-window, navigation, find, downloads, history, preferences, extensions, developer tools, fullscreen, save/print, zoom and open-file entries | Native Chromium operations are reused; Arc-specific panel layouts are separate work |
 | Cmd+L, Cmd+S, Cmd+D, copy URL and split shortcuts | Native routing exists; 0119 tests included in the full 0122 run pass Little Cove Cmd+L address focus, Escape/Enter/history and scoped Cmd+O/Cmd+Shift+O promotion/chooser behavior | Broader shortcut combinations, split contexts and editable bindings remain |

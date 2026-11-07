@@ -27,7 +27,7 @@ The full-width toolbar is hidden in vertical-sidebar mode. Create a split from t
 
 Patch 0080 removes the 36 DIP top strip in hidden-toolbar mode, changes the page corners to 8 DIP and darkens the violet frame surfaces. Patch 0081 defaults web pages to the system appearance while keeping Cove's chrome dark; saved explicit appearance choices take precedence. These changes compile and pass renderer smoke; actual UI and appearance-browser validation remain pending.
 
-Type a command into ⌘T, or use `/` or `>` for actions mode. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
+Type into ⌘T and the first result is always your search or URL. Matching Spaces and commands follow it (word-prefix matches), then open tabs, including pages parked in other Spaces ("In Work →"; choosing one switches there), then recently closed pages. Use `/` or `>` to list commands only. The native palette has 44 static actions plus Space-name results. Type more text to narrow the visible list; unavailable actions are omitted. Arrow keys choose a row and Return runs it. ⌘Return submits the typed text directly through URL/search classification instead of activating the selected command or tab match.
 
 New native action groups:
 
@@ -48,7 +48,7 @@ Patch 0079 adds nested folder rows and menus. Right-click a folder for New Subfo
 
 Right-click a pin to rename it, remove it or move it to a nested folder path. Move Outside Folders returns it to the Space's root. Moving content into a folder expands the destination path. The new folder and pin-menu behavior awaits build, focused tests and live acceptance.
 
-Archive Today closes current-Space unpinned pages through Chromium's native history and unsaved-page handling, retaining pins and Favorites. Cmd+Shift+T reopens recently closed pages. The current native split model supports two panes. Split-pin flag synchronization, complete cross-window ownership and folder/Space dragging are still incomplete. The new pin-home actions need final live acceptance.
+Unpinned pages left idle for 12 hours are archived automatically into recently closed history, like Arc; change it to 24 hours, 7 days, 30 days or Never in Settings → General → Tabs. Current, playing, picture-in-picture and split pages are kept. Archive Today closes current-Space unpinned pages through Chromium's native history and unsaved-page handling, retaining pins and Favorites. Cmd+Shift+T reopens recently closed pages. The current native split model supports two panes. Split-pin flag synchronization, complete cross-window ownership and folder/Space dragging are still incomplete. The new pin-home actions need final live acceptance.
 
 Arc's published [command-bar actions](https://start.arc.net/command-bar-actions) informed command names and separation behavior. This is the implemented Cove control set, not a claim that every Arc shortcut or feature is present.
 
