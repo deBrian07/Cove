@@ -1,0 +1,919 @@
+diff --git a/chrome/browser/ui/cove/cove_peek_hooks.h b/chrome/browser/ui/cove/cove_peek_hooks.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_peek_hooks.h
+@@ -0,0 +1,41 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_COVE_COVE_PEEK_HOOKS_H_
++#define CHROME_BROWSER_UI_COVE_COVE_PEEK_HOOKS_H_
++
++#include <memory>
++
++#include "ui/base/window_open_disposition.h"
++
++class BrowserWindowInterface;
++class GURL;
++
++namespace content {
++struct OpenURLParams;
++class WebContents;
++}  // namespace content
++
++// Lets low-level browser code hand navigations to Cove's Peek without
++// depending on Views. The Peek implementation installs these once.
++struct CovePeekHooks {
++  // Returns the Peek's contents when it took the navigation, else nullptr.
++  content::WebContents* (*open_url)(BrowserWindowInterface* browser,
++                                    content::WebContents* source,
++                                    const content::OpenURLParams& params) =
++      nullptr;
++  // Returns |new_contents| when declined, or nullptr after adopting it.
++  std::unique_ptr<content::WebContents> (*adopt)(
++      BrowserWindowInterface* browser,
++      content::WebContents* source,
++      std::unique_ptr<content::WebContents> new_contents,
++      const GURL& target_url,
++      WindowOpenDisposition disposition,
++      bool user_gesture) = nullptr;
++};
++
++void SetCovePeekHooks(const CovePeekHooks& hooks);
++const CovePeekHooks& GetCovePeekHooks();
++
++#endif  // CHROME_BROWSER_UI_COVE_COVE_PEEK_HOOKS_H_
+diff --git a/chrome/browser/ui/cove/cove_peek_hooks.cc b/chrome/browser/ui/cove/cove_peek_hooks.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/cove/cove_peek_hooks.cc
+@@ -0,0 +1,20 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/cove/cove_peek_hooks.h"
++
++namespace {
++CovePeekHooks& Hooks() {
++  static CovePeekHooks hooks;
++  return hooks;
++}
++}  // namespace
++
++void SetCovePeekHooks(const CovePeekHooks& hooks) {
++  Hooks() = hooks;
++}
++
++const CovePeekHooks& GetCovePeekHooks() {
++  return Hooks();
++}
+diff --git a/chrome/browser/ui/views/cove/cove_peek_view.h b/chrome/browser/ui/views/cove/cove_peek_view.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_peek_view.h
+@@ -0,0 +1,135 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_PEEK_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_PEEK_VIEW_H_
++
++#include <memory>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/scoped_observation.h"
++#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
++#include "content/public/browser/web_contents_delegate.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++#include "ui/views/view_observer.h"
++#include "ui/base/window_open_disposition.h"
++#include "url/gurl.h"
++
++class BrowserWindowInterface;
++
++namespace content {
++struct OpenURLParams;
++class WebContents;
++}  // namespace content
++
++namespace blink::mojom {
++class WindowFeatures;
++}
++
++namespace views {
++class Label;
++class WebView;
++}  // namespace views
++
++// Arc-style Peek: a page opened with Shift+click, or a link that leaves a
++// pinned tab for another site, appears in a floating card over the current
++// page instead of a new tab. Escape or a click outside closes it; "Open as
++// Tab" moves the very same page into the current Space without reloading.
++class CovePeekView : public views::View,
++                     public views::ViewObserver,
++                     public content::WebContentsDelegate,
++                     public TabStripModelObserver {
++  METADATA_HEADER(CovePeekView, views::View)
++
++ public:
++  // Opens |params| in a Peek when it is a Shift+click (NEW_WINDOW) with a user
++  // gesture in a normal window. Returns the Peek's contents, or nullptr when
++  // the navigation should continue normally.
++  static content::WebContents* MaybeOpenURL(BrowserWindowInterface* browser,
++                                            content::WebContents* source,
++                                            const content::OpenURLParams& params);
++
++  // Adopts renderer-created contents (target=_blank, Shift+click on such a
++  // link) into a Peek. Returns |new_contents| unchanged when declined.
++  static std::unique_ptr<content::WebContents> MaybeAdopt(
++      BrowserWindowInterface* browser,
++      content::WebContents* source,
++      std::unique_ptr<content::WebContents> new_contents,
++      const GURL& target_url,
++      WindowOpenDisposition disposition,
++      bool user_gesture);
++
++  static CovePeekView* GetForBrowser(BrowserWindowInterface* browser);
++  // Routes browser navigations to the Peek. Idempotent.
++  static void InstallHooks();
++
++  explicit CovePeekView(BrowserWindowInterface* browser);
++  CovePeekView(const CovePeekView&) = delete;
++  CovePeekView& operator=(const CovePeekView&) = delete;
++  ~CovePeekView() override;
++
++  void Show(std::unique_ptr<content::WebContents> contents,
++            content::WebContents* source);
++  // Closes the Peek and discards its page.
++  void Close();
++  // Moves the peeked page into the window's tab strip, next to its source.
++  void OpenAsTab();
++
++  content::WebContents* contents_for_testing() { return contents_.get(); }
++
++  // views::View:
++  void Layout(PassKey) override;
++  bool OnMousePressed(const ui::MouseEvent& event) override;
++  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
++  void OnPaint(gfx::Canvas* canvas) override;
++
++  // views::ViewObserver:
++  void OnViewBoundsChanged(views::View* observed_view) override;
++  void OnViewIsDeleting(views::View* observed_view) override;
++
++  // content::WebContentsDelegate:
++  content::WebContents* OpenURLFromTab(
++      content::WebContents* source,
++      const content::OpenURLParams& params,
++      base::OnceCallback<void(content::NavigationHandle&)>
++          navigation_handle_callback) override;
++  content::WebContents* AddNewContents(
++      content::WebContents* source,
++      std::unique_ptr<content::WebContents> new_contents,
++      const GURL& target_url,
++      WindowOpenDisposition disposition,
++      const blink::mojom::WindowFeatures& window_features,
++      bool user_gesture,
++      bool* was_blocked) override;
++  void CloseContents(content::WebContents* source) override;
++  bool HandleKeyboardEvent(content::WebContents* source,
++                           const input::NativeWebKeyboardEvent& event) override;
++  void NavigationStateChanged(content::WebContents* source,
++                              content::InvalidateTypes changed_flags) override;
++
++  // TabStripModelObserver:
++  void OnTabStripModelChanged(
++      TabStripModel* tab_strip_model,
++      const TabStripModelChange& change,
++      const TabStripSelectionChange& selection) override;
++
++ private:
++  gfx::Rect CardBounds() const;
++  void UpdateTitle();
++  void ScheduleClose();
++
++  raw_ptr<BrowserWindowInterface> browser_;
++  std::unique_ptr<content::WebContents> contents_;
++  base::WeakPtr<content::WebContents> source_;
++  raw_ptr<views::View> card_ = nullptr;
++  raw_ptr<views::Label> title_ = nullptr;
++  raw_ptr<views::WebView> web_view_ = nullptr;
++  base::ScopedObservation<views::View, views::ViewObserver> anchor_observation_{
++      this};
++  base::WeakPtrFactory<CovePeekView> weak_factory_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_PEEK_VIEW_H_
+diff --git a/chrome/browser/ui/views/cove/cove_peek_view.cc b/chrome/browser/ui/views/cove/cove_peek_view.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_peek_view.cc
+@@ -0,0 +1,420 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_peek_view.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "base/functional/bind.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/tab_contents/tab_util.h"
++#include "chrome/browser/ui/navigator/browser_navigator.h"
++#include "chrome/browser/ui/navigator/browser_navigator_params.h"
++#include "chrome/browser/ui/browser_tabstrip.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/cove/cove_peek_hooks.h"
++#include "chrome/browser/ui/cove_space_close_handler.h"
++#include "chrome/browser/ui/tabs/tab_enums.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "components/input/native_web_keyboard_event.h"
++#include "components/tabs/public/tab_interface.h"
++#include "components/vector_icons/vector_icons.h"
++#include "content/public/browser/navigation_controller.h"
++#include "content/public/browser/web_contents.h"
++#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
++#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/compositor/layer.h"
++#include "ui/events/event.h"
++#include "ui/events/keycodes/keyboard_codes.h"
++#include "ui/gfx/canvas.h"
++#include "ui/views/background.h"
++#include "ui/views/controls/button/label_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/controls/webview/webview.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/layout/flex_layout_view.h"
++#include "ui/views/view_class_properties.h"
++
++namespace {
++
++constexpr int kHeaderHeight = 40;
++constexpr int kCardRadius = 12;
++constexpr int kMargin = 48;
++constexpr SkColor kBackdrop = SkColorSetARGB(0x66, 0, 0, 0);
++constexpr SkColor kCardColor = SkColorSetRGB(0x1e, 0x1f, 0x24);
++constexpr SkColor kText = SkColorSetRGB(0xe8, 0xe8, 0xec);
++
++bool IsPeekableWindow(BrowserWindowInterface* browser) {
++  return browser &&
++         browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++         BrowserView::GetBrowserViewForBrowser(browser);
++}
++
++bool IsWebUrl(const GURL& url) {
++  return url.is_valid() && url.SchemeIsHTTPOrHTTPS();
++}
++
++// A pinned tab keeps its own site; links that leave it peek, like Arc.
++bool LeavesPinnedSite(content::WebContents* source, const GURL& target) {
++  auto* tab = source ? tabs::TabInterface::MaybeGetFromContents(source)
++                     : nullptr;
++  if (!tab || !tab->IsPinned()) {
++    return false;
++  }
++  return !net::registry_controlled_domains::SameDomainOrHost(
++      source->GetLastCommittedURL(), target,
++      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
++}
++
++CovePeekView* EnsurePeek(BrowserWindowInterface* browser) {
++  if (auto* existing = CovePeekView::GetForBrowser(browser)) {
++    return existing;
++  }
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
++  return browser_view->AddChildView(std::make_unique<CovePeekView>(browser));
++}
++
++}  // namespace
++
++// static
++void CovePeekView::InstallHooks() {
++  CovePeekHooks hooks;
++  hooks.open_url = &CovePeekView::MaybeOpenURL;
++  hooks.adopt = &CovePeekView::MaybeAdopt;
++  SetCovePeekHooks(hooks);
++}
++
++// static
++CovePeekView* CovePeekView::GetForBrowser(BrowserWindowInterface* browser) {
++  auto* browser_view =
++      browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  if (!browser_view) {
++    return nullptr;
++  }
++  for (views::View* child : browser_view->children()) {
++    if (auto* peek = views::AsViewClass<CovePeekView>(child)) {
++      return peek;
++    }
++  }
++  return nullptr;
++}
++
++// static
++content::WebContents* CovePeekView::MaybeOpenURL(
++    BrowserWindowInterface* browser,
++    content::WebContents* source,
++    const content::OpenURLParams& params) {
++  if (!IsPeekableWindow(browser) ||
++      params.disposition != WindowOpenDisposition::NEW_WINDOW ||
++      !params.user_gesture || !IsWebUrl(params.url) || !source) {
++    return nullptr;
++  }
++  Profile* profile = browser->GetProfile();
++  content::WebContents::CreateParams create(
++      profile, tab_util::GetSiteInstanceForNewTab(profile, params.url));
++  auto contents = content::WebContents::Create(create);
++  content::NavigationController::LoadURLParams load(params);
++  contents->GetController().LoadURLWithParams(load);
++  content::WebContents* raw = contents.get();
++  EnsurePeek(browser)->Show(std::move(contents), source);
++  return raw;
++}
++
++// static
++std::unique_ptr<content::WebContents> CovePeekView::MaybeAdopt(
++    BrowserWindowInterface* browser,
++    content::WebContents* source,
++    std::unique_ptr<content::WebContents> new_contents,
++    const GURL& target_url,
++    WindowOpenDisposition disposition,
++    bool user_gesture) {
++  // Never take popups: sign-in and payment flows need a real window.
++  const bool shift_click = disposition == WindowOpenDisposition::NEW_WINDOW;
++  const bool pinned_link =
++      disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB &&
++      LeavesPinnedSite(source, target_url);
++  if (!IsPeekableWindow(browser) || !user_gesture || !new_contents ||
++      !IsWebUrl(target_url) || !(shift_click || pinned_link) ||
++      browser->GetProfile() != Profile::FromBrowserContext(
++                                   new_contents->GetBrowserContext())) {
++    return new_contents;
++  }
++  EnsurePeek(browser)->Show(std::move(new_contents), source);
++  return nullptr;
++}
++
++CovePeekView::CovePeekView(BrowserWindowInterface* browser)
++    : browser_(browser) {
++  SetVisible(false);
++  SetPaintToLayer();
++  layer()->SetFillsBoundsOpaquely(false);
++
++  auto* card = AddChildView(std::make_unique<views::View>());
++  card_ = card;
++  card->SetPaintToLayer();
++  card->layer()->SetFillsBoundsOpaquely(false);
++  card->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kCardRadius));
++  card->layer()->SetMasksToBounds(true);
++  card->SetBackground(
++      views::CreateRoundedRectBackground(kCardColor, kCardRadius));
++  card->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical));
++
++  auto* header = card->AddChildView(std::make_unique<views::FlexLayoutView>());
++  header->SetOrientation(views::LayoutOrientation::kHorizontal);
++  header->SetCrossAxisAlignment(views::LayoutAlignment::kCenter);
++  header->SetInteriorMargin(gfx::Insets::VH(0, 12));
++  header->SetPreferredSize(gfx::Size(0, kHeaderHeight));
++  auto* close = header->AddChildView(std::make_unique<views::LabelButton>(
++      base::BindRepeating(&CovePeekView::Close, base::Unretained(this)),
++      u"Close"));
++  close->SetEnabledTextColors(kText);
++  close->SetTooltipText(u"Close Peek (Esc)");
++  title_ = header->AddChildView(std::make_unique<views::Label>());
++  title_->SetEnabledColor(kText);
++  title_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++  title_->SetElideBehavior(gfx::ELIDE_MIDDLE);
++  title_->SetProperty(
++      views::kFlexBehaviorKey,
++      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
++                               views::MaximumFlexSizeRule::kUnbounded));
++  auto* open = header->AddChildView(std::make_unique<views::LabelButton>(
++      base::BindRepeating(&CovePeekView::OpenAsTab, base::Unretained(this)),
++      u"Open as Tab"));
++  open->SetEnabledTextColors(kText);
++  open->SetTooltipText(u"Open this page as a tab in this Space");
++
++  web_view_ = card->AddChildView(
++      std::make_unique<views::WebView>(browser->GetProfile()));
++  static_cast<views::BoxLayout*>(card->GetLayoutManager())
++      ->SetFlexForView(web_view_, 1);
++
++  AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
++}
++
++CovePeekView::~CovePeekView() {
++  TabStripModelObserver::StopObservingAll(this);
++  if (web_view_) {
++    web_view_->SetWebContents(nullptr);
++  }
++  if (contents_) {
++    contents_->SetDelegate(nullptr);
++  }
++}
++
++void CovePeekView::Show(std::unique_ptr<content::WebContents> contents,
++                        content::WebContents* source) {
++  // One Peek per window: a new one replaces the old page.
++  if (contents_) {
++    web_view_->SetWebContents(nullptr);
++    contents_->SetDelegate(nullptr);
++    contents_.reset();
++  }
++  contents_ = std::move(contents);
++  contents_->SetDelegate(this);
++  source_ = source ? source->GetWeakPtr() : nullptr;
++  web_view_->SetWebContents(contents_.get());
++
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
++  if (!anchor_observation_.IsObserving()) {
++    anchor_observation_.Observe(browser_view->contents_container());
++  }
++  if (!TabStripModelObserver::IsObservingAny(this)) {
++    browser_->GetTabStripModel()->AddObserver(this);
++  }
++  // Paint above the page and its native view.
++  browser_view->ReorderChildView(this, browser_view->children().size());
++  SetBoundsRect(browser_view->contents_container()->bounds());
++  SetVisible(true);
++  InvalidateLayout();
++  UpdateTitle();
++  web_view_->RequestFocus();
++}
++
++void CovePeekView::Close() {
++  if (!GetVisible() && !contents_) {
++    return;
++  }
++  SetVisible(false);
++  web_view_->SetWebContents(nullptr);
++  if (contents_) {
++    contents_->SetDelegate(nullptr);
++    contents_.reset();
++  }
++  TabStripModelObserver::StopObservingAll(this);
++  if (source_) {
++    source_->Focus();
++  }
++}
++
++void CovePeekView::OpenAsTab() {
++  if (!contents_) {
++    return;
++  }
++  TabStripModel* model = browser_->GetTabStripModel();
++  int index = model->count();
++  if (source_) {
++    const int source_index = model->GetIndexOfWebContents(source_.get());
++    if (source_index != TabStripModel::kNoTab) {
++      index = std::max(source_index + 1, model->IndexOfFirstNonPinnedTab());
++    }
++  }
++  web_view_->SetWebContents(nullptr);
++  contents_->SetDelegate(nullptr);
++  TabStripModelObserver::StopObservingAll(this);
++  SetVisible(false);
++  // The same page moves, so history, scroll position and input survive.
++  model->InsertWebContentsAt(index, std::move(contents_),
++                             AddTabTypes::ADD_ACTIVE);
++}
++
++gfx::Rect CovePeekView::CardBounds() const {
++  gfx::Rect area = GetLocalBounds();
++  const int width = std::min(area.width() - 2 * kMargin, 1280);
++  const int height = area.height() - 2 * kMargin;
++  gfx::Rect card(0, 0, std::max(width, 320), std::max(height, 240));
++  card.set_x(area.x() + (area.width() - card.width()) / 2);
++  card.set_y(area.y() + (area.height() - card.height()) / 2);
++  return card;
++}
++
++void CovePeekView::Layout(PassKey) {
++  card_->SetBoundsRect(CardBounds());
++}
++
++void CovePeekView::OnPaint(gfx::Canvas* canvas) {
++  canvas->DrawColor(kBackdrop);
++}
++
++bool CovePeekView::OnMousePressed(const ui::MouseEvent& event) {
++  // A press on the dimmed backdrop closes the Peek, as in Arc.
++  if (!CardBounds().Contains(event.location())) {
++    ScheduleClose();
++    return true;
++  }
++  return false;
++}
++
++bool CovePeekView::AcceleratorPressed(const ui::Accelerator& accelerator) {
++  if (accelerator.key_code() == ui::VKEY_ESCAPE) {
++    ScheduleClose();
++    return true;
++  }
++  return false;
++}
++
++void CovePeekView::OnViewBoundsChanged(views::View* observed_view) {
++  if (GetVisible()) {
++    SetBoundsRect(observed_view->bounds());
++  }
++}
++
++void CovePeekView::OnViewIsDeleting(views::View* observed_view) {
++  anchor_observation_.Reset();
++}
++
++content::WebContents* CovePeekView::OpenURLFromTab(
++    content::WebContents* source,
++    const content::OpenURLParams& params,
++    base::OnceCallback<void(content::NavigationHandle&)>
++        navigation_handle_callback) {
++  if (params.disposition == WindowOpenDisposition::CURRENT_TAB && contents_) {
++    content::NavigationController::LoadURLParams load(params);
++    contents_->GetController().LoadURLWithParams(load);
++    return contents_.get();
++  }
++  // Anything else opens normally in this window's current Space.
++  NavigateParams nav(browser_, params.url, params.transition);
++  nav.FillNavigateParamsFromOpenURLParams(params);
++  if (nav.disposition == WindowOpenDisposition::NEW_WINDOW) {
++    nav.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
++  }
++  Navigate(&nav);
++  return nav.navigated_or_inserted_contents.get();
++}
++
++content::WebContents* CovePeekView::AddNewContents(
++    content::WebContents* source,
++    std::unique_ptr<content::WebContents> new_contents,
++    const GURL& target_url,
++    WindowOpenDisposition disposition,
++    const blink::mojom::WindowFeatures& window_features,
++    bool user_gesture,
++    bool* was_blocked) {
++  // Popups from a peeked page become ordinary tabs or windows.
++  return chrome::AddWebContents(browser_, nullptr, std::move(new_contents),
++                                target_url, disposition, window_features);
++}
++
++void CovePeekView::CloseContents(content::WebContents* source) {
++  ScheduleClose();
++}
++
++bool CovePeekView::HandleKeyboardEvent(
++    content::WebContents* source,
++    const input::NativeWebKeyboardEvent& event) {
++  if (event.GetType() != blink::WebInputEvent::Type::kRawKeyDown) {
++    return false;
++  }
++  const bool command =
++      event.GetModifiers() & blink::WebInputEvent::kMetaKey;
++  // Escape, or Cmd+W, closes the Peek rather than the tab beneath it.
++  if (event.windows_key_code == ui::VKEY_ESCAPE ||
++      (command && event.windows_key_code == ui::VKEY_W)) {
++    ScheduleClose();
++    return true;
++  }
++  // Cmd+Return opens the page as a tab.
++  if (command && event.windows_key_code == ui::VKEY_RETURN) {
++    OpenAsTab();
++    return true;
++  }
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
++  return browser_view && browser_view->HandleKeyboardEvent(event);
++}
++
++void CovePeekView::NavigationStateChanged(
++    content::WebContents* source,
++    content::InvalidateTypes changed_flags) {
++  UpdateTitle();
++}
++
++void CovePeekView::OnTabStripModelChanged(
++    TabStripModel* tab_strip_model,
++    const TabStripModelChange& change,
++    const TabStripSelectionChange& selection) {
++  // Switching tabs or Spaces, or closing the source, ends the Peek.
++  if (selection.active_tab_changed() || !source_ ||
++      tab_strip_model->GetIndexOfWebContents(source_.get()) ==
++          TabStripModel::kNoTab) {
++    ScheduleClose();
++  }
++}
++
++void CovePeekView::UpdateTitle() {
++  if (!contents_) {
++    return;
++  }
++  std::u16string title = contents_->GetTitle();
++  if (title.empty()) {
++    title = base::UTF8ToUTF16(contents_->GetVisibleURL().host());
++  }
++  title_->SetText(title);
++}
++
++void CovePeekView::ScheduleClose() {
++  // Closing destroys the page; never do that inside its own callbacks.
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&CovePeekView::Close,
++                                weak_factory_.GetWeakPtr()));
++}
++
++BEGIN_METADATA(CovePeekView)
++END_METADATA
+diff --git a/chrome/browser/ui/views/cove/cove_peek_browsertest.cc b/chrome/browser/ui/views/cove/cove_peek_browsertest.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_peek_browsertest.cc
+@@ -0,0 +1,159 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "base/test/run_until.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
++#include "chrome/browser/ui/tabs/tab_strip_model.h"
++#include "chrome/browser/ui/views/cove/cove_peek_view.h"
++#include "chrome/test/base/in_process_browser_test.h"
++#include "chrome/test/base/ui_test_utils.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/test/browser_test.h"
++#include "content/public/test/browser_test_utils.h"
++#include "net/dns/mock_host_resolver.h"
++#include "net/test/embedded_test_server/embedded_test_server.h"
++#include "third_party/blink/public/common/input/web_input_event.h"
++#include "third_party/blink/public/common/input/web_mouse_event.h"
++
++namespace {
++
++class CovePeekBrowserTest : public InProcessBrowserTest {
++ protected:
++  void SetUpOnMainThread() override {
++    host_resolver()->AddRule("*", "127.0.0.1");
++    ASSERT_TRUE(embedded_test_server()->Start());
++  }
++
++  TabStripModel* model() { return browser()->GetTabStripModel(); }
++
++  void ShowLink(content::WebContents* contents, const GURL& target,
++                bool blank) {
++    ASSERT_TRUE(content::ExecJs(
++        contents,
++        content::JsReplace(
++            "document.body.innerHTML = '';"
++            "const a = document.createElement('a');"
++            "a.href = $1; a.textContent = 'go';"
++            "a.style = 'position:fixed;inset:0;display:block';"
++            "if ($2) a.target = '_blank';"
++            "document.body.appendChild(a);"
++            "window.kept = 'draft';",
++            target.spec(), blank)));
++  }
++
++  void Click(content::WebContents* contents, int modifiers) {
++    content::SimulateMouseClickAt(contents, modifiers,
++                                  blink::WebMouseEvent::Button::kLeft,
++                                  gfx::Point(50, 50));
++  }
++
++  CovePeekView* Peek() { return CovePeekView::GetForBrowser(browser()); }
++
++  size_t WindowCount() {
++    size_t count = 0;
++    ProfileBrowserCollection::GetForProfile(browser()->GetProfile())
++        ->ForEach([&](BrowserWindowInterface*) {
++          ++count;
++          return true;
++        });
++    return count;
++  }
++};
++
++// Shift+click shows the page in a Peek over the current tab, not a window.
++IN_PROC_BROWSER_TEST_F(CovePeekBrowserTest, ShiftClickOpensPeekAndEscCloses) {
++  const GURL target = embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  auto* source = model()->GetActiveWebContents();
++  ShowLink(source, target, /*blank=*/false);
++  const int tabs = model()->count();
++  const size_t windows = WindowCount();
++
++  Click(source, blink::WebInputEvent::kShiftKey);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return Peek() && Peek()->GetVisible() && Peek()->contents_for_testing();
++  }));
++  auto* peeked = Peek()->contents_for_testing();
++  EXPECT_TRUE(content::WaitForLoadStop(peeked));
++  EXPECT_EQ(target, peeked->GetLastCommittedURL());
++  EXPECT_EQ(tabs, model()->count());
++  EXPECT_EQ(windows, WindowCount());
++  EXPECT_EQ(source, model()->GetActiveWebContents());
++  EXPECT_EQ("draft", content::EvalJs(source, "window.kept"));
++
++  Peek()->Close();
++  EXPECT_FALSE(Peek()->GetVisible());
++  EXPECT_FALSE(Peek()->contents_for_testing());
++  EXPECT_EQ(tabs, model()->count());
++}
++
++// "Open as Tab" moves the same page into the strip without reloading it.
++IN_PROC_BROWSER_TEST_F(CovePeekBrowserTest, OpenAsTabKeepsTheSamePage) {
++  const GURL target = embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  auto* source = model()->GetActiveWebContents();
++  ShowLink(source, target, /*blank=*/false);
++  const int tabs = model()->count();
++  Click(source, blink::WebInputEvent::kShiftKey);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return Peek() && Peek()->contents_for_testing(); }));
++  auto* peeked = Peek()->contents_for_testing();
++  ASSERT_TRUE(content::WaitForLoadStop(peeked));
++  ASSERT_TRUE(content::ExecJs(peeked, "window.peekDraft = 'kept'"));
++  const int entries = peeked->GetController().GetEntryCount();
++
++  Peek()->OpenAsTab();
++  EXPECT_EQ(tabs + 1, model()->count());
++  EXPECT_EQ(peeked, model()->GetActiveWebContents());
++  EXPECT_EQ(entries, peeked->GetController().GetEntryCount());
++  EXPECT_EQ("kept", content::EvalJs(peeked, "window.peekDraft"));
++  EXPECT_FALSE(Peek()->GetVisible());
++}
++
++// A target=_blank link that leaves a pinned tab's site peeks, like Arc.
++// The same link from an unpinned tab opens a tab as usual.
++IN_PROC_BROWSER_TEST_F(CovePeekBrowserTest, PinnedTabCrossSiteLinkPeeks) {
++  const GURL target = embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  auto* source = model()->GetActiveWebContents();
++  ShowLink(source, target, /*blank=*/true);
++  int tabs = model()->count();
++  Click(source, 0);
++  ASSERT_TRUE(base::test::RunUntil([&] { return model()->count() == tabs + 1; }));
++  EXPECT_FALSE(Peek() && Peek()->GetVisible());
++
++  model()->ActivateTabAt(model()->GetIndexOfWebContents(source));
++  model()->SetTabPinned(model()->GetIndexOfWebContents(source), true);
++  tabs = model()->count();
++  Click(source, 0);
++  ASSERT_TRUE(base::test::RunUntil([&] {
++    return Peek() && Peek()->GetVisible() && Peek()->contents_for_testing();
++  }));
++  EXPECT_EQ(tabs, model()->count());
++}
++
++// Switching tabs ends the Peek.
++IN_PROC_BROWSER_TEST_F(CovePeekBrowserTest, SwitchingTabsClosesPeek) {
++  const GURL target = embedded_test_server()->GetURL("b.test", "/title2.html");
++  ASSERT_TRUE(ui_test_utils::NavigateToURL(
++      browser(), embedded_test_server()->GetURL("a.test", "/title1.html")));
++  auto* source = model()->GetActiveWebContents();
++  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
++      browser(), GURL("data:text/html,other"),
++      WindowOpenDisposition::NEW_BACKGROUND_TAB,
++      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
++  ShowLink(source, target, /*blank=*/false);
++  Click(source, blink::WebInputEvent::kShiftKey);
++  ASSERT_TRUE(base::test::RunUntil(
++      [&] { return Peek() && Peek()->GetVisible(); }));
++  model()->ActivateTabAt(1 - model()->GetIndexOfWebContents(source));
++  ASSERT_TRUE(base::test::RunUntil([&] { return !Peek()->GetVisible(); }));
++  EXPECT_FALSE(Peek()->contents_for_testing());
++}
++
++}  // namespace
+diff --git a/chrome/browser/ui/cove/BUILD.gn b/chrome/browser/ui/cove/BUILD.gn
+--- a/chrome/browser/ui/cove/BUILD.gn
++++ b/chrome/browser/ui/cove/BUILD.gn
+@@ -1,6 +1,11 @@
+ # Copyright 2026 The Chromium Authors
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
++source_set("peek_hooks") {
++  sources = [ "cove_peek_hooks.cc", "cove_peek_hooks.h" ]
++  public_deps = [ "//ui/base" ]
++  deps = [ "//base" ]
++}
+ source_set("session_metadata") {
+   sources = [ "cove_session_metadata.cc", "cove_session_metadata.h" ]
+   public_deps = [ "//base" ]
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -581,6 +581,7 @@
+     ]
+     public_deps = [
+       "//base",
++      "//chrome/browser/ui/cove:peek_hooks",
+       "//chrome/browser/ui/cove:session_metadata",
+       "//components/split_tabs",
+       "//components/tab_groups",
+@@ -3573,6 +3574,8 @@
+       "views/cove/cove_settings_view.h",
+       "views/cove/cove_mini_media_view.cc",
+       "views/cove/cove_mini_media_view.h",
++      "views/cove/cove_peek_view.cc",
++      "views/cove/cove_peek_view.h",
+       "views/cove/cove_location_view.cc",
+       "views/cove/cove_location_view.h",
+       "views/cove/cove_sidebar_library_view.cc",
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/BUILD.gn b/chrome/browser/ui/browser_web_contents_delegate/BUILD.gn
+--- a/chrome/browser/ui/browser_web_contents_delegate/BUILD.gn
++++ b/chrome/browser/ui/browser_web_contents_delegate/BUILD.gn
+@@ -27,6 +27,7 @@
+       "//chrome/browser/preloading:prefs",
+       "//chrome/browser/search",
+       "//chrome/browser/ui:browser_command_controller",
++      "//chrome/browser/ui/cove:peek_hooks",
+       "//chrome/browser/ui:browser_commands",
+       "//chrome/browser/ui:browser_window_header",
+       "//chrome/browser/ui:tab_dialogs",
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "chrome/browser/ui/cove/cove_peek_hooks.h"
+ #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
+ 
+ #include "base/check_deref.h"
+@@ -548,6 +549,13 @@
+                                   std::move(navigation_handle_callback));
+   }
+ 
++  // Cove: Shift+click shows the destination in a Peek instead of a window.
++  if (auto* open_in_peek = GetCovePeekHooks().open_url) {
++    if (auto* peek = open_in_peek(&*browser_, source, params)) {
++      return peek;
++    }
++  }
++
+   // If the source is already split, navigate the other pane instead of
+   // creating a new tab. Return |source| so that WebContentsImpl::OpenURL()
+   // sees new_contents == this and skips the DidOpenRequestedURL notification,
+@@ -672,6 +680,16 @@
+     const blink::mojom::WindowFeatures& window_features,
+     bool user_gesture,
+     bool* was_blocked) {
++  // Cove: links that leave a pinned tab's site, and Shift+click on links that
++  // open new windows, appear in a Peek over the page.
++  if (auto* adopt_into_peek = GetCovePeekHooks().adopt) {
++    content::WebContents* const peeked = new_contents.get();
++    new_contents = adopt_into_peek(&*browser_, source, std::move(new_contents),
++                                   target_url, disposition, user_gesture);
++    if (!new_contents) {
++      return peeked;
++    }
++  }
+   FullscreenController* fullscreen_controller =
+       exclusive_access_manager_->fullscreen_controller();
+ #if BUILDFLAG(IS_MAC)
+diff --git a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+--- a/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
++++ b/chrome/browser/ui/views/cove/cove_sidebar_library_view.cc
+@@ -9,6 +9,8 @@
+ #include "chrome/browser/ui/tabs/tab_group_model.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/views/cove/cove_sidebar_library_view.h"
++
++#include "chrome/browser/ui/views/cove/cove_peek_view.h"
+ 
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+@@ -578,6 +580,7 @@
+     }
+   }
+   Rebuild();
++  CovePeekView::InstallHooks();
+   pref_change_registrar_.Init(browser_->GetProfile()->GetPrefs());
+   pref_change_registrar_.Add(
+       kCoveSidebarPref, base::BindRepeating(&CoveSidebarLibraryView::Rebuild,
+diff --git a/chrome/test/BUILD.gn b/chrome/test/BUILD.gn
+--- a/chrome/test/BUILD.gn
++++ b/chrome/test/BUILD.gn
+@@ -1626,6 +1626,7 @@
+       "../browser/ui/views/cove/cove_sidebar_drag_browsertest.cc",
+       "../browser/ui/views/cove/cove_favorites_view_browsertest.cc",
+       "../browser/ui/views/cove/cove_mini_player_browsertest.cc",
++      "../browser/ui/views/cove/cove_peek_browsertest.cc",
+       "../browser/ui/cove/cove_temporary_window_browsertest.mm",
+     ]
+     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
