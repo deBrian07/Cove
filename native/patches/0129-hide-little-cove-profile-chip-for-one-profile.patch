@@ -1,0 +1,30 @@
+diff --git a/chrome/browser/ui/cove/cove_temporary_window.cc b/chrome/browser/ui/cove/cove_temporary_window.cc
+--- a/chrome/browser/ui/cove/cove_temporary_window.cc
++++ b/chrome/browser/ui/cove/cove_temporary_window.cc
+@@ -37,7 +37,10 @@
+ #include "base/functional/bind.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/profiles/profile_attributes_storage.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+@@ -801,6 +804,15 @@
+       views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+                                views::MaximumFlexSizeRule::kPreferred));
+   profile_label->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
++  // Like Little Arc, keep the header to the page and its destination. Name the
++  // profile only when there is more than one to tell apart, or for Incognito.
++  size_t profile_count = 1;
++  if (g_browser_process && g_browser_process->profile_manager()) {
++    profile_count = g_browser_process->profile_manager()
++                        ->GetProfileAttributesStorage()
++                        .GetNumberOfProfiles();
++  }
++  profile_label->SetVisible(profile->IsOffTheRecord() || profile_count > 1);
+ 
+   auto* controls =
+       toolbar->AddChildView(std::make_unique<TemporarySpaceControls>(browser));
