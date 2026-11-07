@@ -1,0 +1,223 @@
+diff --git a/chrome/browser/ui/views/cove/cove_event_location.h b/chrome/browser/ui/views/cove/cove_event_location.h
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_event_location.h
+@@ -0,0 +1,22 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_COVE_COVE_EVENT_LOCATION_H_
++#define CHROME_BROWSER_UI_VIEWS_COVE_COVE_EVENT_LOCATION_H_
++
++#include <optional>
++
++#include "ui/gfx/geometry/point.h"
++
++namespace ui {
++class Event;
++}
++
++// Screen location recorded in a mouse event's native platform event, i.e.
++// where the press actually happened. Returns nullopt for events without a
++// native mouse event; callers then fall back to the current cursor position.
++// The cursor may have moved since a queued press, so prefer this value.
++std::optional<gfx::Point> CoveNativeEventScreenLocation(const ui::Event& event);
++
++#endif  // CHROME_BROWSER_UI_VIEWS_COVE_COVE_EVENT_LOCATION_H_
+diff --git a/chrome/browser/ui/views/cove/cove_event_location_mac.mm b/chrome/browser/ui/views/cove/cove_event_location_mac.mm
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/views/cove/cove_event_location_mac.mm
+@@ -0,0 +1,40 @@
++// Copyright 2026 The Cove Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/cove/cove_event_location.h"
++
++#import <AppKit/AppKit.h>
++
++#include "ui/events/event.h"
++#include "ui/gfx/mac/coordinate_conversion.h"
++
++std::optional<gfx::Point> CoveNativeEventScreenLocation(
++    const ui::Event& event) {
++  if (!event.IsMouseEvent() || !event.HasNativeEvent()) {
++    return std::nullopt;
++  }
++  NSEvent* native = event.native_event().Get();
++  if (!native) {
++    return std::nullopt;
++  }
++  switch (native.type) {
++    case NSEventTypeLeftMouseDown:
++    case NSEventTypeRightMouseDown:
++    case NSEventTypeOtherMouseDown:
++    case NSEventTypeLeftMouseUp:
++    case NSEventTypeRightMouseUp:
++    case NSEventTypeOtherMouseUp:
++      break;
++    default:
++      return std::nullopt;
++  }
++  // locationInWindow is window-relative for events with a window and already
++  // in Cocoa screen coordinates for window-less events. Avoid
++  // ui::EventSystemLocationFromNative: it is NOTIMPLEMENTED on macOS here.
++  NSPoint point = native.locationInWindow;
++  if (NSWindow* window = native.window) {
++    point = [window convertPointToScreen:point];
++  }
++  return gfx::ScreenPointFromNSPoint(point);
++}
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3582,6 +3582,8 @@
+     ]
+     if (is_mac) {
+       sources += [
++        "views/cove/cove_event_location.h",
++        "views/cove/cove_event_location_mac.mm",
+         "views/cove/cove_modifier_keys.h",
+         "views/cove/cove_modifier_keys_mac.mm",
+       ]
+diff --git a/chrome/browser/ui/views/cove/cove_command_bar_view.cc b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+--- a/chrome/browser/ui/views/cove/cove_command_bar_view.cc
++++ b/chrome/browser/ui/views/cove/cove_command_bar_view.cc
+@@ -12,6 +12,7 @@
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/time/time.h"
++#include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/cove_command_ids.h"
+ #include "chrome/browser/ui/cove_space_close_handler.h"
+@@ -27,6 +28,9 @@
+ #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/cove/cove_event_location.h"
++#endif
+ #include "components/favicon/content/content_favicon_driver.h"
+ #include "components/omnibox/browser/autocomplete_classifier.h"
+ #include "components/omnibox/browser/autocomplete_match.h"
+@@ -257,8 +261,19 @@
+ void CoveCommandBarView::OnEvent(const ui::Event& event) {
+   if (event.type() != ui::EventType::kMousePressed || !GetWidget() ||
+       !GetWidget()->IsVisible() || !outside_click_monitor_) return;
+-  if (!GetWidget()->GetWindowBoundsInScreen().Contains(
+-          outside_click_monitor_->GetLastMouseLocation())) {
++  // Use where the press happened, not where the cursor is now: a queued press
++  // and a later cursor position can disagree.
++  gfx::Point location;
++#if BUILDFLAG(IS_MAC)
++  if (auto native = CoveNativeEventScreenLocation(event)) {
++    location = *native;
++  } else {
++    location = outside_click_monitor_->GetLastMouseLocation();
++  }
++#else
++  location = outside_click_monitor_->GetLastMouseLocation();
++#endif
++  if (!GetWidget()->GetWindowBoundsInScreen().Contains(location)) {
+     // Do not restore focus or consume the click: the intended target owns it.
+     // Keep the cached widget alive for the next command-bar opening.
+     GetWidget()->Hide();
+diff --git a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+--- a/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
++++ b/chrome/browser/ui/views/cove/cove_caption_buttons_browsertest.mm
+@@ -45,8 +45,13 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/test/browser_test.h"
+ #include "content/public/test/browser_test_utils.h"
++#import <AppKit/AppKit.h>
+ #include "third_party/skia/include/core/SkBitmap.h"
++#include "base/apple/owned_objc.h"
+ #include "ui/compositor/compositor.h"
++#include "ui/events/event.h"
++#include "ui/events/event_utils.h"
++#include "ui/gfx/mac/coordinate_conversion.h"
+ #include "ui/compositor/layer.h"
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/scoped_animation_duration_scale_mode.h"
+@@ -81,6 +86,24 @@
+   auto bitmap = result->ScopedAccessSkBitmap();
+   return bitmap.GetOutScopedBitmap();
+ }
++// A native left-button press at |screen_point| addressed to |window|, as a
++// queued press would carry it regardless of the current cursor position.
++std::unique_ptr<ui::Event> CoveNativePressAt(NSWindow* window,
++                                             const gfx::Point& screen_point) {
++  const NSPoint in_window =
++      [window convertPointFromScreen:gfx::ScreenPointToNSPoint(screen_point)];
++  NSEvent* press = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
++                                      location:in_window
++                                 modifierFlags:0
++                                     timestamp:NSProcessInfo.processInfo.systemUptime
++                                  windowNumber:window.windowNumber
++                                       context:nil
++                                   eventNumber:0
++                                    clickCount:1
++                                      pressure:1.0];
++  return ui::EventFromNative(base::apple::OwnedNSEvent(press));
++}
++
+ }  // namespace
+ 
+ class CoveCaptionButtonsBrowserTest : public InProcessBrowserTest {
+@@ -524,3 +547,53 @@
+     EXPECT_EQ("draft", content::EvalJs(page, "document.querySelector('textarea').value"));
+   }
+ }
++
++// The palette must judge a press by where it happened, not by where the cursor
++// is when the monitor runs. Cover both disagreements deterministically.
++IN_PROC_BROWSER_TEST_F(CoveCaptionButtonsBrowserTest,
++                       OutsideClickUsesPressLocationNotCursor) {
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
++  auto* host = view->GetTabSearchBubbleHost();
++  ASSERT_TRUE(host);
++  auto* page = browser()->GetTabStripModel()->GetActiveWebContents();
++  const auto page_bounds = page->GetRenderWidgetHostView()->GetViewBounds();
++  const gfx::Point page_point(page_bounds.right() - 40,
++                              page_bounds.bottom() - 40);
++
++  host->ShowTabSearchBubble(true);
++  auto* palette = host->native_palette_widget_for_testing();
++  ASSERT_TRUE(palette);
++  ASSERT_TRUE(base::test::RunUntil([&] { return palette->IsVisible(); }));
++  auto* bar = views::AsViewClass<CoveCommandBarView>(
++      palette->widget_delegate()->GetContentsView());
++  ASSERT_TRUE(bar);
++  ASSERT_FALSE(palette->GetWindowBoundsInScreen().Contains(page_point));
++  const gfx::Point inside =
++      bar->search_field_for_testing()->GetBoundsInScreen().CenterPoint();
++
++  // Cursor outside, press inside: the palette stays open.
++  base::test::TestFuture<void> moved_out;
++  ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++      page_point.x(), page_point.y(), moved_out.GetCallback(),
++      view->GetWidget()->GetNativeWindow()));
++  ASSERT_TRUE(moved_out.Wait());
++  auto inside_press = CoveNativePressAt(
++      palette->GetNativeWindow().GetNativeNSWindow(), inside);
++  ASSERT_TRUE(inside_press);
++  bar->OnEvent(*inside_press);
++  EXPECT_TRUE(palette->IsVisible());
++
++  // Cursor inside, press outside on the page: the palette hides and stays
++  // cached for the next opening.
++  base::test::TestFuture<void> moved_in;
++  ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
++      inside.x(), inside.y(), moved_in.GetCallback(),
++      palette->GetNativeWindow()));
++  ASSERT_TRUE(moved_in.Wait());
++  auto outside_press = CoveNativePressAt(
++      view->GetWidget()->GetNativeWindow().GetNativeNSWindow(), page_point);
++  ASSERT_TRUE(outside_press);
++  bar->OnEvent(*outside_press);
++  EXPECT_FALSE(palette->IsVisible());
++  EXPECT_EQ(palette, host->native_palette_widget_for_testing());
++}
