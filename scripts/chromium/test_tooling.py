@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import plistlib
+import os
 import subprocess
 import tempfile
 import unittest
@@ -254,6 +255,18 @@ class ToolingTests(unittest.TestCase):
             with self.assertRaisesRegex(cove.BuildError, "hooks have not completed"):
                 cove.generate(self.root, self.manifest)
         self.assertFalse((self.src / "out").exists())
+
+    def test_quick_selects_only_sources_edited_after_the_last_build(self):
+        src = self.folder / "src"
+        (src / "ui").mkdir(parents=True)
+        for name in ("old.cc", "new.cc", "new.mm", "notes.md", "header.h"):
+            (src / "ui" / name).write_text("x")
+        os.utime(src / "ui" / "old.cc", (100, 100))
+        porcelain = "\n".join([
+            " M ui/old.cc", " M ui/new.cc", "?? ui/new.mm", " M ui/notes.md",
+            " M ui/header.h", " D ui/gone.cc", "R  ui/before.cc -> ui/new.cc"])
+        self.assertEqual(["ui/new.cc", "ui/new.mm"],
+                         cove.changed_sources(src, porcelain, since=200))
 
     def test_build_refuses_changed_configuration(self):
         self.fixture_patch("one.patch", "after\n")

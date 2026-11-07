@@ -541,6 +541,46 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     write_state(root, built_config=build_digest)
 
 
+COMPILED_SUFFIXES = (".cc", ".mm", ".c", ".cpp", ".m")
+
+
+def changed_sources(src: Path, porcelain: str, since: float) -> list[str]:
+    """Checkout-relative compiled sources edited after `since` (a POSIX time)."""
+    selected = []
+    for line in porcelain.splitlines():
+        if len(line) < 4 or line[:2].strip() == "D":
+            continue
+        path = line[3:].split(" -> ")[-1].strip().strip('"')
+        file = src / path
+        if path.endswith(COMPILED_SUFFIXES) and file.is_file() and file.stat().st_mtime > since:
+            selected.append(path)
+    return sorted(set(selected))
+
+
+def quick(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
+    """Compile only sources edited since the last link: errors in minutes, not hours."""
+    require_owned(root, manifest)
+    require_host()
+    require_revision(root, manifest)
+    src = source(root)
+    out = src / "out" / "Cove"
+    if not (out / "build.ninja").exists():
+        raise BuildError("Build files are missing; run gen first")
+    binary = native_application(root, manifest) / "Contents" / "MacOS" / manifest.get("app_name", "Chromium")
+    since = binary.stat().st_mtime if binary.exists() else 0.0
+    porcelain = run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=src, capture=True).stdout
+    targets = changed_sources(src, porcelain, since)
+    if not targets:
+        print("No compiled sources changed since the last build.")
+        return
+    command = [str(root / "depot_tools" / "autoninja"), "-C", "out/Cove"]
+    if jobs is not None:
+        command += ["-j", str(jobs)]
+    command += [f"../../{path}^" for path in targets]
+    run(command, cwd=src, env=environment(root))
+    print(f"Compiled {len(targets)} changed source files. Run build to link and test.")
+
+
 def native_application(root: Path, manifest: dict[str, Any]) -> Path:
     app_name = manifest.get("app_name", "Chromium")
     app = source(root) / "out" / "Cove" / f"{app_name}.app"
@@ -627,7 +667,7 @@ def setup(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("doctor", "mount", "smoke", "setup", "bootstrap", "sync", "patch", "gen", "build", "run"))
+    parser.add_argument("command", choices=("doctor", "mount", "smoke", "setup", "bootstrap", "sync", "patch", "gen", "quick", "build", "run"))
     parser.add_argument("--checkout", help="Explicit checkout override; defaults to .chromium/checkout")
     parser.add_argument("--manifest", type=Path, default=REPO / "native" / "chromium.json")
     parser.add_argument("--stage", choices=SPACE_GIB, default="bootstrap", help="Storage phase checked by doctor")
@@ -674,6 +714,8 @@ def main(argv: list[str] | None = None) -> int:
             apply_patches(root, manifest, args.check)
         elif args.command == "gen":
             generate(root, manifest)
+        elif args.command == "quick":
+            quick(root, manifest, args.jobs)
         elif args.command == "build":
             build(root, manifest, args.jobs)
         elif args.command == "run":
