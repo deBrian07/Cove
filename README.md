@@ -46,11 +46,14 @@ For incremental native development:
 
 ```sh
 npm run chromium:gen
-npm run quick -- --jobs 4   # compile only the sources you changed; catches errors in minutes
-npm run build -- --jobs 4   # link and build the app
+npm run quick -- --jobs 6        # compile only the sources you changed; catches errors in minutes
+npm run build -- --jobs 6        # build the app only
+npm run build:tests -- --jobs 6  # also build the browser-test binary, when you run tests
 ```
 
-Pick `--jobs` from memory, at roughly 3–4 GB per job: 4 suits an 18 GB Mac. Most edits rebuild in minutes. Changing `args.gn` or a widely included header recompiles much of Chromium. The build is also much slower on an ExFAT or USB disk image than on internal or APFS-formatted storage.
+Builds reuse a local compile cache in `.chromium/checkout/cache/siso`. Compiles whose exact inputs were seen before are restored instead of recompiled, for example after reverting an edit or re-applying patches.
+
+Pick `--jobs` from memory: 6 works on an 18 GB Mac. Most edits rebuild in minutes. Changing `args.gn` or a widely included header recompiles much of Chromium. The build is also much slower on an ExFAT or USB disk image than on internal or APFS-formatted storage.
 
 The existing `out/Cove` directory is reused. If the repository sits on a non-APFS drive, an APFS disk image at `CoveChromium/CoveBuild.sparsebundle` is mounted at `.chromium/` automatically; see [the local build setup](native/LOCAL_BUILD.md). No Electron dependency, entrypoint or fallback is part of the active project. The previous implementation and unfinished visual work are preserved under [`legacy/electron/`](legacy/electron/README.md) as reference material.
 

@@ -8,3 +8,4 @@
 - Keep native, Arc and archived prototype profiles separate. Never remove or replace the user's browser data as part of migration.
 - Keep the local disk image, compiled artifacts and browser profiles out of Git. Never reformat a disk or replace an occupied mount point.
 - Make focused commits without co-author trailers.
+- Keep rebuilds short. Never toggle `native/args.gn` settings back and forth: a changed build flag recompiles much of Chromium. A different configuration (release, Intel) gets its own output directory, never `out/Cove`. Put Cove logic in Cove-owned files (`chrome/browser/ui/cove/`, `chrome/browser/ui/views/cove/`). When an upstream file needs a hook, add it to a `.cc` file or a small Cove-only header rather than a widely included upstream header such as `browser_view.h` or `tab_strip_model.h`. Run `npm run quick` before a full build, and build the test binary (`npm run build:tests`) only when running tests.
