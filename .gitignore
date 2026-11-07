@@ -11,3 +11,7 @@ __pycache__/
 
 # Local Chromium image contains build outputs, caches and private browser profiles.
 /CoveChromium/
+
+# Agent-only continuation notes; kept locally, not published.
+native/HANDOFF.md
+native/HANDOFF_HISTORY.md

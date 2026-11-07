@@ -55,8 +55,8 @@ The native patches add a centered dark command palette, URL/default-engine searc
 
 Logos, app icons, colors and usage rules are in [`brand/`](brand/README.md).
 
-See [the current handoff](native/HANDOFF.md), [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).
+See [native controls and shortcuts](native/CONTROLS.md), [the local build setup](native/LOCAL_BUILD.md), [native development](native/README.md) and [architecture](ARCHITECTURE.md).
 
 To resume native development in another agent session, run `python3 scripts/chromium/handoff.py` and read the [continuation prompt](native/NEXT_AGENT_PROMPT.md). The script reports current build/Git state without changing the checkout or browser data.
 
-For concurrent agent work, use the [task ownership and validation guide](native/AGENT_TASKS.md). The [historical handoff archive](native/HANDOFF_HISTORY.md) preserves earlier checkpoints; their old active processes and pending failures are superseded by the current handoff. Local checkouts, build artifacts and evidence logs remain outside Git.
+For concurrent agent work, use the [task ownership and validation guide](native/AGENT_TASKS.md). Local checkouts, build artifacts and evidence logs remain outside Git.
