@@ -507,7 +507,10 @@ def generate(root: Path, manifest: dict[str, Any]) -> None:
     write_state(root, generated_config=generation_digest)
 
 
-def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
+TEST_TARGET = "cove_session_browsertests"
+
+
+def build(root: Path, manifest: dict[str, Any], jobs: int | None, tests: bool = False) -> None:
     require_owned(root, manifest)
     require_space(root, "build")
     require_host()
@@ -525,7 +528,12 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     command = [str(root / "depot_tools" / "autoninja"), "-C", "out/Cove"]
     if jobs is not None:
         command += ["-j", str(jobs)]
+    command += siso_cache_flags(root)
+    # Day-to-day work builds only the app; the browser-test binary adds a large
+    # link and its own dependencies, so build it only when running tests.
     command.append("chrome")
+    if tests:
+        command.append(TEST_TARGET)
     print("Incremental compile: reusing out/Cove and rebuilding only invalidated objects.")
     write_state(root, built_config=None)
     try:
@@ -539,6 +547,18 @@ def build(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
         write_state(root, generated_config=None, built_config=None)
         raise BuildError("GN inputs changed while Ninja was building; rerun gen and build")
     write_state(root, built_config=build_digest)
+
+
+def siso_cache_flags(root: Path) -> list[str]:
+    """Siso's local action cache, kept on the build volume next to the checkout.
+
+    Compiles whose exact inputs were seen before (a reverted edit, a patch
+    re-applied after a rebase, switching branches) are restored from the cache
+    instead of recompiled. New code still compiles normally.
+    """
+    cache = root / "cache" / "siso"
+    cache.mkdir(parents=True, exist_ok=True)
+    return ["-local_cache_enable", f"-cache_dir={cache}"]
 
 
 COMPILED_SUFFIXES = (".cc", ".mm", ".c", ".cpp", ".m")
@@ -576,6 +596,7 @@ def quick(root: Path, manifest: dict[str, Any], jobs: int | None) -> None:
     command = [str(root / "depot_tools" / "autoninja"), "-C", "out/Cove"]
     if jobs is not None:
         command += ["-j", str(jobs)]
+    command += siso_cache_flags(root)
     command += [f"../../{path}^" for path in targets]
     run(command, cwd=src, env=environment(root))
     print(f"Compiled {len(targets)} changed source files. Run build to link and test.")
@@ -673,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stage", choices=SPACE_GIB, default="bootstrap", help="Storage phase checked by doctor")
     parser.add_argument("--check", action="store_true", help="Verify patches without applying")
     parser.add_argument("--jobs", type=int, help="Limit Ninja jobs")
+    parser.add_argument("--tests", action="store_true", help="Also build the Cove browser-test binary")
     raw = list(sys.argv[1:] if argv is None else argv)
     browser_args = []
     if "--" in raw:
@@ -717,7 +739,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "quick":
             quick(root, manifest, args.jobs)
         elif args.command == "build":
-            build(root, manifest, args.jobs)
+            build(root, manifest, args.jobs, args.tests)
         elif args.command == "run":
             launch(root, manifest, browser_args)
     except (BuildError, OSError) as error:

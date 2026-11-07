@@ -296,6 +296,29 @@ class ToolingTests(unittest.TestCase):
         self.assertIsNone(state["generated_config"])
         self.assertIsNone(state["built_config"])
 
+    def test_build_uses_local_cache_and_builds_tests_only_on_request(self):
+        self.fixture_patch("one.patch", "after\n")
+        self.restore_fixture()
+        out = self.src / "out/Cove"
+        out.mkdir(parents=True)
+        (out / "args.gn").write_text((self.repo / "args.gn").read_text())
+        (out / "build.ninja").touch()
+        digest = cove.config_digest(self.manifest)
+        commands = []
+        for tests in (False, True):
+            cove.write_state(self.root, generated_config=digest, built_config=digest)
+            with mock.patch.object(cove, "require_space"), mock.patch.object(cove, "require_host"), \
+                 mock.patch.object(cove, "require_revision"), mock.patch.object(cove, "patch_state", return_value="applied"), \
+                 mock.patch.object(cove, "run") as execute:
+                cove.build(self.root, self.manifest, jobs=6, tests=tests)
+            commands.append(execute.call_args.args[0])
+        for command in commands:
+            self.assertIn("-local_cache_enable", command)
+            self.assertIn(f"-cache_dir={self.root / 'cache' / 'siso'}", command)
+            self.assertIn("chrome", command)
+        self.assertNotIn(cove.TEST_TARGET, commands[0])
+        self.assertIn(cove.TEST_TARGET, commands[1])
+
     def test_build_does_not_stamp_patch_mutated_during_ninja(self):
         patch = self.fixture_patch("one.patch", "after\n")
         self.restore_fixture()

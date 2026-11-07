@@ -9,6 +9,7 @@
     "start": "python3 scripts/chromium/cove_chromium.py run",
     "quick": "python3 scripts/chromium/cove_chromium.py quick",
     "build": "python3 scripts/chromium/cove_chromium.py build",
+    "build:tests": "python3 scripts/chromium/cove_chromium.py build --tests",
     "doctor": "python3 scripts/chromium/cove_chromium.py doctor --stage run",
     "test": "python3 -m unittest discover -s scripts/chromium -p \"test_*.py\" && python3 -m unittest discover -s native/tools -p \"test_*.py\"",
     "test:ui": "python3 scripts/chromium/cove_chromium.py smoke",
